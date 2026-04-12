@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+.DS_Store
+.pnpm-debug.log
+coverage/
+.idea/
+.vscode/
+*.tsbuildinfo
+data/
+.openclaw/

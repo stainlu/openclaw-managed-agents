@@ -1,0 +1,47 @@
+# OpenClaw Managed Runtime — orchestrator image
+#
+# Thin Node service that exposes the managed-agent API and spawns one
+# Dockerfile.runtime container per agent.
+
+FROM node:22-slim AS builder
+
+WORKDIR /app
+
+# Install pnpm so the build step matches local dev.
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+
+COPY package.json ./
+COPY tsconfig.json ./
+RUN pnpm install --no-frozen-lockfile
+
+COPY src ./src
+RUN pnpm build
+
+FROM node:22-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+
+COPY package.json ./
+RUN pnpm install --prod --no-frozen-lockfile && pnpm store prune
+
+COPY --from=builder /app/dist ./dist
+
+ENV NODE_ENV=production \
+    PORT=8080 \
+    OPENCLAW_DOCKER_NETWORK=openclaw-net \
+    OPENCLAW_RUNTIME_IMAGE=openclaw-managed-runtime/agent:latest \
+    OPENCLAW_HOST_STATE_ROOT=/var/openclaw/sessions \
+    OPENCLAW_GATEWAY_PORT=18789
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+    CMD curl --silent --fail "http://127.0.0.1:${PORT}/healthz" || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "dist/index.js"]

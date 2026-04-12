@@ -1,0 +1,61 @@
+# Local development stack for OpenClaw Managed Runtime.
+#
+# Brings up:
+#   - orchestrator: the managed-agent HTTP API on http://localhost:8080
+#   - openclaw-net: the shared Docker network the orchestrator and agent containers use
+#
+# The orchestrator mounts /var/run/docker.sock so dockerode can spawn per-agent
+# runtime containers on the host Docker daemon. Agent containers bind-mount
+# ./data/sessions as their persistent /workspace.
+#
+# Bedrock credentials are read from the host environment — export AWS_REGION,
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or AWS_PROFILE) before `docker compose up`.
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    image: openclaw-managed-runtime/orchestrator:latest
+    container_name: openclaw-orchestrator
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      OPENCLAW_DOCKER_NETWORK: openclaw-net
+      OPENCLAW_RUNTIME_IMAGE: openclaw-managed-runtime/agent:latest
+      OPENCLAW_HOST_STATE_ROOT: ${PWD}/data/sessions
+      OPENCLAW_GATEWAY_PORT: "18789"
+      OPENCLAW_READY_TIMEOUT_MS: "120000"
+      OPENCLAW_RUN_TIMEOUT_MS: "600000"
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/sessions:/var/openclaw/sessions
+    networks:
+      - openclaw-net
+    depends_on:
+      - ensure-agent-image
+
+  # Build the agent runtime image as a compose-managed target so `docker compose
+  # up --build` produces both images in one command.
+  ensure-agent-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    image: openclaw-managed-runtime/agent:latest
+    # This service is only for building the image, not for running. It exits
+    # immediately; compose still tags the image.
+    command: ["true"]
+    restart: "no"
+
+networks:
+  openclaw-net:
+    name: openclaw-net
+    driver: bridge

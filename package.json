@@ -1,0 +1,40 @@
+{
+  "name": "openclaw-managed-runtime",
+  "version": "0.1.0-dev",
+  "description": "The open alternative to Claude Managed Agents — an API-first managed agent runtime on top of OpenClaw.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "openclaw-managed-runtime": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:e2e": "bash test/e2e.sh",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "docker:build-runtime": "docker build -f Dockerfile.runtime -t openclaw-managed-runtime/agent:latest .",
+    "docker:build-orchestrator": "docker build -f Dockerfile.orchestrator -t openclaw-managed-runtime/orchestrator:latest .",
+    "docker:build": "pnpm docker:build-runtime && pnpm docker:build-orchestrator"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.2",
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0",
+    "nanoid": "^5.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
