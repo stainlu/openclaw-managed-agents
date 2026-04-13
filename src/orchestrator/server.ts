@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { AgentRegistry } from "./agents.js";
 import { AgentRouter, RouterError } from "./router.js";
 import { SessionRegistry } from "./sessions.js";
-import { CreateAgentRequestSchema, RunAgentRequestSchema } from "./types.js";
+import { CreateAgentRequestSchema, RunAgentRequestSchema, type AgentConfig } from "./types.js";
 import type { ContainerRuntime } from "../runtime/container.js";
 
 export type ServerDeps = {
@@ -11,12 +11,52 @@ export type ServerDeps = {
   sessions: SessionRegistry;
   router: AgentRouter;
   runtime: ContainerRuntime;
+  /** Semver from package.json, surfaced on GET /. */
+  version: string;
 };
+
+function agentResponse(agent: AgentConfig) {
+  return {
+    agent_id: agent.agentId,
+    model: agent.model,
+    tools: agent.tools,
+    instructions: agent.instructions,
+    name: agent.name,
+    created_at: agent.createdAt,
+  };
+}
 
 export function buildApp(deps: ServerDeps): Hono {
   const app = new Hono();
 
-  app.get("/healthz", (c) => c.json({ ok: true }));
+  // Self-documenting root. A developer landing on the orchestrator should get
+  // a useful response without needing to read docs first. This doubles as a
+  // cheap liveness probe that returns more information than /healthz.
+  app.get("/", (c) =>
+    c.json({
+      name: "OpenClaw Managed Runtime",
+      description: "The open alternative to Claude Managed Agents.",
+      version: deps.version,
+      docs: "https://github.com/stainlu/openclaw-managed-runtime",
+      endpoints: {
+        agents: {
+          create: "POST /v1/agents",
+          list: "GET /v1/agents",
+          get: "GET /v1/agents/:agentId",
+          delete: "DELETE /v1/agents/:agentId",
+          run: "POST /v1/agents/:agentId/run",
+        },
+        sessions: {
+          get: "GET /v1/sessions/:sessionId",
+        },
+        health: {
+          liveness: "GET /healthz",
+        },
+      },
+    }),
+  );
+
+  app.get("/healthz", (c) => c.json({ ok: true, version: deps.version }));
 
   // ---------- Agents ----------
 
@@ -27,14 +67,12 @@ export function buildApp(deps: ServerDeps): Hono {
       return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
     }
     const agent = deps.agents.create(parsed.data);
-    return c.json({
-      agent_id: agent.agentId,
-      model: agent.model,
-      tools: agent.tools,
-      instructions: agent.instructions,
-      name: agent.name,
-      created_at: agent.createdAt,
-    });
+    return c.json(agentResponse(agent));
+  });
+
+  app.get("/v1/agents", (c) => {
+    const agents = deps.agents.list().map(agentResponse);
+    return c.json({ agents, count: agents.length });
   });
 
   app.get("/v1/agents/:agentId", (c) => {
@@ -43,14 +81,7 @@ export function buildApp(deps: ServerDeps): Hono {
     if (!agent) {
       return c.json({ error: "agent_not_found" }, 404);
     }
-    return c.json({
-      agent_id: agent.agentId,
-      model: agent.model,
-      tools: agent.tools,
-      instructions: agent.instructions,
-      name: agent.name,
-      created_at: agent.createdAt,
-    });
+    return c.json(agentResponse(agent));
   });
 
   app.delete("/v1/agents/:agentId", (c) => {

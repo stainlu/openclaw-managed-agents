@@ -1,8 +1,37 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AgentRegistry } from "./orchestrator/agents.js";
 import { AgentRouter, type RouterConfig } from "./orchestrator/router.js";
 import { startServer } from "./orchestrator/server.js";
 import { SessionRegistry } from "./orchestrator/sessions.js";
 import { DockerContainerRuntime } from "./runtime/docker.js";
+
+function readPackageVersion(): string {
+  // Resolve package.json relative to the compiled module location, so it works
+  // both under `tsx watch src/index.ts` (dev) and `node dist/index.js` (prod).
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      resolve(here, "../package.json"), // dist/index.js -> ../package.json
+      resolve(here, "../../package.json"), // dist/src/index.js -> ../../package.json (tsx)
+    ];
+    for (const path of candidates) {
+      try {
+        const raw = readFileSync(path, "utf8");
+        const parsed = JSON.parse(raw) as { version?: unknown };
+        if (typeof parsed.version === "string" && parsed.version.length > 0) {
+          return parsed.version;
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return "0.0.0-unknown";
+}
 
 function env(name: string, fallback?: string): string {
   const v = process.env[name];
@@ -68,6 +97,7 @@ function collectPassthroughEnv(): Record<string, string> {
 }
 
 async function main(): Promise<void> {
+  const version = readPackageVersion();
   const port = envInt("PORT", 8080);
   const runtimeImage = env("OPENCLAW_RUNTIME_IMAGE", "openclaw-managed-runtime/agent:latest");
   const hostStateRoot = env("OPENCLAW_HOST_STATE_ROOT", "/var/openclaw/sessions");
@@ -82,24 +112,39 @@ async function main(): Promise<void> {
   const agents = new AgentRegistry();
   const sessions = new SessionRegistry();
 
+  const passthroughEnv = collectPassthroughEnv();
+  const passthroughEnvKeys = Object.keys(passthroughEnv).sort();
+
   const routerCfg: RouterConfig = {
     runtimeImage,
     hostStateRoot,
     network,
     gatewayPort,
-    passthroughEnv: collectPassthroughEnv(),
+    passthroughEnv,
     readyTimeoutMs,
     runTimeoutMs,
   };
 
   const router = new AgentRouter(agents, sessions, runtime, routerCfg);
 
-  console.log("[orchestrator] OpenClaw Managed Runtime starting");
+  console.log(`[orchestrator] OpenClaw Managed Runtime v${version} starting`);
   console.log(`[orchestrator] runtime image: ${runtimeImage}`);
   console.log(`[orchestrator] docker network: ${network}`);
   console.log(`[orchestrator] host state root: ${hostStateRoot}`);
+  console.log(
+    `[orchestrator] forwarding provider env vars (${passthroughEnvKeys.length}): ${
+      passthroughEnvKeys.length > 0 ? passthroughEnvKeys.join(", ") : "(none detected)"
+    }`,
+  );
+  if (passthroughEnvKeys.length === 0) {
+    console.log(
+      "[orchestrator] WARNING: no provider API keys detected in the host env. " +
+        "Export at least one (e.g. MOONSHOT_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, " +
+        "GEMINI_API_KEY) before spawning agents, or runs will fail.",
+    );
+  }
 
-  await startServer({ agents, sessions, router, runtime }, { port });
+  await startServer({ agents, sessions, router, runtime, version }, { port });
 }
 
 main().catch((err) => {

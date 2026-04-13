@@ -56,23 +56,25 @@ One OpenClaw container per agent. Each container is effectively single-user, whi
 ## API
 
 ```
-POST   /v1/agents
-       body: { model, tools, instructions }
-       response: { agent_id }
+GET    /                       # self-documenting root: version, endpoints, docs link
+GET    /healthz                # liveness probe: { ok, version }
 
-POST   /v1/agents/:agent_id/run
-       body: { task }
-       response: { session_id, status }
+POST   /v1/agents              # body: { model, tools, instructions, name? }
+                               # → { agent_id, model, tools, instructions, name, created_at }
 
-GET    /v1/sessions/:session_id
-       response: { status, output, cost_usd, tokens, events }
+GET    /v1/agents              # → { agents: [...], count }
+GET    /v1/agents/:agentId     # → full agent config
+DELETE /v1/agents/:agentId     # → { deleted: true }
 
-DELETE /v1/agents/:agent_id
-       response: { deleted: true }
+POST   /v1/agents/:agentId/run # body: { task, sessionId? }
+                               # → { session_id, agent_id, status, started_at }
 
-GET    /healthz
-       response: { ok: true }
+GET    /v1/sessions/:sessionId # → { session_id, agent_id, status, task, output,
+                               #      error, tokens: { input, output }, cost_usd,
+                               #      started_at, completed_at }
 ```
+
+The orchestrator is self-documenting — `curl http://localhost:8080/` returns the full endpoint list, version, and links. You never need this section to discover the API, it's just here as a quick reference.
 
 ## Quick start (local Docker)
 
@@ -119,13 +121,13 @@ curl http://localhost:8080/v1/sessions/ses_xyz789
 
 ## Status and roadmap
 
-This is **early development**. See `docs/architecture.md` for the plan and `/Users/stainlu/.claude/plans/rosy-dreaming-backus.md` locally for the strategic context.
+This is **early development**. See `docs/architecture.md` for the technical design.
 
-**Phase 1 (MVP, current):** Docker-based local runtime, Bedrock default, single-cloud (AWS), in-memory agent registry, volume-mount session storage.
+**Phase 1 (MVP, current — shipping today):** Docker-based local runtime, provider-agnostic default (ships with Moonshot Kimi K2.5 but swaps cleanly to any OpenClaw provider), in-memory agent + session registries, host-volume session storage, self-documenting API root, end-to-end validated against real inference.
 
-**Phase 2 (next):** ECS/Fargate container backend, S3 session storage, cloud secrets (AWS Secrets Manager), deployment guides.
+**Phase 2 (next):** ECS/Fargate container backend, S3 session storage, cloud secrets (AWS Secrets Manager), Postgres-backed agent/session registries, deployment guides, per-provider cost accounting.
 
-**Phase 3 (later):** GCP, Azure, Aliyun, Volcengine backends. Multi-tenant orchestrator. Enterprise features.
+**Phase 3 (later):** GCP Cloud Run, Azure Container Apps, Aliyun ECI, Volcengine VKE backends. Multi-tenant orchestrator with auth and quotas. Enterprise features (audit logs, policy enforcement, tenant isolation).
 
 ## License
 
