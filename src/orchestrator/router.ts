@@ -105,7 +105,8 @@ export class AgentRouter {
 
       const completion = await this.invokeChatCompletions({
         baseUrl: container.baseUrl,
-        model: agent.model,
+        token: container.token,
+        agentId: agent.agentId,
         task,
         sessionKey: sessionId,
       });
@@ -127,13 +128,19 @@ export class AgentRouter {
 
   private async invokeChatCompletions(args: {
     baseUrl: string;
-    model: string;
+    token: string;
+    agentId: string;
     task: string;
     sessionKey: string;
   }): Promise<{ output: string; tokensIn: number; tokensOut: number; costUsd: number }> {
     const url = `${args.baseUrl}/v1/chat/completions`;
+    // OpenClaw's OpenAI-compatible endpoint validates the `model` field against
+    // either the literal "openclaw" or the "openclaw/<agentId>" pattern — it is
+    // a routing hint, not the inference model. The actual model used is picked
+    // from the selected agent's config (agents.list[].model.primary). See
+    // /src/gateway/http-utils.ts:resolveAgentIdFromModel for the pattern.
     const body = {
-      model: args.model,
+      model: `openclaw/${args.agentId}`,
       user: args.sessionKey,
       messages: [{ role: "user", content: args.task }],
       stream: false,
@@ -141,7 +148,11 @@ export class AgentRouter {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${args.token}`,
+        "x-openclaw-agent-id": args.agentId,
+      },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(this.cfg.runTimeoutMs),
     });

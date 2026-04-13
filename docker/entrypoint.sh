@@ -31,6 +31,20 @@ set -euo pipefail
 : "${OPENCLAW_INSTRUCTIONS:=}"
 : "${OPENCLAW_SESSION_ID:=}"
 
+# Per-container auth token. The orchestrator generates this at spawn time and
+# passes it in to both secure the container and include it as a Bearer header
+# on its own /v1/chat/completions calls. OpenClaw refuses to bind to non-
+# loopback interfaces without shared-secret auth, and in a Docker network we
+# need 0.0.0.0 binding so the orchestrator can reach us by name. See
+# /src/cli/gateway-cli/run.ts:505-528 for the refuse-to-bind check.
+if [[ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
+  # Fallback: self-generate. Useful for standalone debugging via `docker run`.
+  # In production, the orchestrator always injects the token.
+  OPENCLAW_GATEWAY_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  echo "[entrypoint] generated fallback gateway token: ${OPENCLAW_GATEWAY_TOKEN}"
+fi
+export OPENCLAW_GATEWAY_TOKEN
+
 STATE_DIR="${OPENCLAW_STATE_DIR}"
 CONFIG_PATH="${STATE_DIR}/openclaw.json"
 
@@ -68,8 +82,6 @@ jq -n \
     port: $port,
     mode: "local",
     bind: "lan",
-    allowInsecureAuth: true,
-    auth: { mode: "none" },
     http: {
       endpoints: {
         chatCompletions: { enabled: true }

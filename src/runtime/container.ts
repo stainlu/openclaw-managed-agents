@@ -38,6 +38,15 @@ export type Container = {
    * Example: "http://openclaw-agt-abc.openclaw-net:18789"
    */
   baseUrl: string;
+  /**
+   * Shared-secret token for authenticated requests to this container's HTTP
+   * endpoints (other than `/healthz` and `/readyz`, which bypass auth).
+   * The runtime backend generates this per container and passes it in via
+   * the OPENCLAW_GATEWAY_TOKEN env var. OpenClaw refuses to bind to non-
+   * loopback interfaces without a shared secret — see
+   * /src/cli/gateway-cli/run.ts:505-528.
+   */
+  token: string;
 };
 
 export interface ContainerRuntime {

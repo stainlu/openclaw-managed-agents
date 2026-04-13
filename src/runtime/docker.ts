@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import type { Container, ContainerRuntime, SpawnOptions } from "./container.js";
 
@@ -26,7 +27,18 @@ export class DockerContainerRuntime implements ContainerRuntime {
     const name = opts.name ?? `openclaw-agt-${randomSuffix()}`;
     const network = opts.network ?? this.defaultNetwork;
 
-    const envArray = Object.entries(opts.env).map(([k, v]) => `${k}=${v}`);
+    // Per-container shared-secret token. OpenClaw requires this to bind to
+    // non-loopback interfaces. We inject it as OPENCLAW_GATEWAY_TOKEN (picked
+    // up automatically by the openclaw gateway CLI via resolveGatewayAuth) and
+    // return it on the Container so the orchestrator can attach it as a
+    // Bearer header when calling the container's /v1/chat/completions.
+    const token = opts.env.OPENCLAW_GATEWAY_TOKEN ?? randomBytes(32).toString("hex");
+    const envWithToken: Record<string, string> = {
+      ...opts.env,
+      OPENCLAW_GATEWAY_TOKEN: token,
+    };
+
+    const envArray = Object.entries(envWithToken).map(([k, v]) => `${k}=${v}`);
 
     const binds = opts.mounts.map((m) => {
       const mode = m.readOnly ? "ro" : "rw";
@@ -64,7 +76,7 @@ export class DockerContainerRuntime implements ContainerRuntime {
 
     // The container is reachable over the Docker network by its name.
     const baseUrl = `http://${name}:${opts.containerPort}`;
-    return { id: container.id, name, baseUrl };
+    return { id: container.id, name, baseUrl, token };
   }
 
   async stop(id: string): Promise<void> {
