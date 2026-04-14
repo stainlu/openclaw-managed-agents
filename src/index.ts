@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRegistry } from "./orchestrator/agents.js";
+import { EventStore } from "./orchestrator/events.js";
 import { AgentRouter, type RouterConfig } from "./orchestrator/router.js";
 import { startServer } from "./orchestrator/server.js";
 import { SessionRegistry } from "./orchestrator/sessions.js";
@@ -111,6 +112,7 @@ async function main(): Promise<void> {
 
   const agents = new AgentRegistry();
   const sessions = new SessionRegistry();
+  const events = new EventStore();
 
   const passthroughEnv = collectPassthroughEnv();
   const passthroughEnvKeys = Object.keys(passthroughEnv).sort();
@@ -125,7 +127,7 @@ async function main(): Promise<void> {
     runTimeoutMs,
   };
 
-  const router = new AgentRouter(agents, sessions, runtime, routerCfg);
+  const router = new AgentRouter(agents, sessions, events, runtime, routerCfg);
 
   console.log(`[orchestrator] OpenClaw Managed Runtime v${version} starting`);
   console.log(`[orchestrator] runtime image: ${runtimeImage}`);
@@ -144,7 +146,7 @@ async function main(): Promise<void> {
     );
   }
 
-  await startServer({ agents, sessions, router, runtime, version }, { port });
+  await startServer({ agents, sessions, events, router, runtime, version }, { port });
 }
 
 main().catch((err) => {

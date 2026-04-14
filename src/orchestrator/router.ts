@@ -1,7 +1,8 @@
 import type { ContainerRuntime, Mount } from "../runtime/container.js";
 import type { AgentRegistry } from "./agents.js";
+import type { EventStore } from "./events.js";
 import type { SessionRegistry } from "./sessions.js";
-import type { Session } from "./types.js";
+import type { AgentConfig, Event, Session } from "./types.js";
 
 export type RouterConfig = {
   /** Image reference for the OpenClaw agent container. */
@@ -24,57 +25,94 @@ export class AgentRouter {
   constructor(
     private readonly agents: AgentRegistry,
     private readonly sessions: SessionRegistry,
+    private readonly events: EventStore,
     private readonly runtime: ContainerRuntime,
     private readonly cfg: RouterConfig,
   ) {}
 
   /**
-   * Execute a task for an agent. Spawns a dedicated container, waits for it to
-   * be ready, proxies the task to its OpenAI-compatible endpoint, captures the
-   * result, tears the container down, and returns the completed session.
+   * Create a session bound to an agent. Pure metadata: no container spawn,
+   * no JSONL allocation, no remote calls. The container is only spawned when
+   * the first event is posted to this session via runEvent().
    */
-  async run(args: {
-    agentId: string;
-    task: string;
-    resumeSessionId?: string;
-  }): Promise<Session> {
-    const agent = this.agents.get(args.agentId);
+  createSession(agentId: string): Session {
+    const agent = this.agents.get(agentId);
     if (!agent) {
-      throw new RouterError("agent_not_found", `agent ${args.agentId} does not exist`);
+      throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
+    }
+    return this.sessions.create({ agentId });
+  }
+
+  /**
+   * Post a user.message event to an existing session. Synchronously appends
+   * the user event, transitions the session to "running", and schedules a
+   * background run that spawns a container, proxies the task to its chat
+   * completions endpoint, captures the agent.message reply, rolls usage up
+   * onto the session, and tears the container down.
+   *
+   * Returns the session (status = running) and the newly-appended user event.
+   * The HTTP caller returns this to the client immediately; the client then
+   * polls GET /v1/sessions/:id until it flips back to idle (or failed), and
+   * reads the agent's reply from GET /v1/sessions/:id/events.
+   *
+   * Live event streaming (SSE) is Item 6.
+   */
+  runEvent(args: { sessionId: string; content: string }): { session: Session; event: Event } {
+    const session = this.sessions.get(args.sessionId);
+    if (!session) {
+      throw new RouterError(
+        "session_not_found",
+        `session ${args.sessionId} does not exist`,
+      );
+    }
+    if (session.status === "running") {
+      throw new RouterError(
+        "session_busy",
+        `session ${args.sessionId} is already processing an event`,
+      );
+    }
+    const agent = this.agents.get(session.agentId);
+    if (!agent) {
+      // Safety net: the session outlives its template only if the template was
+      // deleted while the session was idle. Treat as a hard error — we cannot
+      // spawn a container without the config.
+      throw new RouterError(
+        "agent_not_found",
+        `agent ${session.agentId} does not exist`,
+      );
     }
 
-    const session = this.sessions.create({
-      agentId: args.agentId,
-      task: args.task,
-      sessionId: args.resumeSessionId,
+    // Append the user event synchronously so it is visible in the event log
+    // the moment the HTTP handler returns.
+    const userEvent = this.events.append({
+      sessionId: args.sessionId,
+      type: "user.message",
+      content: args.content,
     });
 
-    // Fire-and-track: the HTTP caller polls GET /v1/sessions/:id for completion.
-    // Session continuity across runs is carried by session.sessionId; when the
-    // caller supplied a `resumeSessionId`, sessions.create() reused that id, so
-    // the same value now flows through as session.sessionId and is passed to
-    // the container as the x-openclaw-session-key header below.
-    this.executeInBackground(session.sessionId, agent, args.task).catch(
-      (err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.sessions.update(session.sessionId, {
-          status: "failed",
-          error: msg,
-          completedAt: Date.now(),
-        });
-      },
-    );
+    // Mark the session running before spawning the background task. This
+    // closes the window where a racing read could observe "idle" while a run
+    // is about to begin.
+    const runningSession = this.sessions.beginRun(args.sessionId) ?? session;
 
-    return { ...session, status: "running" };
+    this.executeInBackground(args.sessionId, agent, args.content).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.events.append({
+        sessionId: args.sessionId,
+        type: "agent.error",
+        content: msg,
+      });
+      this.sessions.endRunFailure(args.sessionId, msg);
+    });
+
+    return { session: runningSession, event: userEvent };
   }
 
   private async executeInBackground(
     sessionId: string,
-    agent: { agentId: string; model: string; tools: string[]; instructions: string },
-    task: string,
+    agent: AgentConfig,
+    content: string,
   ): Promise<void> {
-    this.sessions.markStatus(sessionId, "running");
-
     // Per-orchestrator-agent mount. Gives every orchestrator agent its own
     // isolated OpenClaw workspace (sessions.json, per-session JSONLs, skills
     // cache, models cache). The mount path is stable across container restarts
@@ -123,17 +161,23 @@ export class AgentRouter {
       const completion = await this.invokeChatCompletions({
         baseUrl: container.baseUrl,
         token: container.token,
-        task,
+        content,
         sessionKey: sessionId,
       });
 
-      this.sessions.update(sessionId, {
-        status: "completed",
-        output: completion.output,
+      this.events.append({
+        sessionId,
+        type: "agent.message",
+        content: completion.output,
         tokensIn: completion.tokensIn,
         tokensOut: completion.tokensOut,
         costUsd: completion.costUsd,
-        completedAt: Date.now(),
+        model: agent.model,
+      });
+      this.sessions.endRunSuccess(sessionId, {
+        tokensIn: completion.tokensIn,
+        tokensOut: completion.tokensOut,
+        costUsd: completion.costUsd,
       });
     } finally {
       await this.runtime.stop(container.id).catch(() => {
@@ -145,7 +189,7 @@ export class AgentRouter {
   private async invokeChatCompletions(args: {
     baseUrl: string;
     token: string;
-    task: string;
+    content: string;
     sessionKey: string;
   }): Promise<{ output: string; tokensIn: number; tokensOut: number; costUsd: number }> {
     const url = `${args.baseUrl}/v1/chat/completions`;
@@ -171,7 +215,7 @@ export class AgentRouter {
     const body = {
       model: "openclaw/main",
       user: args.sessionKey,
-      messages: [{ role: "user", content: args.task }],
+      messages: [{ role: "user", content: args.content }],
       stream: false,
     };
 
@@ -202,8 +246,8 @@ export class AgentRouter {
       output,
       tokensIn: usage.prompt_tokens ?? 0,
       tokensOut: usage.completion_tokens ?? 0,
-      // Cost accounting is a Phase 2 concern — leave it zero until we wire in
-      // per-provider price sheets.
+      // Cost accounting is Item 9 — leave it zero until the per-provider price
+      // sheet lands.
       costUsd: 0,
     };
   }
@@ -214,9 +258,15 @@ type ChatCompletionResponse = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
+export type RouterErrorCode =
+  | "agent_not_found"
+  | "session_not_found"
+  | "session_busy"
+  | "chat_completions_failed";
+
 export class RouterError extends Error {
   constructor(
-    public readonly code: string,
+    public readonly code: RouterErrorCode,
     message: string,
   ) {
     super(message);
