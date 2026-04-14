@@ -1,7 +1,7 @@
 import type { Container, Mount, SpawnOptions } from "../runtime/container.js";
 import type { SessionContainerPool } from "../runtime/pool.js";
-import type { AgentStore, EventStore, SessionStore } from "../store/types.js";
-import type { AgentConfig, Event, Session } from "./types.js";
+import type { AgentStore, SessionStore } from "../store/types.js";
+import type { AgentConfig, Session } from "./types.js";
 
 export type RouterConfig = {
   /** Image reference for the OpenClaw agent container. */
@@ -22,7 +22,6 @@ export class AgentRouter {
   constructor(
     private readonly agents: AgentStore,
     private readonly sessions: SessionStore,
-    private readonly events: EventStore,
     private readonly pool: SessionContainerPool,
     private readonly cfg: RouterConfig,
   ) {}
@@ -41,20 +40,21 @@ export class AgentRouter {
   }
 
   /**
-   * Post a user.message event to an existing session. Synchronously appends
-   * the user event, transitions the session to "running", and schedules a
-   * background run that spawns a container, proxies the task to its chat
-   * completions endpoint, captures the agent.message reply, rolls usage up
-   * onto the session, and tears the container down.
+   * Post a user.message to an existing session. Transitions the session to
+   * "running" and schedules a background run that spawns (or reuses) a
+   * container, proxies the task to the container's chat completions
+   * endpoint, and rolls usage up onto the session on completion.
    *
-   * Returns the session (status = running) and the newly-appended user event.
-   * The HTTP caller returns this to the client immediately; the client then
-   * polls GET /v1/sessions/:id until it flips back to idle (or failed), and
-   * reads the agent's reply from GET /v1/sessions/:id/events.
+   * The user message and the agent's reply are written to disk by OpenClaw's
+   * own SessionManager — the orchestrator does NOT keep a parallel event
+   * log. Clients read the event history from GET /v1/sessions/:id/events,
+   * which is served by PiJsonlEventReader.
    *
-   * Live event streaming (SSE) is Item 6.
+   * Returns the updated Session (status=running). The HTTP caller hands it
+   * back to the client immediately; the client polls until the session
+   * flips back to idle or failed. SSE streaming is Item 6.
    */
-  runEvent(args: { sessionId: string; content: string }): { session: Session; event: Event } {
+  runEvent(args: { sessionId: string; content: string }): Session {
     const session = this.sessions.get(args.sessionId);
     if (!session) {
       throw new RouterError(
@@ -70,22 +70,14 @@ export class AgentRouter {
     }
     const agent = this.agents.get(session.agentId);
     if (!agent) {
-      // Safety net: the session outlives its template only if the template was
-      // deleted while the session was idle. Treat as a hard error — we cannot
-      // spawn a container without the config.
+      // Safety net: the session outlives its template only if the template
+      // was deleted while the session was idle. Treat as a hard error — we
+      // cannot spawn a container without the config.
       throw new RouterError(
         "agent_not_found",
         `agent ${session.agentId} does not exist`,
       );
     }
-
-    // Append the user event synchronously so it is visible in the event log
-    // the moment the HTTP handler returns.
-    const userEvent = this.events.append({
-      sessionId: args.sessionId,
-      type: "user.message",
-      content: args.content,
-    });
 
     // Mark the session running before spawning the background task. This
     // closes the window where a racing read could observe "idle" while a run
@@ -94,15 +86,10 @@ export class AgentRouter {
 
     this.executeInBackground(args.sessionId, agent, args.content).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
-      this.events.append({
-        sessionId: args.sessionId,
-        type: "agent.error",
-        content: msg,
-      });
       this.sessions.endRunFailure(args.sessionId, msg);
     });
 
-    return { session: runningSession, event: userEvent };
+    return runningSession;
   }
 
   private async executeInBackground(
@@ -177,15 +164,11 @@ export class AgentRouter {
         sessionKey: sessionId,
       });
 
-      this.events.append({
-        sessionId,
-        type: "agent.message",
-        content: completion.output,
-        tokensIn: completion.tokensIn,
-        tokensOut: completion.tokensOut,
-        costUsd: completion.costUsd,
-        model: agent.model,
-      });
+      // No explicit event appends here. OpenClaw's SessionManager has
+      // already written user.message and agent.message to the JSONL on
+      // disk as a side effect of the chat completions call. Our only job
+      // is to update the session metadata (status + usage rollup) so
+      // clients see a consistent status change.
       this.sessions.endRunSuccess(sessionId, {
         tokensIn: completion.tokensIn,
         tokensOut: completion.tokensOut,

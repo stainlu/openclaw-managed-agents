@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { type Context, Hono } from "hono";
-import type { AgentStore, EventStore, SessionStore } from "../store/types.js";
+import type { PiJsonlEventReader } from "../store/pi-jsonl.js";
+import type { AgentStore, SessionStore } from "../store/types.js";
 import { AgentRouter, RouterError } from "./router.js";
 import {
   CreateAgentRequestSchema,
@@ -15,7 +16,7 @@ import {
 export type ServerDeps = {
   agents: AgentStore;
   sessions: SessionStore;
-  events: EventStore;
+  events: PiJsonlEventReader;
   router: AgentRouter;
   /** Semver from package.json, surfaced on GET /. */
   version: string;
@@ -33,10 +34,10 @@ function agentResponse(agent: AgentConfig) {
 }
 
 // Session response shape. `output` is a computed convenience: the content of
-// the most recent agent.message event in the session, or null if none yet.
-// Clients that need the full event history read GET /v1/sessions/:id/events.
-function sessionResponse(session: Session, events: EventStore) {
-  const latestAgent = events.latestAgentMessage(session.sessionId);
+// the most recent agent.message in the session, or null if none yet. The
+// event log lives in Pi's JSONL on the host mount — see PiJsonlEventReader.
+function sessionResponse(session: Session, events: PiJsonlEventReader) {
+  const latestAgent = events.latestAgentMessage(session.agentId, session.sessionId);
   return {
     session_id: session.sessionId,
     agent_id: session.agentId,
@@ -186,15 +187,18 @@ export function buildApp(deps: ServerDeps): Hono {
 
   app.delete("/v1/sessions/:sessionId", (c) => {
     const sessionId = c.req.param("sessionId");
-    const existed = deps.sessions.delete(sessionId);
-    if (!existed) {
+    const session = deps.sessions.get(sessionId);
+    if (!session) {
       return c.json({ error: "session_not_found" }, 404);
     }
-    deps.events.deleteBySession(sessionId);
+    // Drop the Pi JSONL + sessions.json entry on disk first, then the
+    // orchestrator-side metadata row.
+    deps.events.deleteBySession(session.agentId, session.sessionId);
+    deps.sessions.delete(sessionId);
     return c.json({ deleted: true });
   });
 
-  // ---------- Events (the interaction primitive) ----------
+  // ---------- Events (read from Pi's JSONL) ----------
 
   app.post("/v1/sessions/:sessionId/events", async (c) => {
     const sessionId = c.req.param("sessionId");
@@ -204,12 +208,16 @@ export function buildApp(deps: ServerDeps): Hono {
       return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
     }
     try {
-      const { session, event } = deps.router.runEvent({
+      const session = deps.router.runEvent({
         sessionId,
         content: parsed.data.content,
       });
+      // The event id is Pi's — we don't know it until the JSONL is written.
+      // Clients that need to correlate this response with the persisted
+      // event should poll GET /v1/sessions/:sessionId/events once the
+      // session flips back to idle.
       return c.json({
-        ...eventResponse(event),
+        session_id: session.sessionId,
         session_status: session.status,
       });
     } catch (err) {
@@ -223,16 +231,16 @@ export function buildApp(deps: ServerDeps): Hono {
     if (!session) {
       return c.json({ error: "session_not_found" }, 404);
     }
-    const events = deps.events.listBySession(sessionId).map(eventResponse);
+    const events = deps.events
+      .listBySession(session.agentId, session.sessionId)
+      .map(eventResponse);
     return c.json({ session_id: sessionId, events, count: events.length });
   });
 
   // ---------- Backwards-compat /run adapter ----------
 
-  // Retained so that OpenAI-style one-shot callers keep working after the
-  // session-centric rewrite. Maps { task, sessionId? } onto the session-centric
-  // primitives: resolve-or-create a session, then post the task as a single
-  // user.message event.
+  // Retained so that OpenAI-style one-shot callers keep working. Maps
+  // { task, sessionId? } onto createSession + runEvent.
   app.post("/v1/agents/:agentId/run", async (c) => {
     const agentId = c.req.param("agentId");
     const body = await c.req.json().catch(() => ({}));
@@ -254,15 +262,15 @@ export function buildApp(deps: ServerDeps): Hono {
       } else {
         session = deps.router.createSession(agentId);
       }
-      const { event } = deps.router.runEvent({
+      const running = deps.router.runEvent({
         sessionId: session.sessionId,
         content: parsed.data.task,
       });
       return c.json({
         session_id: session.sessionId,
         agent_id: agentId,
-        status: "running",
-        started_at: event.createdAt,
+        status: running.status,
+        started_at: running.lastEventAt ?? running.createdAt,
       });
     } catch (err) {
       return handleRouterError(err, c);

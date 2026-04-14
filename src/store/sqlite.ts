@@ -3,19 +3,10 @@ import { customAlphabet } from "nanoid";
 import type {
   AgentConfig,
   CreateAgentRequest,
-  Event,
-  EventType,
   Session,
   SessionStatus,
 } from "../orchestrator/types.js";
-import type {
-  AgentStore,
-  AppendEventInput,
-  EventStore,
-  RunUsage,
-  SessionStore,
-  Store,
-} from "./types.js";
+import type { AgentStore, RunUsage, SessionStore, Store } from "./types.js";
 
 const nanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 12);
 
@@ -40,19 +31,6 @@ type SessionRow = {
   error: string | null;
   created_at: number;
   last_event_at: number | null;
-};
-
-type EventRow = {
-  id: number;
-  event_id: string;
-  session_id: string;
-  type: string;
-  content: string;
-  created_at: number;
-  tokens_in: number | null;
-  tokens_out: number | null;
-  cost_usd: number | null;
-  model: string | null;
 };
 
 function rowToAgent(r: AgentRow): AgentConfig {
@@ -80,36 +58,25 @@ function rowToSession(r: SessionRow): Session {
   };
 }
 
-function rowToEvent(r: EventRow): Event {
-  return {
-    eventId: r.event_id,
-    sessionId: r.session_id,
-    type: r.type as EventType,
-    content: r.content,
-    createdAt: r.created_at,
-    tokensIn: r.tokens_in ?? undefined,
-    tokensOut: r.tokens_out ?? undefined,
-    costUsd: r.cost_usd ?? undefined,
-    model: r.model ?? undefined,
-  };
-}
-
 // ---------- Schema bootstrap ----------
 
 // Applied once per database. Idempotent — every CREATE uses IF NOT EXISTS.
 // When the schema needs to evolve, introduce explicit migrations; this block
 // is intentionally not migration-aware because the MVP has no deployed data.
 //
-// Cascade choices:
-//   events -> sessions  : ON DELETE CASCADE. Events are strictly owned by
-//                         their session; if the session is gone, the event
-//                         log goes with it.
-//   sessions -> agents  : NO CASCADE. Sessions outlive their template. An
-//                         agent template is a factory — once a session is
-//                         created, the session carries all the config it
-//                         needs (via its event history and rollups), so
-//                         deleting the template does not invalidate ongoing
-//                         or past sessions.
+// Events are intentionally NOT a SQLite table. The source of truth for events
+// is OpenClaw's per-session JSONL on the host mount, written by the pi-ai
+// SessionManager. PiJsonlEventReader (src/store/pi-jsonl.ts) reads them at
+// query time. If you find an `events` table in an older SQLite file, it is
+// a vestigial Item 3 artifact that this file no longer touches.
+//
+// Cascade choice:
+//   sessions -> agents : NO CASCADE. Sessions outlive their template. An
+//                        agent template is a factory — once a session is
+//                        created, the session carries all the config it
+//                        needs (via its event history on disk and its
+//                        tokens rollup), so deleting the template does
+//                        not invalidate past sessions.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   agent_id TEXT PRIMARY KEY,
@@ -133,22 +100,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON sessions(agent_id);
-
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  event_id TEXT NOT NULL UNIQUE,
-  session_id TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('user.message', 'agent.message', 'agent.error')),
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  tokens_in INTEGER,
-  tokens_out INTEGER,
-  cost_usd REAL,
-  model TEXT,
-  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_session_id_id ON events(session_id, id);
 `;
 
 // ---------- Agent store ----------
@@ -287,7 +238,6 @@ class SqliteSessionStore implements SessionStore {
   }
 
   delete(sessionId: string): boolean {
-    // Events cascade via ON DELETE CASCADE on the events table.
     const info = this.deleteStmt.run(sessionId);
     return info.changes > 0;
   }
@@ -326,84 +276,11 @@ class SqliteSessionStore implements SessionStore {
   }
 }
 
-// ---------- Event store ----------
-
-class SqliteEventStore implements EventStore {
-  private readonly insertStmt: Database.Statement;
-  private readonly listStmt: Database.Statement;
-  private readonly latestAgentStmt: Database.Statement;
-  private readonly deleteBySessionStmt: Database.Statement;
-
-  constructor(private readonly db: Database.Database) {
-    this.insertStmt = db.prepare(
-      `INSERT INTO events (
-        event_id, session_id, type, content, created_at,
-        tokens_in, tokens_out, cost_usd, model
-       ) VALUES (
-        @event_id, @session_id, @type, @content, @created_at,
-        @tokens_in, @tokens_out, @cost_usd, @model
-       )`,
-    );
-    this.listStmt = db.prepare(
-      `SELECT * FROM events WHERE session_id = ? ORDER BY id ASC`,
-    );
-    this.latestAgentStmt = db.prepare(
-      `SELECT * FROM events
-       WHERE session_id = ? AND type = 'agent.message'
-       ORDER BY id DESC LIMIT 1`,
-    );
-    this.deleteBySessionStmt = db.prepare(
-      `DELETE FROM events WHERE session_id = ?`,
-    );
-  }
-
-  append(input: AppendEventInput): Event {
-    const event: Event = {
-      eventId: `evt_${nanoid()}`,
-      sessionId: input.sessionId,
-      type: input.type,
-      content: input.content,
-      createdAt: Date.now(),
-      tokensIn: input.tokensIn,
-      tokensOut: input.tokensOut,
-      costUsd: input.costUsd,
-      model: input.model,
-    };
-    this.insertStmt.run({
-      event_id: event.eventId,
-      session_id: event.sessionId,
-      type: event.type,
-      content: event.content,
-      created_at: event.createdAt,
-      tokens_in: event.tokensIn ?? null,
-      tokens_out: event.tokensOut ?? null,
-      cost_usd: event.costUsd ?? null,
-      model: event.model ?? null,
-    });
-    return event;
-  }
-
-  listBySession(sessionId: string): Event[] {
-    const rows = this.listStmt.all(sessionId) as EventRow[];
-    return rows.map(rowToEvent);
-  }
-
-  latestAgentMessage(sessionId: string): Event | undefined {
-    const row = this.latestAgentStmt.get(sessionId) as EventRow | undefined;
-    return row ? rowToEvent(row) : undefined;
-  }
-
-  deleteBySession(sessionId: string): void {
-    this.deleteBySessionStmt.run(sessionId);
-  }
-}
-
 // ---------- Bundle ----------
 
 export class SqliteStore implements Store {
   readonly agents: AgentStore;
   readonly sessions: SessionStore;
-  readonly events: EventStore;
   private readonly db: Database.Database;
   private closed = false;
 
@@ -420,7 +297,6 @@ export class SqliteStore implements Store {
 
     this.agents = new SqliteAgentStore(this.db);
     this.sessions = new SqliteSessionStore(this.db);
-    this.events = new SqliteEventStore(this.db);
   }
 
   close(): void {

@@ -5,7 +5,11 @@ import { AgentRouter, type RouterConfig } from "./orchestrator/router.js";
 import { startServer } from "./orchestrator/server.js";
 import { DockerContainerRuntime } from "./runtime/docker.js";
 import { SessionContainerPool } from "./runtime/pool.js";
-import { buildStore, type StoreBackend } from "./store/index.js";
+import {
+  buildStore,
+  PiJsonlEventReader,
+  type StoreBackend,
+} from "./store/index.js";
 
 function readPackageVersion(): string {
   // Resolve package.json relative to the compiled module location, so it works
@@ -100,7 +104,15 @@ async function main(): Promise<void> {
   const version = readPackageVersion();
   const port = envInt("PORT", 8080);
   const runtimeImage = env("OPENCLAW_RUNTIME_IMAGE", "openclaw-managed-runtime/agent:latest");
+  // hostStateRoot is the host-side path, needed by dockerode for bind
+  // mounts on spawned agent containers. The actual Docker daemon resolves
+  // paths against the host filesystem, not the orchestrator's.
   const hostStateRoot = env("OPENCLAW_HOST_STATE_ROOT", "/var/openclaw/sessions");
+  // stateRoot is the in-process path of the SAME directory as seen from
+  // inside the orchestrator container. The JSONL reader opens files via
+  // this path. In docker-compose the two point to the same volume; in
+  // local dev (pnpm dev) both must be set to the host directory.
+  const stateRoot = env("OPENCLAW_STATE_ROOT", "/var/openclaw/sessions");
   const network = env("OPENCLAW_DOCKER_NETWORK", "openclaw-net");
   const gatewayPort = envInt("OPENCLAW_GATEWAY_PORT", 18789);
   const readyTimeoutMs = envInt("OPENCLAW_READY_TIMEOUT_MS", 60_000);
@@ -138,6 +150,10 @@ async function main(): Promise<void> {
   const passthroughEnv = collectPassthroughEnv();
   const passthroughEnvKeys = Object.keys(passthroughEnv).sort();
 
+  // Event reader. Parses OpenClaw's per-session JSONL on the mounted state
+  // directory at query time; the orchestrator never writes to those files.
+  const eventReader = new PiJsonlEventReader(stateRoot);
+
   // Per-session container pool. isBusy closes over the session store so the
   // sweeper can skip containers whose session currently has a run in flight
   // — the pool itself has no store dependency.
@@ -157,18 +173,13 @@ async function main(): Promise<void> {
     runTimeoutMs,
   };
 
-  const router = new AgentRouter(
-    store.agents,
-    store.sessions,
-    store.events,
-    pool,
-    routerCfg,
-  );
+  const router = new AgentRouter(store.agents, store.sessions, pool, routerCfg);
 
   console.log(`[orchestrator] OpenClaw Managed Runtime v${version} starting`);
   console.log(`[orchestrator] runtime image: ${runtimeImage}`);
   console.log(`[orchestrator] docker network: ${network}`);
   console.log(`[orchestrator] host state root: ${hostStateRoot}`);
+  console.log(`[orchestrator] state root (in-process): ${stateRoot}`);
   console.log(
     `[orchestrator] store: ${storeBackend}${storePath ? ` (${storePath})` : ""}`,
   );
@@ -202,7 +213,7 @@ async function main(): Promise<void> {
     {
       agents: store.agents,
       sessions: store.sessions,
-      events: store.events,
+      events: eventReader,
       router,
       version,
     },

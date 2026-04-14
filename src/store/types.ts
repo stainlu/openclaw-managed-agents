@@ -1,8 +1,6 @@
 import type {
   AgentConfig,
   CreateAgentRequest,
-  Event,
-  EventType,
   Session,
 } from "../orchestrator/types.js";
 
@@ -10,6 +8,11 @@ import type {
 // better-sqlite3) are both sync. If a future backend needs async I/O — a
 // remote Postgres, a hosted KV — the interface will migrate to async at that
 // point. Don't introduce speculative async today.
+//
+// Events are NOT part of the store. They live in OpenClaw's per-session
+// JSONL on the host mount, written by OpenClaw's SessionManager. The
+// orchestrator reads them via PiJsonlEventReader (src/store/pi-jsonl.ts) at
+// query time; there is no orchestrator-side event log to keep in sync.
 
 export interface AgentStore {
   create(req: CreateAgentRequest): AgentConfig;
@@ -42,32 +45,14 @@ export interface SessionStore {
   failRunningSessions(reason: string): number;
 }
 
-export interface AppendEventInput {
-  sessionId: string;
-  type: EventType;
-  content: string;
-  tokensIn?: number;
-  tokensOut?: number;
-  costUsd?: number;
-  model?: string;
-}
-
-export interface EventStore {
-  append(input: AppendEventInput): Event;
-  listBySession(sessionId: string): Event[];
-  latestAgentMessage(sessionId: string): Event | undefined;
-  deleteBySession(sessionId: string): void;
-}
-
 /**
  * The bundled store. buildStore() returns one of these; the router and server
- * receive the three leaves individually so they stay agnostic of which backend
+ * receive the two leaves individually so they stay agnostic of which backend
  * is in use.
  */
 export interface Store {
   readonly agents: AgentStore;
   readonly sessions: SessionStore;
-  readonly events: EventStore;
   /** Closes any backing file handles or connections. Safe to call more than once. */
   close(): void;
 }

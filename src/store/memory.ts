@@ -2,17 +2,9 @@ import { customAlphabet } from "nanoid";
 import type {
   AgentConfig,
   CreateAgentRequest,
-  Event,
   Session,
 } from "../orchestrator/types.js";
-import type {
-  AgentStore,
-  AppendEventInput,
-  EventStore,
-  RunUsage,
-  SessionStore,
-  Store,
-} from "./types.js";
+import type { AgentStore, RunUsage, SessionStore, Store } from "./types.js";
 
 const nanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 12);
 
@@ -124,59 +116,15 @@ class InMemorySessionStore implements SessionStore {
   }
 }
 
-// ---------- Events ----------
-
-class InMemoryEventStore implements EventStore {
-  private readonly bySession = new Map<string, Event[]>();
-
-  append(input: AppendEventInput): Event {
-    const event: Event = {
-      eventId: `evt_${nanoid()}`,
-      sessionId: input.sessionId,
-      type: input.type,
-      content: input.content,
-      createdAt: Date.now(),
-      tokensIn: input.tokensIn,
-      tokensOut: input.tokensOut,
-      costUsd: input.costUsd,
-      model: input.model,
-    };
-    const existing = this.bySession.get(input.sessionId) ?? [];
-    existing.push(event);
-    this.bySession.set(input.sessionId, existing);
-    return event;
-  }
-
-  listBySession(sessionId: string): Event[] {
-    return this.bySession.get(sessionId) ?? [];
-  }
-
-  latestAgentMessage(sessionId: string): Event | undefined {
-    const events = this.bySession.get(sessionId);
-    if (!events) return undefined;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
-      if (e && e.type === "agent.message") return e;
-    }
-    return undefined;
-  }
-
-  deleteBySession(sessionId: string): void {
-    this.bySession.delete(sessionId);
-  }
-}
-
 // ---------- Bundle ----------
 
 export class InMemoryStore implements Store {
   readonly agents: AgentStore;
   readonly sessions: SessionStore;
-  readonly events: EventStore;
 
   constructor() {
     this.agents = new InMemoryAgentStore();
     this.sessions = new InMemorySessionStore();
-    this.events = new InMemoryEventStore();
   }
 
   close(): void {
