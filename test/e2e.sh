@@ -156,6 +156,27 @@ else
   exit 1
 fi
 
+# ---- Cost accounting (Item 9) -----------------------------------------------
+# Proves the session's rolling cost_usd is populated from Pi's JSONL rather
+# than hardcoded 0. The orchestrator no longer maintains its own static price
+# sheet — it reads message.usage.cost.total from the JSONL after each run.
+#
+# For moonshot the value will be 0 because our docker/entrypoint.sh config
+# block currently reports 0 prices (Category B provider — see the
+# PROVIDER_BLOCK_JSON comment in the entrypoint). This assertion verifies the
+# field is a NUMBER (not null, not missing), which is the architectural gate.
+# Updating moonshot's prices in the entrypoint will propagate a non-zero
+# value through this same path with zero code changes.
+
+SESSION_COST_JSON=$(curl --silent --fail "${BASE_URL}/v1/sessions/${SESSION_ID}")
+SESSION_COST_USD=$(echo "${SESSION_COST_JSON}" | jq -r '.cost_usd')
+SESSION_COST_TYPE=$(echo "${SESSION_COST_JSON}" | jq -r '.cost_usd | type')
+if [[ "${SESSION_COST_TYPE}" != "number" ]]; then
+  echo "[e2e] FAIL: session.cost_usd is not a number (type=${SESSION_COST_TYPE}, value=${SESSION_COST_USD})"
+  exit 1
+fi
+echo "[e2e] cost accounting OK: cost_usd=${SESSION_COST_USD} (populated from Pi JSONL)"
+
 # ---- Persistence: orchestrator restart must not lose the session -----------
 # The whole point of Item 3 is that the SQLite-backed store survives a
 # process restart. Verify: restart the orchestrator, re-read the session

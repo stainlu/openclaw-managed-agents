@@ -197,6 +197,7 @@ async function main(): Promise<void> {
   const router = new AgentRouter(
     store.agents,
     store.sessions,
+    eventReader,
     pool,
     eventQueue,
     routerCfg,

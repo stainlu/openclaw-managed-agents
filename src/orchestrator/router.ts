@@ -1,6 +1,7 @@
 import type { Container, Mount, SpawnOptions } from "../runtime/container.js";
 import { GatewayWsError } from "../runtime/gateway-ws.js";
 import type { SessionContainerPool } from "../runtime/pool.js";
+import type { PiJsonlEventReader } from "../store/pi-jsonl.js";
 import type { AgentStore, RunUsage, SessionStore } from "../store/types.js";
 import type { SessionEventQueue } from "./event-queue.js";
 import type { AgentConfig, Session } from "./types.js";
@@ -42,6 +43,7 @@ export class AgentRouter {
   constructor(
     private readonly agents: AgentStore,
     private readonly sessions: SessionStore,
+    private readonly events: PiJsonlEventReader,
     private readonly pool: SessionContainerPool,
     private readonly queue: SessionEventQueue,
     private readonly cfg: RouterConfig,
@@ -258,10 +260,26 @@ export class AgentRouter {
       content,
       sessionKey: sessionId,
     });
+
+    // Item 9 — cost accounting. Pi's provider plugins compute the
+    // authoritative per-turn cost from their catalogs (cache-aware: a
+    // cacheRead-heavy turn pays the cache-read rate, not the normal
+    // input rate) and write it to message.usage.cost.total in the JSONL.
+    // PiJsonlEventReader already surfaces that as agent.message.costUsd,
+    // so the orchestrator reads the single source of truth rather than
+    // maintaining a separate static price sheet that would drift. If
+    // the provider plugin does not report cost (e.g., our moonshot
+    // config block in docker/entrypoint.sh currently hardcodes zeros),
+    // the recorded cost is 0 — not a rollup bug, just the truth per
+    // the active catalog. Updating moonshot's prices there will
+    // propagate through this path with zero code changes.
+    const latestAgent = this.events.latestAgentMessage(agent.agentId, sessionId);
+    const costUsd = latestAgent?.costUsd ?? 0;
+
     const usage: RunUsage = {
       tokensIn: completion.tokensIn,
       tokensOut: completion.tokensOut,
-      costUsd: completion.costUsd,
+      costUsd,
     };
 
     // Drain the queue, if any. When the queue has more, roll up usage
@@ -321,7 +339,7 @@ export class AgentRouter {
     token: string;
     content: string;
     sessionKey: string;
-  }): Promise<{ output: string; tokensIn: number; tokensOut: number; costUsd: number }> {
+  }): Promise<{ output: string; tokensIn: number; tokensOut: number }> {
     const url = `${args.baseUrl}/v1/chat/completions`;
     // OpenClaw's OpenAI-compatible endpoint validates the `model` field against
     // either the literal "openclaw" or the "openclaw/<agentId>" pattern — it is
@@ -376,9 +394,6 @@ export class AgentRouter {
       output,
       tokensIn: usage.prompt_tokens ?? 0,
       tokensOut: usage.completion_tokens ?? 0,
-      // Cost accounting is Item 9 — leave it zero until the per-provider price
-      // sheet lands.
-      costUsd: 0,
     };
   }
 }
