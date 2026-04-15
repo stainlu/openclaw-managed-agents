@@ -431,18 +431,18 @@ respawn mints a fresh token).
 
 This is **early development**, but the runtime is end-to-end functional and every feature below is validated against a real provider in the e2e suite. See `docs/architecture.md` for the technical design.
 
-**Shipped** (Items 1-9 on `main`):
+**Shipped** (on `main`):
 
-- **Session-centric data model.** Reusable `Agent` templates, long-lived `Session` (status `idle|running|failed`), `Event` as the interaction primitive (`user.message` / `agent.message` / `agent.error`).
-- **SQLite-backed persistent store** (`src/store/sqlite.ts`) — survives orchestrator restart; WAL journal + CHECK constraints; post-restart rehydration marks orphaned `running` sessions as `failed`.
-- **Per-session container lifecycle with idle pool** (`src/runtime/pool.ts`) — first event spawns (~15 s), subsequent turns reuse (~100 ms), `setInterval` sweeper reaps after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min).
-- **Event log read from OpenClaw's JSONL** (`src/store/pi-jsonl.ts`) — the orchestrator does not write events; Pi's `SessionManager` is the sole writer. Single source of truth, zero sync bugs.
-- **Live event streaming** via `GET /v1/sessions/:id/events?stream=true` — catch-up + tail-follow, 15 s heartbeats.
-- **Control plane via the gateway's WebSocket** (`src/runtime/gateway-ws.ts`) — cancel uses `sessions.abort`, per-event `model` field uses `sessions.patch`. Queue-when-busy behavior drains automatically in order.
-- **OpenAI-compat adapter** via `POST /v1/chat/completions` — sticky sessions via `user` field / `x-openclaw-session-key`, keyless calls create ephemeral sessions, reaped alongside their container.
-- **Per-turn cost accounting** from Pi's provider catalogs — cache-aware, read from `msg.usage.cost.total` in the JSONL. No static price sheet in the orchestrator.
-- **Delegated subagents as first-class inspectable sessions.** `callableAgents` + `maxSubagentDepth` on agent templates, HMAC-signed parent tokens, `openclaw-call-agent` CLI tool inside the container. Zero new HTTP endpoints; subagents spawn through the existing `POST /v1/sessions` + `POST /events` primitives. See [Delegated subagents](#delegated-subagents) above.
-- **Item 10a — Hetzner CAX11 (ARM) deploy path.** `scripts/deploy-hetzner.sh` + `docs/deploying-on-hetzner.md`. One command takes zero → live runtime on a €3.99/month ARM Ampere VPS in ~6 minutes. Reuses the existing `DockerContainerRuntime` (multi-arch) — no new TypeScript. The "open and cheap" proof point, picking the cheapest credible production tier in Hetzner's entire catalog. See [Cheapest production deployment](#cheapest-production-deployment--399month-on-hetzner) above.
+- **Session-centric data model** (Item 2). Reusable `Agent` templates, long-lived `Session` (status `idle|running|failed`), `Event` as the interaction primitive (`user.message` / `agent.message` / `agent.error`).
+- **SQLite-backed persistent store** (Item 3, `src/store/sqlite.ts`) — survives orchestrator restart; WAL journal + CHECK constraints; post-restart rehydration marks orphaned `running` sessions as `failed`.
+- **Per-session container lifecycle with idle pool** (Item 4, `src/runtime/pool.ts`) — first event spawns (~15 s), subsequent turns reuse (~100 ms), `setInterval` sweeper reaps after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min).
+- **Event log read from OpenClaw's JSONL** (Item 5, `src/store/pi-jsonl.ts`) — the orchestrator does not write events; Pi's `SessionManager` is the sole writer. Single source of truth, zero sync bugs.
+- **Live event streaming** (Item 6) via `GET /v1/sessions/:id/events?stream=true` — catch-up + tail-follow, 15 s heartbeats.
+- **Control plane via the gateway's WebSocket** (Item 7, `src/runtime/gateway-ws.ts`) — cancel uses `sessions.abort`, per-event `model` field uses `sessions.patch`. Queue-when-busy behavior drains automatically in order.
+- **OpenAI-compat adapter** (Item 8) via `POST /v1/chat/completions` — sticky sessions via `user` field / `x-openclaw-session-key`, keyless calls create ephemeral sessions, reaped alongside their container.
+- **Per-turn cost accounting** (Item 9) from Pi's provider catalogs — cache-aware, read from `msg.usage.cost.total` in the JSONL. No static price sheet in the orchestrator.
+- **Delegated subagents as first-class inspectable sessions** (Items 12-14). `callableAgents` + `maxSubagentDepth` on agent templates, HMAC-signed parent tokens, `openclaw-call-agent` CLI tool inside the container. Zero new HTTP endpoints; subagents spawn through the existing `POST /v1/sessions` + `POST /events` primitives. See [Delegated subagents](#delegated-subagents) above.
+- **Hetzner Cloud deploy path** (Item 10a). `scripts/deploy-hetzner.sh` + `docs/deploying-on-hetzner.md`. One command takes zero → live runtime on a **€3.99/month Hetzner CAX11** (ARM Ampere) or **€4.99/month CX23** (Intel x86) in ~6 minutes. Reuses the existing `DockerContainerRuntime` end-to-end. Verified live on 2026-04-15: 78 s cold turn, 4 s pool-reuse turn, correct agent replies on `moonshot/kimi-k2.5`. The "open and cheap" proof point. See [Cheapest production deployment](#cheapest-production-deployment--399month-on-hetzner) above.
 
 **Next** (Items 10b-11):
 
@@ -453,10 +453,11 @@ This is **early development**, but the runtime is end-to-end functional and ever
 - **Item 10f+ — Fly.io, Bedrock AgentCore, Render, Railway, etc.** Additional adapters as partnership conversations open up. None require orchestrator core changes — `ContainerRuntime` interface already does the right thing.
 - **Item 11 — upstream OpenClaw contributions.** `defineSingleProviderPluginEntry` auto-register fix (eliminates the `PROVIDER_BLOCK_JSON` hack for Category B providers), and an HTTP/SSE wrapper around the Pi event bus for real delta streaming in chat.completions. Run in parallel with 10b/c/d/e.
 
-**Later** (Items 12-14):
+**Later** (post-milestone enhancements):
 
-- **Multi-tenant delegated subagents at scale.** The current Item 12-14 release ships per-agent-template `callableAgents` + `maxSubagentDepth` + HMAC parent tokens; "Later" work adds tenant isolation, cross-tenant quota enforcement, and tree-view UI tooling for deeply nested delegations.
-- **Enterprise features.** Multi-tenant orchestrator with auth, quotas, and per-tenant isolation. Audit logs. Policy enforcement. BYO-KMS.
+- **Multi-tenant orchestrator.** The current release is single-tenant (one orchestrator instance, one set of agents + sessions). Multi-tenant work adds per-tenant auth, quotas, isolation, and scoped resource views on top of the existing store layer.
+- **Multi-tenant delegated subagents at scale.** Items 12-14 shipped the single-tenant mechanism (`callableAgents` allowlist + `maxSubagentDepth` + HMAC parent tokens); later work extends this with cross-tenant quota enforcement and tree-view tooling for deeply nested delegation observability.
+- **Enterprise features.** Audit logs, policy enforcement hooks, BYO-KMS for the parent-token secret, SSO, RBAC.
 
 **Out of scope** (deliberate, never becomes milestone work):
 

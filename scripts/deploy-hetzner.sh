@@ -174,15 +174,15 @@ write_files:
     content: |
       # Listen on both port 22 (standard) and port 222 (workaround).
       # Ubuntu 24.04 uses systemd socket activation for sshd (ssh.socket),
-      # so adding a Port directive to /etc/ssh/sshd_config.d is NOT enough
-      # \u2014 the socket owns the bind. This drop-in resets ListenStream and
-      # sets both ports explicitly. The bootstrap script below runs
-      # `systemctl daemon-reload && systemctl restart ssh.socket` to apply.
+      # so adding a Port directive to /etc/ssh/sshd_config.d is NOT enough:
+      # the socket unit owns the bind. This drop-in resets ListenStream and
+      # sets both ports explicitly. The bootstrap script below runs a
+      # daemon-reload plus a restart of ssh.socket to apply.
       #
       # Some ISPs and corporate networks block outbound SSH to port 22 on
-      # cloud provider IP ranges (notably Hetzner), so opening 222 as an
+      # cloud provider IP ranges (notably Hetzner); opening 222 as an
       # alternate is a reliable safety net. Remove this file on a deployed
-      # server if you don't need the extra port.
+      # server if you do not need the extra port.
       [Socket]
       ListenStream=
       ListenStream=22
