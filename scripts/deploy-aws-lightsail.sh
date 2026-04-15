@@ -142,99 +142,90 @@ printf "    Bundle:            %s\n" "${BUNDLE_ID}"
 printf "    Blueprint:         %s\n" "${BLUEPRINT_ID}"
 
 # ------------------------------------------------------------------------------
-# Render the cloud-init user-data
+# Render the user-data as a pure shell script
 # ------------------------------------------------------------------------------
 #
-# Lightsail's create-instances accepts --user-data as a STRING, not a file path,
-# so we build the full cloud-init content in a variable and pass it inline.
-# The content mirrors the Hetzner deploy script so the in-container behavior is
-# identical across clouds.
+# AWS Lightsail PREPENDS its own `#!/bin/sh` boot script to every instance's
+# user-data before cloud-init sees it (to install Lightsail's browser-SSH CA
+# into /etc/ssh/sshd_config). This means cloud-init's content-type detection
+# reads `#!/bin/sh` as the first line and treats the ENTIRE user-data as a
+# shell script — NOT as cloud-config YAML. Any `#cloud-config`, `write_files`,
+# `ssh_authorized_keys`, or `runcmd` directives are silently ignored.
+#
+# The Hetzner deploy uses cloud-config YAML and works because Hetzner doesn't
+# prepend anything. On Lightsail we must write the user-data as pure shell.
+# Lightsail's prepended script runs first (configures the SSH CA), then our
+# script runs after. The outputs of both go to /var/log/cloud-init-output.log.
+#
+# Notable differences from the cloud-config version:
+#   - SSH key is written directly to /home/ubuntu/.ssh/authorized_keys (Ubuntu
+#     blueprint's default user is `ubuntu`, not `root`) instead of via the
+#     cloud-config `ssh_authorized_keys:` directive.
+#   - ssh.socket drop-in is written with `cat > file <<'HERE'` using a QUOTED
+#     heredoc delimiter to prevent any variable expansion inside the config.
+#   - Package install + Docker install are imperative `apt-get install` lines.
+#   - The .env file is written via `printf` (not a nested heredoc) to avoid
+#     any heredoc-inside-heredoc terminator matching bugs.
 
-log "Rendering cloud-init user-data with ${PROVIDER_KEY_NAME}"
+log "Rendering user-data (pure shell for Lightsail)"
 
-USER_DATA="$(cat <<CLOUDINIT
-#cloud-config
-package_update: true
-package_upgrade: false
+# The user-data is rendered as pure shell, and it contains NO `$(cmd)` or
+# backtick command substitutions — those would confuse bash's outer heredoc
+# parser on the Mac side (it can't distinguish `\$(...)` from a real command
+# substitution and tries to find the matching `)`, producing a cryptic
+# "unexpected EOF" at heredoc-open-time). Anywhere we need runtime command
+# output on the server, we use hardcoded values (amd64 / noble) or a
+# separately-rendered piece of shell that avoids parens entirely. We also
+# drop the in-user-data healthz poll loop because the deploy script polls
+# /healthz from the Mac side after create-instances returns.
 
-ssh_authorized_keys:
-  - ${SSH_PUBKEY_CONTENT}
+USER_DATA="$(cat <<USERDATA
+set -eux
 
-packages:
-  - apt-transport-https
-  - ca-certificates
-  - curl
-  - git
-  - gnupg
-  - jq
-  - lsb-release
+# --- Add the operator's SSH public key to ubuntu's authorized_keys ---
+install -o ubuntu -g ubuntu -m 0700 -d /home/ubuntu/.ssh
+printf '%s\\n' '${SSH_PUBKEY_CONTENT}' >> /home/ubuntu/.ssh/authorized_keys
+chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
+chmod 0600 /home/ubuntu/.ssh/authorized_keys
 
-write_files:
-  - path: /etc/systemd/system/ssh.socket.d/override.conf
-    permissions: '0644'
-    content: |
-      # Listen on both port 22 (standard) and port 222 (workaround).
-      # Ubuntu 24.04 uses systemd socket activation for sshd (ssh.socket),
-      # so adding a Port directive to /etc/ssh/sshd_config.d is NOT enough:
-      # the socket unit owns the bind. This drop-in resets ListenStream and
-      # sets both ports explicitly. The bootstrap script below runs a
-      # daemon-reload plus a restart of ssh.socket to apply.
-      #
-      # Some ISPs and corporate networks block outbound SSH to port 22 on
-      # cloud provider IP ranges; opening 222 as an alternate is a reliable
-      # safety net. Remove this file on a deployed instance if you do not
-      # need the extra port.
-      [Socket]
-      ListenStream=
-      ListenStream=22
-      ListenStream=222
-  - path: /opt/openclaw-bootstrap.sh
-    permissions: '0755'
-    content: |
-      #!/usr/bin/env bash
-      set -euxo pipefail
+# --- DO NOT touch sshd on Lightsail. The Lightsail Ubuntu image runs sshd as
+# ssh.service (not socket-activated), and overriding ssh.socket.d/override.conf
+# causes the unit to conflict with ssh.service and breaks BOTH sshd AND the
+# Lightsail browser-based SSH console (UPSTREAM_ERROR 515). The port-222 ISP
+# workaround from deploy-hetzner.sh does not help on Lightsail anyway: most
+# ISPs that block port 22 to cloud IPs also block alternate high ports.
+# Rely on the Lightsail browser-based SSH console for any interactive debug,
+# and the deploy script /healthz poll for correctness validation.
 
-      # --- Restart ssh.socket so it picks up the Port 222 ListenStream override ---
-      systemctl daemon-reload
-      systemctl restart ssh.socket || systemctl restart ssh || true
+# --- Install baseline packages ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y apt-transport-https ca-certificates curl git gnupg jq lsb-release
 
-      # --- Install Docker via the official Docker repo ---
-      install -m 0755 -d /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-      chmod a+r /etc/apt/keyrings/docker.asc
-      echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \$(. /etc/os-release && echo \$VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
-      apt-get update -y
-      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      systemctl enable --now docker
+# --- Install Docker from the official Docker apt repo ---
+# Hardcoded amd64 + noble because Lightsail ubuntu_24_04 is always x86 + noble.
+# Avoiding \$(dpkg --print-architecture) here because it breaks the outer
+# heredoc render on the Mac side.
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
 
-      # --- Clone the runtime repo ---
-      git clone --depth 1 --branch ${REPO_BRANCH} ${REPO_URL} /opt/openclaw
-      cd /opt/openclaw
-      mkdir -p data/sessions data/state
+# --- Clone the runtime repo ---
+git clone --depth 1 --branch '${REPO_BRANCH}' '${REPO_URL}' /opt/openclaw
+cd /opt/openclaw
+mkdir -p data/sessions data/state
 
-      # --- Write .env with the provider API key ---
-      cat > .env <<ENVFILE
-      ${PROVIDER_KEY_NAME}=${PROVIDER_KEY_VALUE}
-      OPENCLAW_TEST_MODEL=${DEFAULT_TEST_MODEL}
-      ENVFILE
+# --- Write .env via printf (no nested heredoc) ---
+printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' > .env
 
-      # --- Bring up the stack ---
-      docker compose up -d --build
-
-      # --- Health-check loop (up to 10 min) ---
-      for i in \$(seq 1 120); do
-          if curl -sf http://127.0.0.1:${ORCH_PORT}/healthz >/dev/null; then
-              echo "orchestrator ready after \${i} probes" > /var/log/openclaw-ready.log
-              exit 0
-          fi
-          sleep 5
-      done
-      echo "orchestrator did not become ready after 10 minutes" > /var/log/openclaw-ready.log
-      exit 1
-
-runcmd:
-  - bash /opt/openclaw-bootstrap.sh 2>&1 | tee /var/log/openclaw-bootstrap.log
-CLOUDINIT
+# --- Bring up the stack (the deploy script polls /healthz from outside) ---
+docker compose up -d --build
+echo "user-data bootstrap complete" > /var/log/openclaw-ready.log
+USERDATA
 )"
 
 # ------------------------------------------------------------------------------
