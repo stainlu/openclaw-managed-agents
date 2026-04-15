@@ -270,6 +270,35 @@ curl -N "http://localhost:8080/v1/sessions/${SESSION}/events?stream=true"
 # ...
 ```
 
+## Cheapest production deployment — €3.99/month on Hetzner
+
+> **Run the full managed agent runtime on a €3.99/month Hetzner CAX11 (ARM Ampere).** One command, ~6 minutes from zero to live. Real VPS, real production, real provider APIs — no session-hour tax, no vendor lock-in, no markup. [Deploy guide →](./docs/deploying-on-hetzner.md)
+
+```bash
+export HCLOUD_TOKEN=<paste-your-token-here>  # https://console.hetzner.cloud → Security → API Tokens (no prefix, ~64 chars)
+export MOONSHOT_API_KEY=sk-...      # or ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / ...
+./scripts/deploy-hetzner.sh
+```
+
+This is the "open and cheap" proof point for the runtime. Same code, same architecture, same tests — deployed on a German VPS for less than a daily coffee.
+
+### Backend cost comparison
+
+| Backend | Per-session compute cost | Base monthly cost | Status |
+|---|---|---|---|
+| **Hetzner CAX11** (ARM, this runtime, 10a) | **<€0.001 / session** | **€3.99 net / €4.35 gross** | ✅ Shipped — [deploy guide](./docs/deploying-on-hetzner.md) |
+| Cloudflare Containers (10b, GA'd April 13 2026) | ~$0.005 / active turn | $5 Workers Paid (25 GB-hr + 375 vCPU-min + 200 GB-hr included) | 🔜 Next |
+| Google Cloud Run (10c) | ~$0.009 / active turn | $0 | 🔜 Later |
+| AWS Fargate (10d) | ~$0.035 / hour always-on | $0 | 🔜 Later |
+| Azure Container Apps (10e) | Similar to Cloud Run | $0 | 🔜 Later |
+| **Claude Managed Agents (baseline)** | **$0.08 / hour + tokens** | n/a | closed-source |
+
+For an idle-heavy chat workload (typical managed agent use case — 5 minutes of active model time spread across an hour), Hetzner is **~17x cheaper on compute** than Claude Managed Agents. Token costs are identical on every backend because they're billed by the LLM provider, not the runtime.
+
+> **Run on a €4 Hetzner VPS, on Cloudflare's edge across 330+ cities, or on any major cloud. Open. Cheap. Yours.**
+
+*10a is shipped and measured. 10b-10e numbers above are published pricing from each backend's docs and will be replaced with measured per-session costs as each adapter ships.*
+
 ## Delegated subagents
 
 > **Every agent in OpenClaw Managed Runtime is an inspectable session. That includes subagents.**
@@ -412,13 +441,16 @@ This is **early development**, but the runtime is end-to-end functional and ever
 - **OpenAI-compat adapter** via `POST /v1/chat/completions` — sticky sessions via `user` field / `x-openclaw-session-key`, keyless calls create ephemeral sessions, reaped alongside their container.
 - **Per-turn cost accounting** from Pi's provider catalogs — cache-aware, read from `msg.usage.cost.total` in the JSONL. No static price sheet in the orchestrator.
 - **Delegated subagents as first-class inspectable sessions.** `callableAgents` + `maxSubagentDepth` on agent templates, HMAC-signed parent tokens, `openclaw-call-agent` CLI tool inside the container. Zero new HTTP endpoints; subagents spawn through the existing `POST /v1/sessions` + `POST /events` primitives. See [Delegated subagents](#delegated-subagents) above.
+- **Item 10a — Hetzner CAX11 (ARM) deploy path.** `scripts/deploy-hetzner.sh` + `docs/deploying-on-hetzner.md`. One command takes zero → live runtime on a €3.99/month ARM Ampere VPS in ~6 minutes. Reuses the existing `DockerContainerRuntime` (multi-arch) — no new TypeScript. The "open and cheap" proof point, picking the cheapest credible production tier in Hetzner's entire catalog. See [Cheapest production deployment](#cheapest-production-deployment--399month-on-hetzner) above.
 
-**Next** (Items 10-11):
+**Next** (Items 10b-11):
 
-- **Cloud container backends.** `ContainerRuntime` adapters for AWS ECS/Fargate, GCP Cloud Run, Azure Container Apps — drop-in, no orchestrator core changes.
-- **Cloud-native session storage.** S3 / GCS / Azure Blob / Aliyun OSS / Volcengine TOS behind the same host-mount contract.
-- **Cloud secrets integration.** `SecretRef`-style pulls from AWS Secrets Manager / GCP Secret Manager / Azure Key Vault, replacing env-var passthrough.
-- **Upstream contributions** to OpenClaw: `defineSingleProviderPluginEntry` auto-register fix (eliminates the `PROVIDER_BLOCK_JSON` hack for Category B providers), and an HTTP/SSE wrapper around the Pi event bus if the orchestrator grows real-time delta forwarding.
+- **Item 10b — Cloudflare Containers adapter.** New `CloudflareContainersContainerRuntime` + R2 session backend. Cloudflare Containers GA'd April 13, 2026 — edge-distributed across 330+ cities, $5/mo Workers Paid base, 180-320 ms cold start, $0.025/GB egress (3.6x cheaper than AWS). **First managed agent runtime to ship on Cloudflare Containers.**
+- **Item 10c — Google Cloud Run adapter.** Scale-to-zero request-based billing; GCS session backend. ~$0.009 per 5-minute active turn.
+- **Item 10d — AWS Fargate adapter.** Always-on shared-vCPU pricing + S3 session backend. AWS partnership hook with Bedrock model access.
+- **Item 10e — Azure Container Apps adapter.** Consumption-plan scale-to-zero + Azure Blob session backend. Azure partnership hook.
+- **Item 10f+ — Fly.io, Bedrock AgentCore, Render, Railway, etc.** Additional adapters as partnership conversations open up. None require orchestrator core changes — `ContainerRuntime` interface already does the right thing.
+- **Item 11 — upstream OpenClaw contributions.** `defineSingleProviderPluginEntry` auto-register fix (eliminates the `PROVIDER_BLOCK_JSON` hack for Category B providers), and an HTTP/SSE wrapper around the Pi event bus for real delta streaming in chat.completions. Run in parallel with 10b/c/d/e.
 
 **Later** (Items 12-14):
 
