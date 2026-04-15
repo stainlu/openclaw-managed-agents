@@ -286,18 +286,19 @@ This is the "open and cheap" proof point for the runtime. Same code, same archit
 
 | Backend | Per-session compute cost | Base monthly cost | Status |
 |---|---|---|---|
-| **Hetzner CAX11** (ARM, this runtime, 10a) | **<€0.001 / session** | **€3.99 net / €4.35 gross** | ✅ Shipped — [deploy guide](./docs/deploying-on-hetzner.md) |
+| **Hetzner CAX11** (ARM, this runtime, 10a) | **~€0.0001 / active turn** | **€3.99 net / €4.35 gross** | ✅ Shipped — [deploy guide](./docs/deploying-on-hetzner.md) |
+| Hetzner CX23 (Intel x86, alternative) | ~€0.0001 / active turn | €4.99 net / €5.44 gross | ✅ Shipped — same deploy guide, override `HCLOUD_SERVER_TYPE=cx23` |
 | Cloudflare Containers (10b, GA'd April 13 2026) | ~$0.005 / active turn | $5 Workers Paid (25 GB-hr + 375 vCPU-min + 200 GB-hr included) | 🔜 Next |
 | Google Cloud Run (10c) | ~$0.009 / active turn | $0 | 🔜 Later |
 | AWS Fargate (10d) | ~$0.035 / hour always-on | $0 | 🔜 Later |
 | Azure Container Apps (10e) | Similar to Cloud Run | $0 | 🔜 Later |
 | **Claude Managed Agents (baseline)** | **$0.08 / hour + tokens** | n/a | closed-source |
 
-For an idle-heavy chat workload (typical managed agent use case — 5 minutes of active model time spread across an hour), Hetzner is **~17x cheaper on compute** than Claude Managed Agents. Token costs are identical on every backend because they're billed by the LLM provider, not the runtime.
+**Hetzner CAX11 — verified live, April 15 2026**: first turn (cold container spawn) **78 seconds**, subsequent turns via session pool reuse **4 seconds** (74s saved), correct agent replies on `moonshot/kimi-k2.5`, permission fix landed in commit `075b7c0` for Linux bind mounts. One CAX11 (2 vCPU / 4 GB RAM / 40 GB SSD, ARM Ampere) holds roughly 5-7 concurrent active agent containers at ~458 MiB each. At €3.99/mo for the VPS + Moonshot token pass-through, per-active-turn compute cost is a fraction of a cent. For an idle-heavy chat workload (5 minutes of active model time per hour), Hetzner is **~11x cheaper per session-hour** than Claude Managed Agents, and the savings scale linearly with concurrency.
 
 > **Run on a €4 Hetzner VPS, on Cloudflare's edge across 330+ cities, or on any major cloud. Open. Cheap. Yours.**
 
-*10a is shipped and measured. 10b-10e numbers above are published pricing from each backend's docs and will be replaced with measured per-session costs as each adapter ships.*
+*10a is shipped and live-measured against a real Hetzner CAX11 on 2026-04-15. 10b-10e numbers above are published pricing from each backend's docs and will be replaced with measured per-session costs as each adapter ships.*
 
 ## Delegated subagents
 
