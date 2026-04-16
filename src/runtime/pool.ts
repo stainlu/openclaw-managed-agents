@@ -59,9 +59,20 @@ type ActiveContainer = {
   lastUsedAt: number;
 };
 
+/** A pre-warmed container waiting to be claimed by a session. */
+type WarmContainer = {
+  agentId: string;
+  container: Container;
+  wsClient: GatewayWebSocketClient;
+  spawnOptions: SpawnOptions;
+  spawnedAt: number;
+};
+
 export class SessionContainerPool {
   private readonly active = new Map<string, ActiveContainer>();
   private readonly pending = new Map<string, Promise<Container>>();
+  /** Pre-warmed containers keyed by agentId, waiting to be claimed. */
+  private readonly warm = new Map<string, WarmContainer>();
   private sweeperHandle: NodeJS.Timeout | undefined;
 
   constructor(
@@ -79,20 +90,82 @@ export class SessionContainerPool {
   }
 
   /**
-   * Get a ready container for the given session. If the pool already has one
-   * for this session, returns it and bumps lastUsedAt. Otherwise spawns a
-   * fresh one via the underlying runtime and waits for `/readyz` before
-   * returning. On any failure during spawn or readiness, the pool is left
-   * clean for the session — callers can safely retry.
+   * Pre-warm a container for an agent template. The container boots fully
+   * (spawn + /readyz + WS handshake) and waits in the warm bucket until
+   * claimed by a session via acquireForSession(). Fire-and-forget — the
+   * caller does not wait for completion. Silently no-ops if a warm
+   * container already exists for this agent.
+   */
+  async warmForAgent(agentId: string, spawnOptions: SpawnOptions): Promise<void> {
+    if (this.warm.has(agentId)) return;
+    const container = await this.runtime.spawn(spawnOptions);
+    try {
+      await this.runtime.waitForReady(container, this.cfg.readyTimeoutMs);
+    } catch (err) {
+      await this.runtime.stop(container.id).catch(() => { /* best-effort */ });
+      throw err;
+    }
+    const wsClient = new GatewayWebSocketClient({
+      baseUrl: container.baseUrl,
+      token: container.token,
+      clientName: "openclaw-managed-agents",
+    });
+    try {
+      await wsClient.connect();
+    } catch (err) {
+      await wsClient.close().catch(() => { /* best-effort */ });
+      await this.runtime.stop(container.id).catch(() => { /* best-effort */ });
+      throw err;
+    }
+    this.warm.set(agentId, {
+      agentId,
+      container,
+      wsClient,
+      spawnOptions,
+      spawnedAt: Date.now(),
+    });
+    console.log(`[pool] pre-warmed container for agent ${agentId}`);
+  }
+
+  /**
+   * Get a ready container for the given session. Checks three sources in
+   * order: (1) existing active container for this session, (2) pre-warmed
+   * container matching the agent, (3) fresh spawn. Bumps lastUsedAt.
    */
   async acquireForSession(args: {
     sessionId: string;
     spawnOptions: SpawnOptions;
+    /** Agent ID for warm-pool matching. */
+    agentId?: string;
   }): Promise<Container> {
     const existing = this.active.get(args.sessionId);
     if (existing) {
       existing.lastUsedAt = Date.now();
       return existing.container;
+    }
+
+    // Check the warm pool for a matching pre-warmed container.
+    if (args.agentId) {
+      const warmEntry = this.warm.get(args.agentId);
+      if (warmEntry) {
+        this.warm.delete(args.agentId);
+        const now = Date.now();
+        this.active.set(args.sessionId, {
+          sessionId: args.sessionId,
+          container: warmEntry.container,
+          wsClient: warmEntry.wsClient,
+          spawnedAt: warmEntry.spawnedAt,
+          lastUsedAt: now,
+        });
+        console.log(
+          `[pool] claimed pre-warmed container for session ${args.sessionId} (agent ${args.agentId})`,
+        );
+        // Replenish the warm pool in the background.
+        void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((err) => {
+          console.warn(`[pool] warm-pool replenish failed for agent ${args.agentId}:`, err);
+        });
+        return warmEntry.container;
+      }
     }
 
     // Deduplicate concurrent spawns for the same session. If a background
@@ -205,9 +278,13 @@ export class SessionContainerPool {
       this.sweeperHandle = undefined;
     }
     const entries = Array.from(this.active.values());
+    const warmEntries = Array.from(this.warm.values());
     this.active.clear();
-    await Promise.allSettled(entries.map((e) => e.wsClient.close()));
-    await Promise.allSettled(entries.map((e) => this.runtime.stop(e.container.id)));
+    this.warm.clear();
+    const all = [...entries.map((e) => ({ ws: e.wsClient, id: e.container.id })),
+      ...warmEntries.map((e) => ({ ws: e.wsClient, id: e.container.id }))];
+    await Promise.allSettled(all.map((e) => e.ws.close()));
+    await Promise.allSettled(all.map((e) => this.runtime.stop(e.id)));
   }
 
   private async reapIdle(): Promise<void> {

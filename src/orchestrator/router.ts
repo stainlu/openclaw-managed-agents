@@ -126,7 +126,26 @@ export class AgentRouter {
       return;
     }
     const spawnOptions = this.buildSpawnOptions(sessionId, agent, session);
-    await this.pool.acquireForSession({ sessionId, spawnOptions });
+    await this.pool.acquireForSession({ sessionId, spawnOptions, agentId: agent.agentId });
+  }
+
+  /**
+   * Pre-warm a container for an agent template so sessions on this agent
+   * can claim an already-booted container instead of cold-spawning.
+   * Fire-and-forget — failure is logged but not propagated.
+   */
+  async warmForAgent(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    // Build spawn options with a synthetic session context. The warm
+    // container doesn't have a real session yet; it uses a placeholder
+    // session ID in the labels (overwritten at claim time is a future
+    // improvement) and a no-delegation parent token.
+    const spawnOptions = this.buildSpawnOptions("__warm__", agent, {
+      remainingSubagentDepth: 0,
+      environmentId: null,
+    } as Session);
+    await this.pool.warmForAgent(agentId, spawnOptions);
   }
 
   /**
@@ -362,7 +381,7 @@ export class AgentRouter {
     // teardown is the pool's responsibility.
     let container: Container;
     try {
-      container = await this.pool.acquireForSession({ sessionId, spawnOptions });
+      container = await this.pool.acquireForSession({ sessionId, spawnOptions, agentId: agent.agentId });
     } catch (err) {
       throw err;
     }

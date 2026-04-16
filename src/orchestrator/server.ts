@@ -196,6 +196,11 @@ export function buildApp(deps: ServerDeps): Hono {
       return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
     }
     const agent = deps.agents.create(parsed.data);
+    // Pre-warm a container for this agent so the first session's cold-start
+    // is eliminated. Fire-and-forget — failure is non-fatal.
+    void deps.router.warmForAgent(agent.agentId).catch((err) => {
+      console.warn(`[server] warm-for-agent ${agent.agentId} failed (non-fatal):`, err);
+    });
     return c.json(agentResponse(agent));
   });
 
