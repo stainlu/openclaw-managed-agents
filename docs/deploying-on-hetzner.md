@@ -212,7 +212,7 @@ The cloud-init user-data (generated at deploy time by the script) installs Docke
 Item 10a (this guide) is the geeky-cheap proof point. The rest of Item 10 extends the story without replacing it; every backend runs the same `DockerContainerRuntime` and the same multi-arch images from GHCR:
 
 - **Item 10b — AWS Lightsail.** ✅ Shipped. $12/mo (`small_3_0`) or $24/mo (`medium_3_0`). AWS account required. See [docs/deploying-on-aws-lightsail.md](./deploying-on-aws-lightsail.md).
-- **Item 10c — Google Cloud Compute Engine.** `e2-small` / `e2-medium` via `gcloud compute instances create`. Same pattern as 10b, different CLI.
+- **Item 10c — Google Cloud Compute Engine.** ✅ Shipped. $0/mo free tier (`e2-micro` in us-east1/us-central1/us-west1), $13/mo (`e2-small`), $25/mo (`e2-medium`). See [docs/deploying-on-gcp-compute.md](./deploying-on-gcp-compute.md).
 - **Item 10d — Azure Virtual Machines.** `B2s` via `az vm create`. Azure partnership hook.
 - **Item 10e — DigitalOcean / Linode / Vultr / Oracle Cloud free tier.** One deploy script per provider, all at $0-$13/month. Oracle's Always-Free A1 tier gives 4 vCPU + 24 GB RAM for **$0 forever**.
 - **Item 10f — Optional serverless integrations** (Cloud Run, Fargate, Cloudflare Containers). Deferred, partnership-driven only. See [`docs/cloud-backends.md`](./cloud-backends.md) for the architectural decision record on why serverless containers are the wrong default for our workload.

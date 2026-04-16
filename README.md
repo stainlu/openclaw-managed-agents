@@ -189,7 +189,7 @@ The SSE stream emits an initial status event on connect and checks for status tr
 
 ## Deploy
 
-Two one-command deploy scripts, verified on real infrastructure with measured numbers.
+Three one-command deploy scripts, each using the same `DockerContainerRuntime` and the same multi-arch GHCR images.
 
 ### Hetzner Cloud (from $4/month)
 
@@ -214,13 +214,29 @@ export MOONSHOT_API_KEY=sk-...
 Measured on medium_3_0 (2 vCPU / 4 GB, $24/month): 294s cold start, 5s pool reuse, 5-7 concurrent sessions.
 [Full guide](./docs/deploying-on-aws-lightsail.md)
 
+### Google Cloud Compute Engine (from $0/month on free tier, $25/month default)
+
+```bash
+gcloud auth login                          # once per machine
+gcloud config set project <your-project>   # once per machine
+export MOONSHOT_API_KEY=sk-...
+./scripts/deploy-gcp-compute.sh
+```
+
+`e2-medium` (1 vCPU burstable / 4 GB / 20 GB PD, ~$25/month) is the default and matches the Hetzner/Lightsail capacity floor. Override `GCE_MACHINE_TYPE=e2-micro` for the Always Free tier ($0/mo in us-east1/us-central1/us-west1, 1 GB RAM — good for smoke testing). GCE's NVMe-backed disk puts first-turn cold spawn in Hetzner territory (~80 s), not Lightsail territory (~5 min).
+[Full guide](./docs/deploying-on-gcp-compute.md)
+
 ### Cost comparison (infrastructure only, no token costs)
 
 | | 1 session 24/7 | 10 sessions 24/7 | 100 sessions 24/7 |
 |---|---|---|---|
 | **Claude Managed Agents** | $57.60/mo | $576/mo | $5,760/mo |
 | **Hetzner CAX11** | $4/mo | $8/mo (2 hosts) | $73/mo (17 hosts) |
-| **AWS Lightsail** | $24/mo | $48/mo (2 hosts) | $408/mo (17 hosts) |
+| **AWS Lightsail medium_3_0** | $24/mo | $48/mo (2 hosts) | $408/mo (17 hosts) |
+| **GCE e2-medium** | $25/mo | $50/mo (2 hosts) | $425/mo (17 hosts) |
+| **GCE e2-micro (free tier)** | $0/mo* | $0/mo (1 host, 1 instance free-tier limit) | n/a |
+
+*Free tier: 1 `e2-micro` instance in us-east1, us-central1, or us-west1; 30 GB PD; 1 GB egress/month. Beyond the free tier, `e2-micro` is ~$7/mo.
 
 ## Architecture
 

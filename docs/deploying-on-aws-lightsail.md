@@ -248,7 +248,7 @@ The `scripts/deploy-aws-lightsail.sh` wrapper adds preflight checks, SSH fallbac
 
 Item 10b (this guide) is the AWS path. Upcoming Item 10 backends extend the story without replacing it:
 
-- **Item 10c — Google Cloud Compute Engine.** Targets `e2-small` / `e2-medium` via `gcloud compute instances create`. Same pattern.
+- **Item 10c — Google Cloud Compute Engine.** ✅ Shipped. $0/mo free tier (`e2-micro`) to $25/mo (`e2-medium`). See [docs/deploying-on-gcp-compute.md](./deploying-on-gcp-compute.md).
 - **Item 10d — Azure Virtual Machines.** Targets `B2s` via `az vm create`. Same pattern. Azure partnership hook.
 - **Item 10e — DigitalOcean / Linode / Vultr / Oracle Cloud free tier.** One deploy script per provider, all at $0-$13/month. Oracle's Always-Free A1 tier gives 4 vCPU + 24 GB RAM for **$0 forever** (signup is the hard part).
 - **Item 10f+ — Optional serverless integrations** (Cloud Run, Fargate, Cloudflare Containers) — deferred, partnership-driven only. See [`docs/cloud-backends.md`](./cloud-backends.md) for the architectural decision record on why serverless containers are the wrong default for our workload.
