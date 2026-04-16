@@ -28,10 +28,14 @@ A thin Node/TypeScript HTTP service built on Hono, plus a small runtime layer fo
 
 The durable state — agents and sessions. Events are NOT stored here; they live in OpenClaw's per-session JSONL on the host mount, written by Pi's `SessionManager`, and the orchestrator reads them at query time via `PiJsonlEventReader`.
 
-- **`AgentStore`** and **`SessionStore`** — interfaces in `src/store/types.ts`. Synchronous methods (both backends are sync; we don't introduce speculative async).
-- **`SqliteStore`** (default, `src/store/sqlite.ts`) — `better-sqlite3`, WAL journal mode, `foreign_keys = ON`, CHECK constraints on session status. Three tables: `agents`, `sessions` (the events table is intentionally absent — vestigial Item 3 artifact). Sessions cascade on agent delete is **off** — sessions outlive their template. Additive column migrations (e.g., the Item 8 `ephemeral` column) are gated on a `PRAGMA table_info` check and ALTER in on startup.
-- **`InMemoryStore`** (`src/store/memory.ts`) — `Map`-backed, used in tests. Same interface, so the router takes `AgentStore`/`SessionStore` (not concrete classes).
+- **`AgentStore`**, **`EnvironmentStore`**, and **`SessionStore`** — interfaces in `src/store/types.ts`. Synchronous methods (both backends are sync; we don't introduce speculative async).
+- **`SqliteStore`** (default, `src/store/sqlite.ts`) — `better-sqlite3`, WAL journal mode, `foreign_keys = ON`, CHECK constraints on session status. Four tables: `agents`, `agent_versions` (immutable version history), `environments`, `sessions`. Sessions cascade on agent delete is **off** — sessions outlive their template. Additive column migrations (e.g., `ephemeral`, `environment_id`, `version`, `archived_at`, `permission_policy_json`) are gated on `PRAGMA table_info` checks and ALTERs on startup.
+- **`InMemoryStore`** (`src/store/memory.ts`) — `Map`-backed, used in tests. Same interface, so the router takes store interfaces, not concrete classes.
 - **`buildStore`** (`src/store/index.ts`) — factory keyed on `OPENCLAW_STORE=sqlite|memory` and `OPENCLAW_STORE_PATH`.
+
+**Agent versioning**: `AgentStore.update()` implements optimistic concurrency — the caller must supply `version` (the current version they read), and the store rejects with a version conflict if it doesn't match. Each successful update inserts an immutable row into `agent_versions` and bumps the agent's version counter. No-op detection: if the update produces no field changes, the version is not bumped. `AgentStore.archive()` sets `archived_at` — archived agents block new session creation but existing sessions continue.
+
+**Environments**: `EnvironmentStore` is a simple CRUD store for container configuration templates (packages, networking). Sessions reference an environment at creation time via `environmentId`. Environment deletion is rejected (409) while sessions reference it.
 
 On startup, `store.sessions.failRunningSessions("orchestrator restarted mid-run")` marks any session still in `running` as `failed` — those runs were orphaned when the prior orchestrator process exited. SIGTERM/SIGINT wire to `store.close()` so the SQLite WAL flushes cleanly.
 
@@ -39,16 +43,17 @@ On startup, `store.sessions.failRunningSessions("orchestrator restarted mid-run"
 
 Parses OpenClaw's per-session JSONL at query time. Resolves our `session_id` → the Pi session file via `<stateRoot>/<agentId>/agents/main/sessions/sessions.json` keyed by the canonical `agent:main:<session_id>` form, then opens `<stateRoot>/<agentId>/agents/main/sessions/<piSessionId>.jsonl`.
 
-- **`listBySession(agentId, sessionId): Event[]`** — filters Pi's `type="message"` lines and maps them to our typed `Event` (user.message / agent.message). Framing records (session, model_change, thinking_level, custom.*) are skipped. Empty-content assistant messages are dropped, which filters out Pi's auto-retry noise (see the comment in `mapLineToEvent` for the full rationale).
+- **`listBySession(agentId, sessionId): Event[]`** — parses the JSONL and maps entries to typed `Event` objects. Handles four JSONL line types: `message` (user/assistant/toolResult roles), `model_change`, `thinking_level_change`, and `compaction`. Within assistant messages, extracts three content block types: `text` (→ `agent.message`), `toolCall` (→ `agent.tool_use`), and `thinking` (→ `agent.thinking`). Empty-content assistant messages are dropped (Pi's auto-retry noise). Returns 10 event types: `user.message`, `agent.message`, `agent.tool_use`, `agent.tool_result`, `agent.thinking`, `session.model_change`, `session.thinking_level_change`, `session.compaction`, plus `agent.error` (from the store) and `agent.tool_confirmation_request` (synthetic, from the orchestrator).
 - **`latestAgentMessage(agentId, sessionId): Event | undefined`** — used by (a) the server's `sessionResponse.output` computed field, (b) the router's Item 9 cost rollup, and (c) the chat-completions handler's `beforeEventId` stale-detection snapshot.
 - **`deleteBySession(agentId, sessionId)`** — called by `DELETE /v1/sessions/:id`, by the pool's `cleanupOnReap` callback for ephemeral sessions (Item 8), and by the chat-completions handler's error path.
 - **`follow(agentId, sessionId, opts)`** — async generator that yields existing events (catch-up) then tail-follows via a 250 ms poll loop. Powers `GET /v1/sessions/:id/events?stream=true` (Item 6). Terminates on `AbortSignal` or when the caller's `isSessionRunning()` predicate returns `false` AND nothing new has landed for 30 s.
 
 ### SessionContainerPool (`src/runtime/pool.ts`)
 
-One container per session, reused across turns. The first event on a session spawns + `/readyz` + WS handshake (~15 s one-time cost). Subsequent events on the same session reuse the live container and live WS client (~100 ms overhead). An unref'd `setInterval` sweeper reaps idle containers after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min).
+Two pools in one: an **active** pool (per-session, reused across turns) and a **warm** pool (per-agent, pre-booted). When an agent is created, a container boots in the background and waits in the warm bucket. The first session on that agent claims the pre-warmed container instead of cold-spawning (near-zero latency). Subsequent events reuse the active container (~100 ms overhead). An unref'd `setInterval` sweeper reaps idle active containers after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min). Warm containers are not reaped.
 
-- **`acquireForSession({sessionId, spawnOptions})`** — returns a live `Container` for the session. Spawns + waits for `/readyz` + opens the WebSocket control client if none exists; returns the existing entry otherwise. Bumps `lastUsedAt` on reuse.
+- **`warmForAgent(agentId, spawnOptions)`** — pre-boots a container (spawn + `/readyz` + WS handshake) and stores it in the warm bucket keyed by agentId. Called by the server after `POST /v1/agents`. No-ops if a warm container already exists for this agent.
+- **`acquireForSession({sessionId, spawnOptions, agentId?})`** — returns a live `Container` for the session. Checks three sources in order: (1) existing active container, (2) pre-warmed container matching the agentId, (3) fresh spawn. When claiming from the warm pool, auto-replenishes in the background. Bumps `lastUsedAt` on reuse.
 - **`getWsClient(sessionId)`** — lookup used by the router for cancel (`sessions.abort`) and per-event model override (`sessions.patch`).
 - **`evictSession(sessionId)`** — manual teardown (closes WS, stops container). Called by `DELETE /v1/sessions/:id` and the router's infra-failure path.
 - **`shutdown()`** — SIGTERM path. Clears the sweeper, closes every WS, stops every container. Best-effort (errors are swallowed so one stuck stop doesn't block the process).
@@ -67,6 +72,8 @@ Operator-role WebSocket client to each live container's gateway control plane. D
 - **`steer(sessionKey, message)`** → `sessions.steer` — interrupt the active run with a new message. Not currently wired to an HTTP surface (see "Item 7b deferred" in the plan).
 - **`send(sessionKey, message)`** → `sessions.send` — send without interrupting. Not currently wired.
 - **`patch(sessionKey, fields)`** → `sessions.patch` — mutate session fields. Used for the per-event `model` override on `POST /v1/sessions/:id/events`.
+- **`approvalResolve(id, decision, denyMessage?)`** → `plugin.approval.resolve` — resolves a pending tool-confirmation approval. Backs the `user.tool_confirmation` event type when the agent template has `always_ask` permission policy.
+- **`onEvent(eventName, handler)`** — subscribes to gateway broadcast events. Returns an unsubscribe function. Used by the orchestrator to listen for `plugin.approval.requested` events.
 - **`close()`** — shuts the socket down, rejects every outstanding request.
 
 Auth is the same `OPENCLAW_GATEWAY_TOKEN` the orchestrator uses on HTTP. The `dangerouslyDisableDeviceAuth: true` flag in the generated `openclaw.json` is safe because the gateway is bound to `openclaw-net` (a private Docker bridge), only the orchestrator ever reaches it, and the token is per-container random.
@@ -79,21 +86,27 @@ Queue is lost on orchestrator restart, consistent with Item 3's rehydration sema
 
 ### AgentRouter (`src/orchestrator/router.ts`)
 
-The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the event queue, and a config bundle. Exposes four methods:
+The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the event queue, and a config bundle. Exposes six methods:
 
-- **`createSession(agentId)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. The container is only spawned when the first event arrives.
+- **`createSession(agentId, opts?)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. Validates the agent is not archived. The container is only spawned when the first event arrives (or earlier via warm-up).
+- **`warmSession(sessionId)`** — proactively boots a container for a session so it's ready by the time the first event arrives. Called by the server right after `createSession`. Fire-and-forget.
+- **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a session.
 - **`runEvent({sessionId, content, model?})`** — idle path starts a background run (`beginRun` + fire-and-forget `executeInBackground`); running path enqueues. Returns `{session, queued}`.
-- **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled` (sets idle without recording an error). Cancellation is a deliberate stop, not an agent failure.
-- **`executeInBackground`** (private) — acquires a container via the pool, optionally applies a WS `patch` for model override, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for the Item 9 cost rollup, then either drains the queue (recursing with `addUsage` to keep status `running`) or calls `endRunSuccess`.
+- **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled`. Cancellation is a deliberate stop, not an agent failure.
+- **`confirmTool(sessionId, approvalId, decision, denyMessage?)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
+- **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model override, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
 - **`handleBackgroundFailure`** (private) — guard against overwriting a cancel's idle state with an in-flight HTTP error. If `session.status !== "running"` at catch time, the failure is a side-effect of an external cancel and we leave the session alone. Otherwise drain the queue + evict the container + `endRunFailure`.
 
 ### Server (`src/orchestrator/server.ts`)
 
 The Hono app. Every route in the API section of the README registers here. Notable pieces:
 
-- **`handleRouterError`** — centralized error translator. `RouterError` codes map to HTTP status: `agent_not_found`/`session_not_found` → 404, `session_busy`/`session_not_running` → 409, everything else → 500.
-- **`POST /v1/chat/completions`** — the OpenAI-compat handler (Item 8). Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via a `beforeEventId` snapshot taken before `runEvent` and compared to the post-wait `latestAgentMessage.eventId` — this guards the queue-drain race where a chat.completions call arrives on an already-running session. Polls every 500 ms with a 600 s cap. `stream: true` is emulated (three chunks + `[DONE]`) because we don't yet subscribe to Pi's event bus for real delta forwarding.
-- **`GET /v1/sessions/:id/events?stream=true`** — uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`, writes each event as `event: <type>, id: <eventId>, data: <json>`, plus a 15 s `heartbeat` event so intermediate proxies don't idle-kill the socket.
+- **`handleRouterError`** — centralized error translator. `RouterError` codes map to HTTP status: `agent_not_found`/`session_not_found` → 404, `session_busy`/`session_not_running`/`agent_archived` → 409, everything else → 500.
+- **Agent routes** — full CRUD plus `PATCH` (versioned update with optimistic concurrency), `GET .../versions` (immutable history), `POST .../archive` (soft-delete). `POST /v1/agents` fires `warmForAgent` in the background after creation.
+- **Environment routes** — CRUD. Deletion rejected (409) while sessions reference the environment.
+- **Session routes** — `POST /v1/sessions` validates environmentId if provided, fires proactive `warmSession` in the background. `POST /v1/sessions/:id/events` dispatches on event type: `user.message` triggers `runEvent`, `user.tool_confirmation` triggers `confirmTool`.
+- **SSE streaming** — `GET /v1/sessions/:id/events?stream=true` uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`. Emits an initial `session.status_*` event on connect, checks for status transitions on every yielded event and on every 15 s heartbeat tick, and emits a final status event when the follow loop ends.
+- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Polls every 500 ms with a 600 s cap. `stream: true` is emulated (three chunks + `[DONE]`).
 
 ### Delegated subagents (`src/runtime/parent-token.ts` + `docker/call-agent.mjs`)
 
@@ -105,6 +118,20 @@ The Item 12-14 delegation story is **entirely additive on top of the existing se
 - **Observability is a side-effect, not new plumbing.** A subagent session is a first-class `Session` — visible via `GET /v1/sessions`, inspectable via `GET /v1/sessions/:id/events`, streamable via `?stream=true`, cancellable via `POST /v1/sessions/:id/cancel`. Cost is rolled up per Item 9. The parent's `exec` tool output captures the CLI's stdout (which includes the `subagent_session_id` and `events_url`), so a reader of the parent's JSONL can navigate directly to the child.
 
 The architectural payoff: the "observability gap" documented by [three open issues on `anthropics/claude-code`](https://github.com/anthropics/claude-code/issues/2685) ([also #6007](https://github.com/anthropics/claude-code/issues/6007), [#9521](https://github.com/anthropics/claude-code/issues/9521)) and Pi's "use tmux instead" stance both exist because there is no managed runtime where subagents are first-class HTTP resources. That's the door Items 12-14 walk through.
+
+### Permission policy + confirm-tools plugin (`docker/confirm-tools-plugin/`)
+
+Agent templates support three permission policies:
+
+- **`always_allow`** (default) — all tools execute automatically
+- **`deny`** — specified tools are blocked entirely via OpenClaw's `tools.deny` config
+- **`always_ask`** — specified tools pause for client confirmation before execution
+
+The `always_ask` flow uses an OpenClaw plugin installed in the runtime container image at `/opt/openclaw-plugins/confirm-tools/`. The entrypoint copies it to `/workspace/extensions/confirm-tools/` (the plugin discovery path, derived from `OPENCLAW_STATE_DIR`) when `OPENCLAW_CONFIRM_TOOLS` is set. The plugin registers a `before_tool_call` hook via `definePluginEntry` (from `openclaw/plugin-sdk/core`) that returns `requireApproval` for matching tools. The gateway then broadcasts `plugin.approval.requested` to WS clients; the orchestrator's `GatewayWebSocketClient.onEvent()` listener receives it and can surface it as an `agent.tool_confirmation_request` SSE event. The client resolves it via `POST /v1/sessions/:id/events { type: "user.tool_confirmation", toolUseId, result }`, which the server routes to `router.confirmTool()` → `wsClient.approvalResolve()`.
+
+### Python SDK (`sdk/python/`)
+
+Typed Python client publishable to PyPI as `openclaw-managed-agents`. Uses `httpx` for HTTP and `httpx-sse` for SSE streaming. Covers the full API: `client.agents`, `client.environments`, `client.sessions` (including `send`, `stream`, `cancel`, `confirm_tool`, `events`). Dataclass types for `Agent`, `Environment`, `Session`, `Event`. Context manager support.
 
 ### DockerContainerRuntime (`src/runtime/docker.ts`)
 
@@ -130,6 +157,11 @@ Environment the entrypoint reads:
 | `OPENCLAW_STATE_DIR` | persistent volume mount path | `/workspace` |
 | `OPENCLAW_GATEWAY_PORT` | HTTP port for the gateway | `18789` |
 | `OPENCLAW_GATEWAY_TOKEN` | shared-secret bearer token (auto-generated at entrypoint if unset) | orchestrator-injected per container |
+| `OPENCLAW_PACKAGES_JSON` | JSON with `pip`, `apt`, `npm` arrays (from environment config) | `""` |
+| `OPENCLAW_DENIED_TOOLS` | comma-separated tool names to block (from `deny` permission policy) | `""` |
+| `OPENCLAW_CONFIRM_TOOLS` | comma-separated tool names requiring confirmation, or `__ALL__` (from `always_ask` policy) | `""` |
+| `OPENCLAW_ORCHESTRATOR_URL` | URL for the in-container `call_agent` CLI to reach the orchestrator | injected per container |
+| `OPENCLAW_ORCHESTRATOR_TOKEN` | HMAC-signed parent token for subagent delegation | injected per container |
 | `<PROVIDER>_API_KEY` | whichever API key the selected provider needs | forwarded from the host |
 
 The orchestrator forwards whichever provider API keys are present in its own environment (`MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_*`, etc.). See `collectPassthroughEnv()` in `src/index.ts` for the default allowlist and `OPENCLAW_PASSTHROUGH_ENV` for the escape hatch.
@@ -181,9 +213,22 @@ The orchestrator forwards whichever provider API keys are present in its own env
     }
   },
   "plugins": {
-    "entries": { "moonshot": { "enabled": true } }
+    "entries": {
+      "moonshot": { "enabled": true },
+      "confirm-tools": { "enabled": true }
+    }
   }
 }
+```
+
+The `confirm-tools` plugin entry is only present when the agent has `always_ask` permission policy. Similarly, `tools.deny` is only populated when the agent has `deny` policy.
+
+```json
+// With deny policy: tools.deny is populated
+"tools": { "deny": ["bash", "write"] }
+
+// With always_ask policy: OPENCLAW_CONFIRM_TOOLS env var is set,
+// confirm-tools plugin is enabled
 ```
 
 Four things in this config are load-bearing and are not obvious from the OpenClaw docs:
@@ -234,20 +279,27 @@ For the MVP the JSONL files live on a local Docker bind mount. A future item rep
 ### Creating an agent template and opening a session
 
 ```
-1.  Developer  → POST /v1/agents { model, tools, instructions }
+1.  Developer  → POST /v1/agents { model, tools, instructions, permissionPolicy?, ... }
                  Server validates + calls agents.create(), which inserts
-                 a row in SQLite and returns the AgentConfig.
-                 Response: { agent_id, model, tools, instructions, name, created_at }
-                 No container is spawned. No Pi state is touched.
+                 a row in SQLite (version=1) and returns the AgentConfig.
+                 Immediately fires router.warmForAgent(agentId) in the
+                 background to pre-boot a container in the warm pool.
+                 Response: { agent_id, model, tools, instructions, permission_policy,
+                   version, created_at, updated_at, ... }
+                 Container is already booting — will be claimed by the
+                 first session on this agent.
 
-2.  Developer  → POST /v1/sessions { agentId }
-                 Server calls router.createSession(agentId), which verifies
-                 the agent exists and inserts a sessions row with status=idle,
-                 tokensIn=0, tokensOut=0, costUsd=0, ephemeral=false.
+2.  Developer  → POST /v1/sessions { agentId, environmentId? }
+                 Server validates environmentId (if provided) exists, checks
+                 agent is not archived, calls router.createSession(agentId,
+                 {environmentId}), which inserts a sessions row with
+                 status=idle, tokensIn=0, tokensOut=0, costUsd=0.
+                 Immediately fires router.warmSession(sessionId) in the
+                 background (fire-and-forget) to start booting a container.
                  Response: { session_id, agent_id, status: "idle", ... }
-                 Still no container. Pi's SessionManager has no state yet
-                 for this session either — the JSONL is created lazily
-                 on the first event.
+                 Container may already be booting from the warm pool (if
+                 a pre-warmed container exists for this agent, it's claimed
+                 instantly).
 ```
 
 ### First event on a session (cold path — spawns a container)
@@ -380,13 +432,26 @@ in the pool for the next event.
 
 ```
 Server wires an AbortController from sse.onAbort and starts a 15 s
-heartbeat interval. PiJsonlEventReader.follow() runs:
-  Phase 1 — catch-up: yield every existing event in order
-  Phase 2 — tail-follow: 250 ms poll loop, emit any events whose
-            Pi event_id is new since the last yield
+heartbeat interval that also checks for session status transitions.
+
+1. Emit initial session.status_<status> SSE event on connect.
+2. PiJsonlEventReader.follow() runs:
+     Phase 1 — catch-up: yield every existing event in order
+     Phase 2 — tail-follow: 250 ms poll loop, emit any events whose
+               Pi event_id is new since the last yield
+3. On each yielded event and each heartbeat tick, check if session
+   status changed → emit session.status_<new> SSE event.
+4. After follow() returns, emit a final status event if it changed.
+
 Terminates on AbortSignal OR when isSessionRunning() returns false
 AND nothing new has landed for 30 s (grace period so clients can
 stream across multiple turns without reconnecting).
+
+Event types in the stream: all 10 JSONL-derived types (user.message,
+agent.message, agent.tool_use, agent.tool_result, agent.thinking,
+session.model_change, session.thinking_level_change, session.compaction)
+plus synthetic session.status_idle / session.status_running /
+session.status_failed and 15 s heartbeat events.
 ```
 
 ## Token and cost accounting
@@ -415,7 +480,7 @@ When cost is zero: if a provider plugin does not report cost, `message.usage.cos
 | Gateway WebSocket control plane (abort, steer, patch) | OpenClaw (`docs/gateway/protocol.md`) |
 | Managed-agent HTTP API surface | Orchestrator (`src/orchestrator/server.ts`) |
 | OpenAI-compat adapter (`POST /v1/chat/completions`) | Orchestrator (`src/orchestrator/server.ts` — handler block) |
-| Durable state for agents + sessions | Orchestrator (`src/store/sqlite.ts`, with `InMemoryStore` for tests) |
+| Durable state for agents + environments + sessions + versions | Orchestrator (`src/store/sqlite.ts`, with `InMemoryStore` for tests) |
 | Event log read path (list, latest, tail-follow) | Orchestrator (`src/store/pi-jsonl.ts`) |
 | Multi-tenant isolation | Orchestrator — one container per session, owned by `SessionContainerPool` |
 | Per-session container lifecycle + reuse | Orchestrator (`src/runtime/pool.ts`) |
@@ -427,6 +492,12 @@ When cost is zero: if a provider plugin does not report cost, `message.usage.cos
 | In-container delegation CLI (`openclaw-call-agent`) | Runtime image (`docker/call-agent.mjs` → `/usr/local/bin/openclaw-call-agent`) |
 | Per-session remaining subagent depth | SQLite `sessions.remaining_subagent_depth` + TS `Session.remainingSubagentDepth` |
 | Delegation allowlist + recursion cap | SQLite `agents.callable_agents_json` + `agents.max_subagent_depth` on the template row |
+| Agent versioning + archive | Orchestrator (`src/store/sqlite.ts` — `agents` + `agent_versions` tables) |
+| Environment abstraction | Orchestrator (`src/store/sqlite.ts` — `environments` table, wired into session creation) |
+| Permission policy enforcement (deny) | Container — `tools.deny` in generated `openclaw.json` |
+| Permission policy enforcement (always_ask) | Container — `confirm-tools` plugin + orchestrator WS approval flow |
+| Pre-warmed container pool | Orchestrator (`src/runtime/pool.ts` — `warm` Map alongside `active`) |
+| Python SDK | `sdk/python/openclaw_managed_agents/` — httpx + httpx-sse, publishable to PyPI |
 | Local container backend | Orchestrator (`src/runtime/docker.ts`, implements `ContainerRuntime`) |
 | Config generation for each container | Entrypoint (`docker/entrypoint.sh`) |
 | Cloud container backends | Orchestrator (`src/runtime/{ecs,cloudrun,container-apps,...}.ts`, same `ContainerRuntime` interface — Item 10) |

@@ -2,7 +2,7 @@
 
 Run the OpenClaw Managed Agents on an **AWS Lightsail** instance for **$5–$24/month** — AWS's own "cheap VPS with Docker" product, priced as a fixed monthly bundle and designed for exactly the workloads that Item 10a proved on Hetzner. One command, about 6 minutes end-to-end from zero.
 
-This is the **Item 10b deploy target**. It uses the same `DockerContainerRuntime` the Hetzner path uses, so the runtime behavior is identical — you're only switching the underlying VPS provider. If you already know `scripts/deploy-hetzner.sh`, this script is a one-for-one mirror with the AWS CLI instead of the Hetzner CLI.
+It uses the same `DockerContainerRuntime` the Hetzner path uses, so the runtime behavior is identical — you're only switching the underlying VPS provider. If you already know `scripts/deploy-hetzner.sh`, this script is a one-for-one mirror with the AWS CLI instead of the Hetzner CLI.
 
 ## What you'll get
 

@@ -2,7 +2,7 @@
 
 Run a full OpenClaw Managed Agents on a **€3.99/month** Hetzner CAX11 (ARM Ampere) — the cheapest credible production backend for the runtime. One command, about 6 minutes end-to-end from zero.
 
-This is the **Item 10a proof point** for the runtime's "open and cheap" positioning: the same code you run locally also runs on a €4 VPS in a German datacenter, handling real agent sessions with real provider APIs. No AWS account. No session-hour tax. No vendor lock-in.
+The same code you run locally also runs on a €4 VPS in a German datacenter, handling real agent sessions with real provider APIs. No AWS account. No session-hour tax. No vendor lock-in.
 
 ## What you'll get
 
