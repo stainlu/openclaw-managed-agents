@@ -504,10 +504,33 @@ export function buildApp(deps: ServerDeps): Hono {
         // starting state without having to query GET /v1/sessions/:id.
         await emitStatusEvent(lastEmittedStatus);
 
+        // Track emitted approval IDs to avoid duplicates.
+        const emittedApprovalIds = new Set<string>();
+        const emitPendingApprovals = async () => {
+          if (sse.aborted || sse.closed) return;
+          for (const approval of deps.router.getPendingApprovals(sessionId)) {
+            if (emittedApprovalIds.has(approval.approvalId)) continue;
+            emittedApprovalIds.add(approval.approvalId);
+            await sse.writeSSE({
+              event: "agent.tool_confirmation_request",
+              id: approval.approvalId,
+              data: JSON.stringify({
+                event_id: approval.approvalId,
+                session_id: sessionId,
+                type: "agent.tool_confirmation_request",
+                content: approval.description,
+                created_at: approval.arrivedAt,
+                tool_name: approval.toolName,
+                approval_id: approval.approvalId,
+              }),
+            });
+          }
+        };
+
         // Heartbeats so intermediate proxies don't idle-kill the socket.
         // Every 15s we send a dedicated "heartbeat" event type; clients
         // that don't care can ignore it via addEventListener filtering.
-        // Also check for session status transitions on each tick.
+        // Also check for session status transitions and pending approvals.
         const heartbeat = setInterval(() => {
           if (sse.aborted || sse.closed) return;
           const current = deps.sessions.get(sessionId);
@@ -517,6 +540,7 @@ export function buildApp(deps: ServerDeps): Hono {
               /* best-effort */
             });
           }
+          emitPendingApprovals().catch(() => { /* best-effort */ });
           sse
             .writeSSE({
               event: "heartbeat",
@@ -539,13 +563,14 @@ export function buildApp(deps: ServerDeps): Hono {
           )) {
             if (sse.aborted || sse.closed) break;
 
-            // Check for status change on every yielded event (more
-            // responsive than waiting for the 15s heartbeat).
+            // Check for status change and pending approvals on every
+            // yielded event (more responsive than the 15s heartbeat).
             const current = deps.sessions.get(sessionId);
             if (current && current.status !== lastEmittedStatus) {
               lastEmittedStatus = current.status;
               await emitStatusEvent(lastEmittedStatus);
             }
+            await emitPendingApprovals();
 
             await sse.writeSSE({
               event: event.type,

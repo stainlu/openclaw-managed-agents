@@ -987,5 +987,151 @@ echo "[e2e] backward compat OK (session without environment has null environment
 
 echo "[e2e] environment abstraction PASSED"
 
+# ---- SSE session status events -----------------------------------------------
+# Verify the SSE stream emits session.status_* events. The existing SSE smoke
+# already captured a stream; let's use the same session to verify status events
+# are present. Start a fresh stream, post an event, and grep for status events.
+
+echo "[e2e] SSE status events: starting stream and posting an event"
+STATUS_SSE_OUT=$(mktemp /tmp/openclaw-status-sse.XXXXXX)
+curl --silent --no-buffer \
+  "${BASE_URL}/v1/sessions/${SESSION_ID}/events?stream=true" \
+  > "${STATUS_SSE_OUT}" 2>&1 &
+STATUS_SSE_PID=$!
+sleep 1
+
+post_event "${SESSION_ID}" "Reply with just the word: status" >/dev/null
+poll_session "${SESSION_ID}" "status-sse" >/dev/null || {
+  kill "${STATUS_SSE_PID}" 2>/dev/null || true
+  rm -f "${STATUS_SSE_OUT}"
+  exit 1
+}
+sleep 2
+kill "${STATUS_SSE_PID}" 2>/dev/null || true
+wait "${STATUS_SSE_PID}" 2>/dev/null || true
+
+STATUS_IDLE_COUNT=$(grep -c "^event: session.status_idle$" "${STATUS_SSE_OUT}" || true)
+STATUS_RUNNING_COUNT=$(grep -c "^event: session.status_running$" "${STATUS_SSE_OUT}" || true)
+echo "[e2e] SSE status events: ${STATUS_RUNNING_COUNT} running, ${STATUS_IDLE_COUNT} idle"
+if [[ "${STATUS_IDLE_COUNT}" -lt 1 ]]; then
+  echo "[e2e] FAIL: SSE stream missing session.status_idle event"
+  head -c 1024 "${STATUS_SSE_OUT}"
+  rm -f "${STATUS_SSE_OUT}"
+  exit 1
+fi
+echo "[e2e] SSE session status events PASSED"
+rm -f "${STATUS_SSE_OUT}"
+
+# ---- Permission policy: always_ask with tool confirmation --------------------
+# Proves the full interactive tool confirmation flow:
+#   1. Agent with always_ask on bash → container boots with confirm-tools plugin
+#   2. Agent calls bash → plugin blocks → WS broadcasts plugin.approval.requested
+#   3. Orchestrator receives via WS listener → stores pending approval
+#   4. SSE stream emits agent.tool_confirmation_request event
+#   5. Client sends user.tool_confirmation with result=allow
+#   6. Container resumes → tool executes → session completes
+#
+# NO FALLBACK. NO ESCAPE. If any step fails, the test fails.
+
+echo "[e2e] always_ask: creating agent with always_ask policy on bash"
+ASK_AGENT=$(curl --silent --fail \
+  -X POST "${BASE_URL}/v1/agents" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "'"${MODEL}"'",
+    "tools": [],
+    "instructions": "You are a helpful assistant. When asked to run a bash command, use your bash tool to execute it. Reply concisely with the command output.",
+    "permissionPolicy": {"type": "always_ask", "tools": ["bash"]}
+  }' | jq -r '.agent_id')
+echo "[e2e] always_ask agent: ${ASK_AGENT}"
+
+ASK_SESSION=$(curl --silent --fail \
+  -X POST "${BASE_URL}/v1/sessions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"agentId\": \"${ASK_AGENT}\"}" | jq -r '.session_id')
+echo "[e2e] always_ask session: ${ASK_SESSION}"
+
+# Start SSE stream in background to catch the confirmation request.
+ASK_SSE_OUT=$(mktemp /tmp/openclaw-ask-sse.XXXXXX)
+curl --silent --no-buffer \
+  "${BASE_URL}/v1/sessions/${ASK_SESSION}/events?stream=true" \
+  > "${ASK_SSE_OUT}" 2>&1 &
+ASK_SSE_PID=$!
+sleep 1
+
+echo "[e2e] always_ask: sending message that triggers bash tool"
+post_event "${ASK_SESSION}" \
+  "Run this exact bash command and tell me the output: echo openclaw-confirm-test" >/dev/null
+
+# Poll the SSE output for the confirmation request event.
+# The container needs to boot (~40-60s), then the agent decides to call bash,
+# then the plugin fires. Give it up to 120s.
+echo "[e2e] always_ask: waiting for agent.tool_confirmation_request in SSE stream"
+ASK_ELAPSED=0
+ASK_APPROVAL_ID=""
+while [[ ${ASK_ELAPSED} -lt 120 ]]; do
+  sleep 2
+  ASK_ELAPSED=$((ASK_ELAPSED + 2))
+  if grep -q "^event: agent.tool_confirmation_request$" "${ASK_SSE_OUT}" 2>/dev/null; then
+    # Extract the approval_id from the event data line that follows.
+    ASK_APPROVAL_ID=$(grep -A1 "^event: agent.tool_confirmation_request$" "${ASK_SSE_OUT}" \
+      | grep "^data:" | head -1 | sed 's/^data: //' | jq -r '.approval_id // ""')
+    if [[ -n "${ASK_APPROVAL_ID}" && "${ASK_APPROVAL_ID}" != "null" ]]; then
+      break
+    fi
+  fi
+  echo "[e2e] always_ask: waiting (t=${ASK_ELAPSED}s)..." >&2
+done
+
+if [[ -z "${ASK_APPROVAL_ID}" || "${ASK_APPROVAL_ID}" == "null" ]]; then
+  echo "[e2e] FAIL: never received agent.tool_confirmation_request in SSE stream"
+  echo "[e2e] SSE output (first 2048 bytes):"
+  head -c 2048 "${ASK_SSE_OUT}"
+  echo "[e2e] Session status:"
+  curl --silent "${BASE_URL}/v1/sessions/${ASK_SESSION}" | jq .
+  echo "[e2e] Orchestrator logs (last 20 lines):"
+  docker logs openclaw-orchestrator 2>&1 | tail -20
+  kill "${ASK_SSE_PID}" 2>/dev/null || true
+  rm -f "${ASK_SSE_OUT}"
+  exit 1
+fi
+echo "[e2e] always_ask: received confirmation request (approval_id=${ASK_APPROVAL_ID})"
+
+# Send tool confirmation: allow the bash command.
+echo "[e2e] always_ask: confirming tool execution (allow)"
+CONFIRM_RESPONSE=$(curl --silent --fail \
+  -X POST "${BASE_URL}/v1/sessions/${ASK_SESSION}/events" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg id "${ASK_APPROVAL_ID}" '{
+    type: "user.tool_confirmation",
+    toolUseId: $id,
+    result: "allow"
+  }')")
+echo "[e2e] always_ask: confirm response: ${CONFIRM_RESPONSE}"
+
+# Wait for the session to complete.
+poll_session "${ASK_SESSION}" "always_ask" >/dev/null || {
+  echo "[e2e] FAIL: session did not complete after tool confirmation"
+  kill "${ASK_SSE_PID}" 2>/dev/null || true
+  rm -f "${ASK_SSE_OUT}"
+  exit 1
+}
+
+kill "${ASK_SSE_PID}" 2>/dev/null || true
+wait "${ASK_SSE_PID}" 2>/dev/null || true
+rm -f "${ASK_SSE_OUT}"
+
+# Verify: the agent's final output should contain the bash command's output.
+ASK_OUTPUT=$(latest_agent_message "${ASK_SESSION}")
+echo "[e2e] always_ask: final output: ${ASK_OUTPUT}"
+if echo "${ASK_OUTPUT}" | grep -qi "openclaw-confirm-test"; then
+  echo "[e2e] always_ask tool confirmation PASSED"
+else
+  echo "[e2e] FAIL: always_ask — agent output does not contain bash command result"
+  echo "  expected to find 'openclaw-confirm-test' in output"
+  echo "  got: ${ASK_OUTPUT}"
+  exit 1
+fi
+
 echo "[e2e] ALL CHECKS PASSED"
 exit 0

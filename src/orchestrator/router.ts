@@ -66,7 +66,21 @@ export type RunEventResult = {
   queued: boolean;
 };
 
+export type PendingApproval = {
+  approvalId: string;
+  sessionId: string;
+  toolName: string;
+  description: string;
+  arrivedAt: number;
+};
+
 export class AgentRouter {
+  /** Pending tool-confirmation approvals per session. Populated by WS
+   *  event listeners when the container's confirm-tools plugin fires
+   *  `plugin.approval.requested`. Read by the SSE handler to emit
+   *  `agent.tool_confirmation_request` events. Cleared on confirm/cancel/delete. */
+  private readonly pendingApprovals = new Map<string, PendingApproval[]>();
+
   constructor(
     private readonly agents: AgentStore,
     private readonly environments: EnvironmentStore,
@@ -76,6 +90,11 @@ export class AgentRouter {
     private readonly queue: SessionEventQueue,
     private readonly cfg: RouterConfig,
   ) {}
+
+  /** Return any pending approval requests for a session (non-destructive). */
+  getPendingApprovals(sessionId: string): PendingApproval[] {
+    return this.pendingApprovals.get(sessionId) ?? [];
+  }
 
   /**
    * Create a session bound to an agent. Pure metadata: no container spawn,
@@ -246,8 +265,9 @@ export class AgentRouter {
     } catch (err) {
       throw wrapWsError(err, "cancel_failed");
     }
-    // Drain queued events so the auto-drain on success doesn't auto-restart.
+    // Drain queued events and pending approvals.
     this.queue.clear(sessionId);
+    this.pendingApprovals.delete(sessionId);
     return this.sessions.endRunCancelled(sessionId) ?? session;
   }
 
@@ -269,6 +289,13 @@ export class AgentRouter {
         "no_active_container",
         `session ${sessionId} has no live container for tool confirmation`,
       );
+    }
+    // Pop the resolved approval from the pending queue.
+    const pending = this.pendingApprovals.get(sessionId);
+    if (pending) {
+      const idx = pending.findIndex((a) => a.approvalId === approvalId);
+      if (idx >= 0) pending.splice(idx, 1);
+      if (pending.length === 0) this.pendingApprovals.delete(sessionId);
     }
     const wsDecision = decision === "allow" ? "allow-once" : "deny";
     try {
@@ -386,6 +413,27 @@ export class AgentRouter {
       throw err;
     }
 
+    // Subscribe to approval broadcasts when the agent has always_ask.
+    // The WS client was opened during acquireForSession; we attach a
+    // listener for `plugin.approval.requested` so the SSE handler can
+    // surface approval requests to the client.
+    if (agent.permissionPolicy.type === "always_ask") {
+      const wsClient = this.pool.getWsClient(sessionId);
+      if (wsClient) {
+        wsClient.onEvent("plugin.approval.requested", (payload) => {
+          const p = payload as Record<string, unknown> | undefined;
+          const approvalId = String(p?.id ?? "");
+          const toolName = String(p?.toolName ?? p?.title ?? "");
+          const description = String(p?.description ?? "");
+          if (!approvalId) return;
+          const list = this.pendingApprovals.get(sessionId) ?? [];
+          list.push({ approvalId, sessionId, toolName, description, arrivedAt: Date.now() });
+          this.pendingApprovals.set(sessionId, list);
+          console.log(`[router] approval request for session ${sessionId}: tool=${toolName} id=${approvalId}`);
+        });
+      }
+    }
+
     // Per-event model override. Apply via WS patch BEFORE the chat
     // completions call. The WS handshake completed during acquire so a
     // client must be present here; if it's missing, treat as an
@@ -480,9 +528,9 @@ export class AgentRouter {
       // Don't evict, don't fail.
       return;
     }
-    // Drop any queued events: they were enqueued expecting a healthy
-    // session, and we're about to fail it.
+    // Drop any queued events and pending approvals.
     const dropped = this.queue.clear(sessionId);
+    this.pendingApprovals.delete(sessionId);
     if (dropped > 0) {
       console.warn(
         `[router] dropped ${dropped} queued event(s) for failed session ${sessionId}`,
