@@ -278,10 +278,11 @@ function mapLineToEvents(line: PiLine, sessionId: string): Event[] {
 
     // Emit agent.tool_use events for each toolCall content block.
     if (msg.content) {
+      let toolIdx = 0;
       for (const block of msg.content) {
         if (block.type === "toolCall" && block.name) {
           events.push({
-            eventId: `${eventId}:tool:${block.id ?? block.name}`,
+            eventId: `${eventId}:tool:${block.id ?? String(toolIdx)}`,
             sessionId,
             type: "agent.tool_use",
             content: block.name,
@@ -290,6 +291,7 @@ function mapLineToEvents(line: PiLine, sessionId: string): Event[] {
             toolCallId: block.id,
             toolArguments: block.arguments,
           });
+          toolIdx++;
         }
       }
     }

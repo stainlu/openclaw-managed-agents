@@ -254,6 +254,8 @@ if [ -n "${OPENCLAW_PACKAGES_JSON:-}" ]; then
   if [ -n "${NPM_PKGS}" ] && command -v npm >/dev/null 2>&1; then
     echo "[entrypoint] npm install: ${NPM_PKGS}"
     npm install --prefix /tmp/openclaw-env-packages ${NPM_PKGS} 2>&1 | tail -5 || echo "[entrypoint] WARNING: npm install failed (non-fatal)"
+    export PATH="/tmp/openclaw-env-packages/node_modules/.bin:${PATH}"
+    export NODE_PATH="/tmp/openclaw-env-packages/node_modules:${NODE_PATH:-}"
   elif [ -n "${NPM_PKGS}" ]; then
     echo "[entrypoint] WARNING: npm not available, skipping: ${NPM_PKGS}"
   fi

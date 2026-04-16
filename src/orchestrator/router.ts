@@ -116,9 +116,15 @@ export class AgentRouter {
    */
   async warmSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      console.warn(`[router] warmSession: session ${sessionId} not found, skipping warm-up`);
+      return;
+    }
     const agent = this.agents.get(session.agentId);
-    if (!agent) return;
+    if (!agent) {
+      console.warn(`[router] warmSession: agent ${session.agentId} not found, skipping warm-up`);
+      return;
+    }
     const spawnOptions = this.buildSpawnOptions(sessionId, agent, session);
     await this.pool.acquireForSession({ sessionId, spawnOptions });
   }

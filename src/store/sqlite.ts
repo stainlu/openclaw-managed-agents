@@ -230,7 +230,7 @@ class SqliteAgentStore implements AgentStore {
       `SELECT agent_id, version, model, tools_json, instructions,
               permission_policy_json, name,
               callable_agents_json, max_subagent_depth, created_at,
-              NULL as updated_at, NULL as archived_at
+              created_at as updated_at, NULL as archived_at
        FROM agent_versions WHERE agent_id = ? ORDER BY version ASC`,
     );
     this.archiveStmt = db.prepare(
