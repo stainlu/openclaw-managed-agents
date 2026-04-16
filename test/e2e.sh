@@ -722,6 +722,35 @@ if ! echo "${CALLER_OUTPUT}" | grep -qi "wisteria"; then
 fi
 echo "[e2e] delegated subagents PASSED (child is a first-class inspectable session)"
 
+# ---- Rich event stream (Item 18) -------------------------------------------
+# The caller session above invoked openclaw-call-agent via exec, which produces
+# tool_use and tool_result events in the JSONL. Verify these now appear in the
+# event list alongside the existing user.message and agent.message events.
+
+echo "[e2e] rich events: checking caller session for tool events"
+CALLER_EVENTS=$(curl --silent --fail "${BASE_URL}/v1/sessions/${CALLER_SESSION}/events")
+TOOL_USE_COUNT=$(echo "${CALLER_EVENTS}" | jq '[.events[] | select(.type=="agent.tool_use")] | length')
+TOOL_RESULT_COUNT=$(echo "${CALLER_EVENTS}" | jq '[.events[] | select(.type=="agent.tool_result")] | length')
+echo "[e2e] rich events: ${TOOL_USE_COUNT} tool_use, ${TOOL_RESULT_COUNT} tool_result"
+if [[ "${TOOL_USE_COUNT}" -lt 1 ]]; then
+  echo "[e2e] FAIL: expected at least 1 agent.tool_use event in caller session"
+  echo "${CALLER_EVENTS}" | jq '.events | map(.type)' >&2
+  exit 1
+fi
+if [[ "${TOOL_RESULT_COUNT}" -lt 1 ]]; then
+  echo "[e2e] FAIL: expected at least 1 agent.tool_result event in caller session"
+  echo "${CALLER_EVENTS}" | jq '.events | map(.type)' >&2
+  exit 1
+fi
+# Verify tool_use events have tool_name populated
+TOOL_NAME=$(echo "${CALLER_EVENTS}" | jq -r '[.events[] | select(.type=="agent.tool_use")] | first | .tool_name // ""')
+if [[ -z "${TOOL_NAME}" ]]; then
+  echo "[e2e] FAIL: tool_use event missing tool_name"
+  exit 1
+fi
+echo "[e2e] rich events: tool_name=${TOOL_NAME}"
+echo "[e2e] rich event stream PASSED"
+
 # ---- Allowlist rejection ---------------------------------------------------
 # A caller whose callableAgents does NOT include the worker must fail to
 # delegate. The in-container CLI will get a 403 from the orchestrator's

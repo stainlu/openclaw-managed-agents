@@ -156,7 +156,12 @@ export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>;
 // user.message (posted by the client), agent.message (the model's reply), and
 // agent.error (an unrecoverable run failure). Richer event types — tool_call,
 // thinking, compaction — are added when we wire up the streaming event bus.
-export type EventType = "user.message" | "agent.message" | "agent.error";
+export type EventType =
+  | "user.message"
+  | "agent.message"
+  | "agent.error"
+  | "agent.tool_use"
+  | "agent.tool_result";
 
 export type Event = {
   eventId: string;
@@ -170,6 +175,11 @@ export type Event = {
   costUsd?: number;
   /** Actual model used for this turn, when known. Informational. */
   model?: string;
+  /** Tool call fields — populated on agent.tool_use and agent.tool_result. */
+  toolName?: string;
+  toolCallId?: string;
+  toolArguments?: Record<string, unknown>;
+  isError?: boolean;
 };
 
 // Clients can only post user events. Agent events are emitted by the runtime.

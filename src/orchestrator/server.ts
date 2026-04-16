@@ -111,6 +111,10 @@ function eventResponse(event: Event) {
         : undefined,
     cost_usd: event.costUsd,
     model: event.model,
+    tool_name: event.toolName,
+    tool_call_id: event.toolCallId,
+    tool_arguments: event.toolArguments,
+    is_error: event.isError,
   };
 }
 

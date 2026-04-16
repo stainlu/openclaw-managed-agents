@@ -25,10 +25,13 @@ import type { Event } from "../orchestrator/types.js";
 type PiContentBlock = {
   type: string;
   text?: string;
+  id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
 };
 
 type PiMessage = {
-  role?: "user" | "assistant";
+  role?: "user" | "assistant" | "toolResult";
   content?: PiContentBlock[];
   stopReason?: string;
   errorMessage?: string;
@@ -41,6 +44,9 @@ type PiMessage = {
   };
   model?: string;
   provider?: string;
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
 };
 
 type PiLine = {
@@ -82,8 +88,9 @@ export class PiJsonlEventReader {
         // is in the middle of appending.
         continue;
       }
-      const event = mapLineToEvent(parsed, sessionId);
-      if (event) events.push(event);
+      for (const event of mapLineToEvents(parsed, sessionId)) {
+        events.push(event);
+      }
     }
     return events;
   }
@@ -245,61 +252,83 @@ function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function mapLineToEvent(line: PiLine, sessionId: string): Event | undefined {
-  // Pi writes a dozen record types (session, model_change, thinking_level,
-  // custom, message, ...). Only `message` records map onto our Event model.
-  // Everything else is skipped so the HTTP surface stays stable even as
-  // Pi's internal schema grows.
-  if (line.type !== "message") return undefined;
+function mapLineToEvents(line: PiLine, sessionId: string): Event[] {
+  if (line.type !== "message") return [];
   const msg = line.message;
-  if (!msg) return undefined;
+  if (!msg) return [];
 
   const eventId = line.id ?? "";
   const createdAt = line.timestamp ? Date.parse(line.timestamp) : Date.now();
 
   if (msg.role === "user") {
     const text = extractText(msg.content);
-    if (!text) return undefined;
-    return {
+    if (!text) return [];
+    return [{
       eventId,
       sessionId,
       type: "user.message",
       content: text,
       createdAt,
-    };
+    }];
   }
 
   if (msg.role === "assistant") {
+    const events: Event[] = [];
     const text = extractText(msg.content);
 
-    // Drop every empty-content assistant message, whether it's a
-    // mid-stream retry or a final error. Pi records each retry attempt
-    // as its own line — if the turn ultimately succeeded, the next
-    // assistant line with non-empty text is the one the caller wants,
-    // and the intermediate errors are noise. If every retry failed,
-    // Pi's SessionManager never produces a text line at all; the
-    // orchestrator surfaces that outcome through session.error and
-    // session.status=failed instead of as a per-event agent.error.
-    //
-    // Consequence: the count of emitted events stays equal to the
-    // number of turns (one user + one agent per successful turn),
-    // regardless of how many internal retries Pi needed to get there.
-    if (!text) return undefined;
+    // Emit agent.tool_use events for each toolCall content block.
+    if (msg.content) {
+      for (const block of msg.content) {
+        if (block.type === "toolCall" && block.name) {
+          events.push({
+            eventId: `${eventId}:tool:${block.id ?? block.name}`,
+            sessionId,
+            type: "agent.tool_use",
+            content: block.name,
+            createdAt,
+            toolName: block.name,
+            toolCallId: block.id,
+            toolArguments: block.arguments,
+          });
+        }
+      }
+    }
 
-    return {
-      eventId,
-      sessionId,
-      type: "agent.message",
-      content: text,
-      createdAt,
-      tokensIn: msg.usage?.input,
-      tokensOut: msg.usage?.output,
-      costUsd: msg.usage?.cost?.total,
-      model: combineModel(msg.provider, msg.model),
-    };
+    // Drop empty-content assistant messages (retries, errors) — but only
+    // if there are also no tool calls. A message with ONLY tool calls and
+    // no text is valid (stopReason=toolUse).
+    if (text) {
+      events.push({
+        eventId,
+        sessionId,
+        type: "agent.message",
+        content: text,
+        createdAt,
+        tokensIn: msg.usage?.input,
+        tokensOut: msg.usage?.output,
+        costUsd: msg.usage?.cost?.total,
+        model: combineModel(msg.provider, msg.model),
+      });
+    }
+
+    return events;
   }
 
-  return undefined;
+  if (msg.role === "toolResult") {
+    const text = extractText(msg.content);
+    return [{
+      eventId,
+      sessionId,
+      type: "agent.tool_result",
+      content: text || "(no output)",
+      createdAt,
+      toolName: msg.toolName,
+      toolCallId: msg.toolCallId,
+      isError: msg.isError,
+    }];
+  }
+
+  return [];
 }
 
 function extractText(blocks: PiContentBlock[] | undefined): string {
