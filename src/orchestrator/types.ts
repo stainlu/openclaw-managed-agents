@@ -28,6 +28,18 @@ export const CreateAgentRequestSchema = z.object({
 
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 
+export const UpdateAgentRequestSchema = z.object({
+  version: z.number().int().min(1, "version is required for optimistic concurrency"),
+  model: z.string().min(1).optional(),
+  tools: z.array(z.string()).nullable().optional(),
+  instructions: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+  callableAgents: z.array(z.string()).nullable().optional(),
+  maxSubagentDepth: z.number().int().min(0).optional(),
+});
+
+export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
+
 export type AgentConfig = {
   agentId: string;
   model: string;
@@ -35,9 +47,10 @@ export type AgentConfig = {
   instructions: string;
   name?: string;
   createdAt: number;
-  /** See CreateAgentRequestSchema.callableAgents. Always populated (empty array if none). */
+  updatedAt: number;
+  archivedAt: number | null;
+  version: number;
   callableAgents: string[];
-  /** See CreateAgentRequestSchema.maxSubagentDepth. Always populated (0 if not set). */
   maxSubagentDepth: number;
 };
 

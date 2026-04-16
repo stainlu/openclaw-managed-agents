@@ -762,6 +762,103 @@ if ! echo "${LOCKED_OUTPUT}" | grep -q "4"; then
 fi
 echo "[e2e] allowlist rejection PASSED (locked-down caller stays single-agent)"
 
+# ---- Agent versioning (Item 17) ----------------------------------------------
+
+echo "[e2e] versioning: creating agent v1"
+V_AGENT=$(curl --silent --fail \
+  -X POST "${BASE_URL}/v1/agents" \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\": \"${MODEL}\", \"tools\": [], \"instructions\": \"Version 1 instructions.\"}")
+V_AGENT_ID=$(echo "${V_AGENT}" | jq -r '.agent_id')
+V_VERSION=$(echo "${V_AGENT}" | jq -r '.version')
+if [[ "${V_VERSION}" != "1" ]]; then
+  echo "[e2e] FAIL: expected version=1, got ${V_VERSION}"
+  exit 1
+fi
+echo "[e2e] versioning: agent created v1 (${V_AGENT_ID})"
+
+echo "[e2e] versioning: updating agent to v2 (new instructions)"
+V2_AGENT=$(curl --silent --fail \
+  -X PATCH "${BASE_URL}/v1/agents/${V_AGENT_ID}" \
+  -H 'Content-Type: application/json' \
+  -d '{"version": 1, "instructions": "Version 2 instructions."}')
+V2_VERSION=$(echo "${V2_AGENT}" | jq -r '.version')
+V2_INSTRUCTIONS=$(echo "${V2_AGENT}" | jq -r '.instructions')
+if [[ "${V2_VERSION}" != "2" ]]; then
+  echo "[e2e] FAIL: expected version=2 after update, got ${V2_VERSION}"
+  exit 1
+fi
+if [[ "${V2_INSTRUCTIONS}" != "Version 2 instructions." ]]; then
+  echo "[e2e] FAIL: instructions not updated"
+  exit 1
+fi
+echo "[e2e] versioning: updated to v2"
+
+echo "[e2e] versioning: no-op update should not bump version"
+V2_NOOP=$(curl --silent --fail \
+  -X PATCH "${BASE_URL}/v1/agents/${V_AGENT_ID}" \
+  -H 'Content-Type: application/json' \
+  -d '{"version": 2, "instructions": "Version 2 instructions."}')
+V2_NOOP_V=$(echo "${V2_NOOP}" | jq -r '.version')
+if [[ "${V2_NOOP_V}" != "2" ]]; then
+  echo "[e2e] FAIL: no-op update bumped version to ${V2_NOOP_V}"
+  exit 1
+fi
+echo "[e2e] versioning: no-op detected correctly"
+
+echo "[e2e] versioning: wrong version should fail with 409"
+V_CONFLICT=$(curl --silent -w "%{http_code}" -o /dev/null \
+  -X PATCH "${BASE_URL}/v1/agents/${V_AGENT_ID}" \
+  -H 'Content-Type: application/json' \
+  -d '{"version": 1, "instructions": "Should fail."}')
+if [[ "${V_CONFLICT}" != "409" ]]; then
+  echo "[e2e] FAIL: expected 409 on version conflict, got ${V_CONFLICT}"
+  exit 1
+fi
+echo "[e2e] versioning: optimistic concurrency works (409 on stale version)"
+
+echo "[e2e] versioning: list versions"
+V_VERSIONS=$(curl --silent --fail "${BASE_URL}/v1/agents/${V_AGENT_ID}/versions")
+V_COUNT=$(echo "${V_VERSIONS}" | jq -r '.count')
+if [[ "${V_COUNT}" != "2" ]]; then
+  echo "[e2e] FAIL: expected 2 versions, got ${V_COUNT}"
+  exit 1
+fi
+echo "[e2e] versioning: list-versions OK (count=${V_COUNT})"
+
+echo "[e2e] versioning: archive agent"
+V_ARCHIVED=$(curl --silent --fail \
+  -X POST "${BASE_URL}/v1/agents/${V_AGENT_ID}/archive")
+V_ARCHIVED_AT=$(echo "${V_ARCHIVED}" | jq -r '.archived_at')
+if [[ "${V_ARCHIVED_AT}" == "null" ]]; then
+  echo "[e2e] FAIL: archived_at should be set after archive"
+  exit 1
+fi
+echo "[e2e] versioning: archived (archived_at=${V_ARCHIVED_AT})"
+
+echo "[e2e] versioning: new session on archived agent should fail"
+V_ARCHIVE_STATUS=$(curl --silent -w "%{http_code}" -o /dev/null \
+  -X POST "${BASE_URL}/v1/sessions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"agentId\": \"${V_AGENT_ID}\"}")
+if [[ "${V_ARCHIVE_STATUS}" != "409" ]]; then
+  echo "[e2e] FAIL: expected 409 creating session on archived agent, got ${V_ARCHIVE_STATUS}"
+  exit 1
+fi
+echo "[e2e] versioning: archived agent blocks new sessions (409)"
+
+echo "[e2e] versioning: GET includes callable_agents + max_subagent_depth"
+V_GET=$(curl --silent --fail "${BASE_URL}/v1/agents/${V_AGENT_ID}")
+V_GET_CA=$(echo "${V_GET}" | jq -r '.callable_agents | type')
+V_GET_MSD=$(echo "${V_GET}" | jq -r '.max_subagent_depth | type')
+if [[ "${V_GET_CA}" != "array" || "${V_GET_MSD}" != "number" ]]; then
+  echo "[e2e] FAIL: callable_agents (${V_GET_CA}) or max_subagent_depth (${V_GET_MSD}) missing"
+  exit 1
+fi
+echo "[e2e] versioning: full response shape OK"
+
+echo "[e2e] agent versioning PASSED"
+
 # ---- Environment abstraction (Item 15) --------------------------------------
 
 echo "[e2e] environment: creating environment with packages"

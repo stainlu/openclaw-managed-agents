@@ -4,6 +4,7 @@ import type {
   CreateEnvironmentRequest,
   EnvironmentConfig,
   Session,
+  UpdateAgentRequest,
 } from "../orchestrator/types.js";
 
 // All store methods are synchronous. The two concrete backends (in-memory and
@@ -21,6 +22,9 @@ export interface AgentStore {
   get(agentId: string): AgentConfig | undefined;
   list(): AgentConfig[];
   delete(agentId: string): boolean;
+  update(agentId: string, req: UpdateAgentRequest): AgentConfig | undefined;
+  listVersions(agentId: string): AgentConfig[];
+  archive(agentId: string): AgentConfig | undefined;
 }
 
 export interface EnvironmentStore {

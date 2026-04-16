@@ -12,6 +12,7 @@ import {
   OpenAIChatCompletionRequestSchema,
   PostEventRequestSchema,
   RunAgentRequestSchema,
+  UpdateAgentRequestSchema,
   type AgentConfig,
   type EnvironmentConfig,
   type Event,
@@ -56,7 +57,12 @@ function agentResponse(agent: AgentConfig) {
     tools: agent.tools,
     instructions: agent.instructions,
     name: agent.name,
+    callable_agents: agent.callableAgents,
+    max_subagent_depth: agent.maxSubagentDepth,
+    version: agent.version,
     created_at: agent.createdAt,
+    updated_at: agent.updatedAt,
+    archived_at: agent.archivedAt,
   };
 }
 
@@ -113,6 +119,9 @@ function handleRouterError(err: unknown, c: Context): Response {
     if (err.code === "agent_not_found" || err.code === "session_not_found") {
       return c.json({ error: err.code, message: err.message }, 404);
     }
+    if (err.code === "agent_archived") {
+      return c.json({ error: err.code, message: err.message }, 409);
+    }
     if (err.code === "session_busy" || err.code === "session_not_running") {
       return c.json({ error: err.code, message: err.message }, 409);
     }
@@ -138,7 +147,10 @@ export function buildApp(deps: ServerDeps): Hono {
           create: "POST /v1/agents",
           list: "GET /v1/agents",
           get: "GET /v1/agents/:agentId",
+          update: "PATCH /v1/agents/:agentId",
           delete: "DELETE /v1/agents/:agentId",
+          list_versions: "GET /v1/agents/:agentId/versions",
+          archive: "POST /v1/agents/:agentId/archive",
           run: "POST /v1/agents/:agentId/run",
         },
         environments: {
@@ -202,6 +214,39 @@ export function buildApp(deps: ServerDeps): Hono {
       return c.json({ error: "agent_not_found" }, 404);
     }
     return c.json({ deleted: true });
+  });
+
+  app.patch("/v1/agents/:agentId", async (c) => {
+    const agentId = c.req.param("agentId");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = UpdateAgentRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
+    }
+    const agent = deps.agents.get(agentId);
+    if (!agent) return c.json({ error: "agent_not_found" }, 404);
+    if (agent.archivedAt) return c.json({ error: "agent_archived", message: "archived agents cannot be updated" }, 409);
+    if (agent.version !== parsed.data.version) {
+      return c.json({ error: "version_conflict", message: `expected version ${agent.version}, got ${parsed.data.version}` }, 409);
+    }
+    const updated = deps.agents.update(agentId, parsed.data);
+    if (!updated) return c.json({ error: "version_conflict" }, 409);
+    return c.json(agentResponse(updated));
+  });
+
+  app.get("/v1/agents/:agentId/versions", (c) => {
+    const agentId = c.req.param("agentId");
+    const agent = deps.agents.get(agentId);
+    if (!agent) return c.json({ error: "agent_not_found" }, 404);
+    const versions = deps.agents.listVersions(agentId).map(agentResponse);
+    return c.json({ agent_id: agentId, versions, count: versions.length });
+  });
+
+  app.post("/v1/agents/:agentId/archive", (c) => {
+    const agentId = c.req.param("agentId");
+    const archived = deps.agents.archive(agentId);
+    if (!archived) return c.json({ error: "agent_not_found" }, 404);
+    return c.json(agentResponse(archived));
   });
 
   // ---------- Environments (container configuration templates) ----------

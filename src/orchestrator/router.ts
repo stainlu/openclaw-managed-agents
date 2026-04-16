@@ -96,6 +96,9 @@ export class AgentRouter {
     if (!agent) {
       throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
     }
+    if (agent.archivedAt) {
+      throw new RouterError("agent_archived", `agent ${agentId} is archived`);
+    }
     const remainingSubagentDepth =
       opts?.remainingSubagentDepth ?? agent.maxSubagentDepth;
     return this.sessions.create({
@@ -501,6 +504,7 @@ type ChatCompletionResponse = {
 
 export type RouterErrorCode =
   | "agent_not_found"
+  | "agent_archived"
   | "session_not_found"
   | "session_busy"
   | "session_not_running"

@@ -5,6 +5,7 @@ import type {
   CreateEnvironmentRequest,
   EnvironmentConfig,
   Session,
+  UpdateAgentRequest,
 } from "../orchestrator/types.js";
 import type { AgentStore, EnvironmentStore, RunUsage, SessionStore, Store } from "./types.js";
 
@@ -14,19 +15,25 @@ const nanoid = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 12);
 
 class InMemoryAgentStore implements AgentStore {
   private readonly agents = new Map<string, AgentConfig>();
+  private readonly versions = new Map<string, AgentConfig[]>();
 
   create(req: CreateAgentRequest): AgentConfig {
+    const now = Date.now();
     const agent: AgentConfig = {
       agentId: `agt_${nanoid()}`,
       model: req.model,
       tools: req.tools,
       instructions: req.instructions,
       name: req.name,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      version: 1,
       callableAgents: req.callableAgents,
       maxSubagentDepth: req.maxSubagentDepth,
     };
     this.agents.set(agent.agentId, agent);
+    this.versions.set(agent.agentId, [{ ...agent }]);
     return agent;
   }
 
@@ -39,7 +46,52 @@ class InMemoryAgentStore implements AgentStore {
   }
 
   delete(agentId: string): boolean {
+    this.versions.delete(agentId);
     return this.agents.delete(agentId);
+  }
+
+  update(agentId: string, req: UpdateAgentRequest): AgentConfig | undefined {
+    const current = this.agents.get(agentId);
+    if (!current || current.version !== req.version) return undefined;
+    const now = Date.now();
+    const updated: AgentConfig = {
+      ...current,
+      model: req.model ?? current.model,
+      tools: req.tools === null ? [] : (req.tools ?? current.tools),
+      instructions: req.instructions === null ? "" : (req.instructions ?? current.instructions),
+      name: req.name === null ? undefined : (req.name ?? current.name),
+      callableAgents: req.callableAgents === null ? [] : (req.callableAgents ?? current.callableAgents),
+      maxSubagentDepth: req.maxSubagentDepth ?? current.maxSubagentDepth,
+      updatedAt: now,
+      version: current.version + 1,
+    };
+    if (
+      updated.model === current.model &&
+      JSON.stringify(updated.tools) === JSON.stringify(current.tools) &&
+      updated.instructions === current.instructions &&
+      updated.name === current.name &&
+      JSON.stringify(updated.callableAgents) === JSON.stringify(current.callableAgents) &&
+      updated.maxSubagentDepth === current.maxSubagentDepth
+    ) {
+      return current;
+    }
+    this.agents.set(agentId, updated);
+    const history = this.versions.get(agentId) ?? [];
+    history.push({ ...updated });
+    this.versions.set(agentId, history);
+    return updated;
+  }
+
+  listVersions(agentId: string): AgentConfig[] {
+    return this.versions.get(agentId) ?? [];
+  }
+
+  archive(agentId: string): AgentConfig | undefined {
+    const current = this.agents.get(agentId);
+    if (!current) return undefined;
+    current.archivedAt = Date.now();
+    current.updatedAt = Date.now();
+    return current;
   }
 }
 

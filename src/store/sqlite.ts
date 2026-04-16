@@ -9,6 +9,7 @@ import type {
   Packages,
   Session,
   SessionStatus,
+  UpdateAgentRequest,
 } from "../orchestrator/types.js";
 import type { AgentStore, EnvironmentStore, RunUsage, SessionStore, Store } from "./types.js";
 
@@ -23,6 +24,9 @@ type AgentRow = {
   instructions: string;
   name: string | null;
   created_at: number;
+  updated_at: number | null;
+  archived_at: number | null;
+  version: number;
   callable_agents_json: string | null;
   max_subagent_depth: number;
 };
@@ -58,6 +62,9 @@ function rowToAgent(r: AgentRow): AgentConfig {
     instructions: r.instructions,
     name: r.name ?? undefined,
     createdAt: r.created_at,
+    updatedAt: r.updated_at ?? r.created_at,
+    archivedAt: r.archived_at,
+    version: r.version ?? 1,
     callableAgents: r.callable_agents_json
       ? (JSON.parse(r.callable_agents_json) as string[])
       : [],
@@ -119,8 +126,24 @@ CREATE TABLE IF NOT EXISTS agents (
   instructions TEXT NOT NULL,
   name TEXT,
   created_at INTEGER NOT NULL,
+  updated_at INTEGER,
+  archived_at INTEGER,
+  version INTEGER NOT NULL DEFAULT 1,
   callable_agents_json TEXT,
   max_subagent_depth INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS agent_versions (
+  agent_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  tools_json TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  name TEXT,
+  callable_agents_json TEXT,
+  max_subagent_depth INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS environments (
@@ -152,49 +175,91 @@ CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON sessions(agent_id);
 
 class SqliteAgentStore implements AgentStore {
   private readonly insertStmt: Database.Statement;
+  private readonly insertVersionStmt: Database.Statement;
   private readonly getStmt: Database.Statement;
   private readonly listStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
+  private readonly deleteVersionsStmt: Database.Statement;
+  private readonly updateStmt: Database.Statement;
+  private readonly listVersionsStmt: Database.Statement;
+  private readonly archiveStmt: Database.Statement;
 
   constructor(private readonly db: Database.Database) {
     this.insertStmt = db.prepare(
       `INSERT INTO agents (
         agent_id, model, tools_json, instructions, name, created_at,
+        updated_at, archived_at, version,
         callable_agents_json, max_subagent_depth
        ) VALUES (
         @agent_id, @model, @tools_json, @instructions, @name, @created_at,
+        @updated_at, NULL, 1,
         @callable_agents_json, @max_subagent_depth
+       )`,
+    );
+    this.insertVersionStmt = db.prepare(
+      `INSERT INTO agent_versions (
+        agent_id, version, model, tools_json, instructions, name,
+        callable_agents_json, max_subagent_depth, created_at
+       ) VALUES (
+        @agent_id, @version, @model, @tools_json, @instructions, @name,
+        @callable_agents_json, @max_subagent_depth, @created_at
        )`,
     );
     this.getStmt = db.prepare(`SELECT * FROM agents WHERE agent_id = ?`);
     this.listStmt = db.prepare(`SELECT * FROM agents ORDER BY created_at ASC`);
     this.deleteStmt = db.prepare(`DELETE FROM agents WHERE agent_id = ?`);
+    this.deleteVersionsStmt = db.prepare(`DELETE FROM agent_versions WHERE agent_id = ?`);
+    this.updateStmt = db.prepare(
+      `UPDATE agents SET
+        model = @model, tools_json = @tools_json, instructions = @instructions,
+        name = @name, callable_agents_json = @callable_agents_json,
+        max_subagent_depth = @max_subagent_depth,
+        version = @version, updated_at = @updated_at
+       WHERE agent_id = @agent_id AND version = @prev_version`,
+    );
+    this.listVersionsStmt = db.prepare(
+      `SELECT agent_id, version, model, tools_json, instructions, name,
+              callable_agents_json, max_subagent_depth, created_at,
+              NULL as updated_at, NULL as archived_at
+       FROM agent_versions WHERE agent_id = ? ORDER BY version ASC`,
+    );
+    this.archiveStmt = db.prepare(
+      `UPDATE agents SET archived_at = @now, updated_at = @now WHERE agent_id = @agent_id`,
+    );
+  }
+
+  private agentToRow(agent: AgentConfig) {
+    return {
+      agent_id: agent.agentId,
+      model: agent.model,
+      tools_json: JSON.stringify(agent.tools),
+      instructions: agent.instructions,
+      name: agent.name ?? null,
+      callable_agents_json: agent.callableAgents.length > 0
+        ? JSON.stringify(agent.callableAgents)
+        : null,
+      max_subagent_depth: agent.maxSubagentDepth,
+    };
   }
 
   create(req: CreateAgentRequest): AgentConfig {
+    const now = Date.now();
     const agent: AgentConfig = {
       agentId: `agt_${nanoid()}`,
       model: req.model,
       tools: req.tools,
       instructions: req.instructions,
       name: req.name,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      version: 1,
       callableAgents: req.callableAgents,
       maxSubagentDepth: req.maxSubagentDepth,
     };
-    this.insertStmt.run({
-      agent_id: agent.agentId,
-      model: agent.model,
-      tools_json: JSON.stringify(agent.tools),
-      instructions: agent.instructions,
-      name: agent.name ?? null,
-      created_at: agent.createdAt,
-      callable_agents_json:
-        agent.callableAgents.length > 0
-          ? JSON.stringify(agent.callableAgents)
-          : null,
-      max_subagent_depth: agent.maxSubagentDepth,
-    });
+    const row = this.agentToRow(agent);
+    this.insertStmt.run({ ...row, created_at: now, updated_at: now });
+    this.insertVersionStmt.run({ ...row, version: 1, created_at: now });
     return agent;
   }
 
@@ -209,8 +274,58 @@ class SqliteAgentStore implements AgentStore {
   }
 
   delete(agentId: string): boolean {
+    this.deleteVersionsStmt.run(agentId);
     const info = this.deleteStmt.run(agentId);
     return info.changes > 0;
+  }
+
+  update(agentId: string, req: UpdateAgentRequest): AgentConfig | undefined {
+    const current = this.get(agentId);
+    if (!current || current.version !== req.version) return undefined;
+    const now = Date.now();
+    const updated: AgentConfig = {
+      ...current,
+      model: req.model ?? current.model,
+      tools: req.tools === null ? [] : (req.tools ?? current.tools),
+      instructions: req.instructions === null ? "" : (req.instructions ?? current.instructions),
+      name: req.name === null ? undefined : (req.name ?? current.name),
+      callableAgents: req.callableAgents === null ? [] : (req.callableAgents ?? current.callableAgents),
+      maxSubagentDepth: req.maxSubagentDepth ?? current.maxSubagentDepth,
+      updatedAt: now,
+      version: current.version + 1,
+    };
+    if (
+      updated.model === current.model &&
+      JSON.stringify(updated.tools) === JSON.stringify(current.tools) &&
+      updated.instructions === current.instructions &&
+      updated.name === current.name &&
+      JSON.stringify(updated.callableAgents) === JSON.stringify(current.callableAgents) &&
+      updated.maxSubagentDepth === current.maxSubagentDepth
+    ) {
+      return current;
+    }
+    const row = this.agentToRow(updated);
+    const info = this.updateStmt.run({
+      ...row,
+      version: updated.version,
+      updated_at: now,
+      prev_version: req.version,
+    });
+    if (info.changes === 0) return undefined;
+    this.insertVersionStmt.run({ ...row, version: updated.version, created_at: now });
+    return updated;
+  }
+
+  listVersions(agentId: string): AgentConfig[] {
+    const rows = this.listVersionsStmt.all(agentId) as AgentRow[];
+    return rows.map(rowToAgent);
+  }
+
+  archive(agentId: string): AgentConfig | undefined {
+    const now = Date.now();
+    const info = this.archiveStmt.run({ agent_id: agentId, now });
+    if (info.changes === 0) return undefined;
+    return this.get(agentId);
   }
 }
 
@@ -502,11 +617,18 @@ export class SqliteStore implements Store {
       this.db.exec("ALTER TABLE agents ADD COLUMN callable_agents_json TEXT");
     }
     if (!agentsCols.some((c) => c.name === "max_subagent_depth")) {
-      // Item 12-14: recursion cap. Default 0 = this template cannot spawn
-      // subagents even if callable_agents_json is non-empty.
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN max_subagent_depth INTEGER NOT NULL DEFAULT 0",
       );
+    }
+    if (!agentsCols.some((c) => c.name === "version")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!agentsCols.some((c) => c.name === "updated_at")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN updated_at INTEGER");
+    }
+    if (!agentsCols.some((c) => c.name === "archived_at")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN archived_at INTEGER");
     }
 
     this.agents = new SqliteAgentStore(this.db);
