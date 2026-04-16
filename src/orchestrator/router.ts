@@ -142,7 +142,7 @@ export class AgentRouter {
     // session ID in the labels (overwritten at claim time is a future
     // improvement) and a no-delegation parent token.
     const spawnOptions = this.buildSpawnOptions("__warm__", agent, {
-      remainingSubagentDepth: 0,
+      remainingSubagentDepth: agent.maxSubagentDepth,
       environmentId: null,
     } as Session);
     await this.pool.warmForAgent(agentId, spawnOptions);

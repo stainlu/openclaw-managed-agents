@@ -227,13 +227,16 @@ echo "[e2e] post-restart session OK (status=${RESTORED_STATUS}, output contains 
 
 echo "[e2e] post-restart: GET /v1/sessions/${SESSION_ID}/events"
 RESTORED_EVENTS=$(curl --silent --fail "${BASE_URL}/v1/sessions/${SESSION_ID}/events")
-RESTORED_EVENT_COUNT=$(echo "${RESTORED_EVENTS}" | jq -r '.count')
-if [[ "${RESTORED_EVENT_COUNT}" != "4" ]]; then
-  echo "[e2e] FAIL: expected 4 events post-restart (2 user + 2 agent.message), got ${RESTORED_EVENT_COUNT}"
+# Count conversation events only (user.message + agent.message). Session
+# metadata events (model_change, thinking_level_change) vary per provider.
+CONVO_COUNT=$(echo "${RESTORED_EVENTS}" | jq '[.events[] | select(.type == "user.message" or .type == "agent.message")] | length')
+TOTAL_COUNT=$(echo "${RESTORED_EVENTS}" | jq -r '.count')
+if [[ "${CONVO_COUNT}" != "4" ]]; then
+  echo "[e2e] FAIL: expected 4 conversation events post-restart (2 user + 2 agent.message), got ${CONVO_COUNT}"
   echo "${RESTORED_EVENTS}" | jq '.events | map({type, content: (.content | .[0:60])})'
   exit 1
 fi
-echo "[e2e] post-restart events OK (count=${RESTORED_EVENT_COUNT})"
+echo "[e2e] post-restart events OK (conversation=${CONVO_COUNT}, total=${TOTAL_COUNT})"
 
 echo "[e2e] post-restart: GET /v1/agents/${AGENT_ID}"
 RESTORED_AGENT=$(curl --silent --fail "${BASE_URL}/v1/agents/${AGENT_ID}")
