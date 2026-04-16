@@ -8,6 +8,12 @@ export const PermissionPolicySchema = z.discriminatedUnion("type", [
     type: z.literal("deny"),
     tools: z.array(z.string().min(1)).min(1),
   }),
+  z.object({
+    type: z.literal("always_ask"),
+    /** Tools that require client confirmation before execution.
+     *  If omitted, ALL tools require confirmation.  */
+    tools: z.array(z.string().min(1)).optional(),
+  }),
 ]);
 
 export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
@@ -177,6 +183,7 @@ export type EventType =
   | "agent.tool_use"
   | "agent.tool_result"
   | "agent.thinking"
+  | "agent.tool_confirmation_request"
   | "session.model_change"
   | "session.thinking_level_change"
   | "session.compaction";
@@ -198,17 +205,26 @@ export type Event = {
   toolCallId?: string;
   toolArguments?: Record<string, unknown>;
   isError?: boolean;
+  /** Approval request id — populated on agent.tool_confirmation_request.
+   *  The client must include this in `user.tool_confirmation.toolUseId`. */
+  approvalId?: string;
 };
 
-// Clients can only post user events. Agent events are emitted by the runtime.
-// The type field is optional with a default so trivial clients can send just
-// `{ content }` and still get the correct tagging.
+// Clients post events to sessions. The two event types are:
 //
-// Item 7 added the optional `model` field. `interrupt: true` (Pi steer) is
-// intentionally NOT exposed yet — see the docstring on AgentRouter.runEvent
-// for the design constraint that pushed it to a follow-up. Cancel + queue
-// + model are sufficient for the first cut of control endpoints.
-export const PostEventRequestSchema = z.object({
+//   user.message — a conversation turn (the common case). Triggers
+//     the agent loop inside the container.
+//
+//   user.tool_confirmation — response to an `agent.tool_confirmation_request`
+//     SSE event. Resolves a pending tool-approval gate when the agent
+//     template has `permissionPolicy: { type: "always_ask" }`. The
+//     container's hook blocks until the confirmation is resolved.
+//
+// Item 7 added the optional `model` field on user.message. `interrupt:
+// true` (Pi steer) is intentionally NOT exposed yet — see the docstring
+// on AgentRouter.runEvent for the design constraint.
+
+export const PostUserMessageSchema = z.object({
   type: z.literal("user.message").default("user.message"),
   content: z.string().min(1, "content is required"),
   /**
@@ -220,7 +236,25 @@ export const PostEventRequestSchema = z.object({
   model: z.string().min(1).optional(),
 });
 
+export const PostToolConfirmationSchema = z.object({
+  type: z.literal("user.tool_confirmation"),
+  /** The approval request ID from the `agent.tool_confirmation_request` SSE event. */
+  toolUseId: z.string().min(1, "toolUseId is required"),
+  /** "allow" proceeds with execution; "deny" blocks it (with optional message). */
+  result: z.enum(["allow", "deny"]),
+  /** Optional explanation when denying (forwarded to the agent). */
+  denyMessage: z.string().optional(),
+});
+
+// Parse with .default() so that a bare `{ content }` is treated as user.message.
+export const PostEventRequestSchema = z.union([
+  PostUserMessageSchema,
+  PostToolConfirmationSchema,
+]);
+
 export type PostEventRequest = z.infer<typeof PostEventRequestSchema>;
+export type PostUserMessage = z.infer<typeof PostUserMessageSchema>;
+export type PostToolConfirmation = z.infer<typeof PostToolConfirmationSchema>;
 
 // ---------- Backwards-compat adapter ----------
 

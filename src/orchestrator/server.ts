@@ -116,6 +116,7 @@ function eventResponse(event: Event) {
     tool_call_id: event.toolCallId,
     tool_arguments: event.toolArguments,
     is_error: event.isError,
+    approval_id: event.approvalId,
   };
 }
 
@@ -407,11 +408,30 @@ export function buildApp(deps: ServerDeps): Hono {
     if (!parsed.success) {
       return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
     }
+    const event = parsed.data;
+
+    // Tool confirmation flow — resolves a pending approval gate inside
+    // the container when the agent template has always_ask policy.
+    if (event.type === "user.tool_confirmation") {
+      try {
+        await deps.router.confirmTool(
+          sessionId,
+          event.toolUseId,
+          event.result,
+          event.denyMessage,
+        );
+        return c.json({ session_id: sessionId, confirmed: true });
+      } catch (err) {
+        return handleRouterError(err, c);
+      }
+    }
+
+    // User message flow — triggers the agent loop.
     try {
       const result = await deps.router.runEvent({
         sessionId,
-        content: parsed.data.content,
-        model: parsed.data.model,
+        content: event.content,
+        model: event.model,
       });
       // The event id is Pi's — we don't know it until the JSONL is written.
       // Clients that need to correlate this response with the persisted

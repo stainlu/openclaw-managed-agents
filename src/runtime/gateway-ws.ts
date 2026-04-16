@@ -98,11 +98,30 @@ export type GatewayWsConfig = {
 export class GatewayWebSocketClient {
   private ws: WebSocket | undefined;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly eventListeners = new Map<string, Set<(payload: unknown) => void>>();
   private nextRequestId = 1;
   private connected = false;
   private closed = false;
 
   constructor(private readonly cfg: GatewayWsConfig) {}
+
+  /**
+   * Subscribe to gateway broadcast events. Returns an unsubscribe function.
+   * Used by the orchestrator to listen for `plugin.approval.requested`
+   * events when the agent invokes a tool gated by `always_ask`.
+   */
+  onEvent(eventName: string, handler: (payload: unknown) => void): () => void {
+    let listeners = this.eventListeners.get(eventName);
+    if (!listeners) {
+      listeners = new Set();
+      this.eventListeners.set(eventName, listeners);
+    }
+    listeners.add(handler);
+    return () => {
+      listeners!.delete(handler);
+      if (listeners!.size === 0) this.eventListeners.delete(eventName);
+    };
+  }
 
   /**
    * Open the WebSocket and run the operator handshake. Resolves once the
@@ -302,6 +321,23 @@ export class GatewayWebSocketClient {
   }
 
   /**
+   * Resolve a pending tool-confirmation approval. Called when the client
+   * sends a `user.tool_confirmation` event. The `id` is the approval
+   * request id from the `plugin.approval.requested` broadcast event.
+   */
+  async approvalResolve(
+    id: string,
+    decision: "allow-once" | "deny",
+    denyMessage?: string,
+  ): Promise<unknown> {
+    return this.request("plugin.approval.resolve", {
+      id,
+      decision,
+      ...(denyMessage ? { denyMessage } : {}),
+    });
+  }
+
+  /**
    * Close the underlying socket and reject every outstanding request. Safe
    * to call more than once. After close(), the client cannot be reused.
    */
@@ -371,12 +407,20 @@ export class GatewayWebSocketClient {
     } catch {
       return;
     }
-    if (frame.type !== "res") {
-      // Event frames (chat.delta, sessions.changed, ...) — not consumed
-      // by Item 7. A future item could subscribe here for SSE streaming
-      // sourced from the WS event bus instead of the JSONL tail.
+    if (frame.type === "event") {
+      const listeners = this.eventListeners.get(frame.event);
+      if (listeners) {
+        for (const handler of listeners) {
+          try {
+            handler(frame.payload);
+          } catch {
+            /* best-effort — a listener crash must not break the WS client */
+          }
+        }
+      }
       return;
     }
+    if (frame.type !== "res") return;
     const pending = this.pending.get(frame.id);
     if (!pending) return;
     this.pending.delete(frame.id);

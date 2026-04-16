@@ -232,6 +232,33 @@ export class AgentRouter {
     return this.sessions.endRunCancelled(sessionId) ?? session;
   }
 
+  /**
+   * Resolve a pending tool-confirmation approval. Called when the client
+   * sends a `user.tool_confirmation` event in response to an
+   * `agent.tool_confirmation_request` SSE event. Routes the decision to
+   * the container's gateway via WS `plugin.approval.resolve`.
+   */
+  async confirmTool(
+    sessionId: string,
+    approvalId: string,
+    decision: "allow" | "deny",
+    denyMessage?: string,
+  ): Promise<void> {
+    const wsClient = this.pool.getWsClient(sessionId);
+    if (!wsClient) {
+      throw new RouterError(
+        "no_active_container",
+        `session ${sessionId} has no live container for tool confirmation`,
+      );
+    }
+    const wsDecision = decision === "allow" ? "allow-once" : "deny";
+    try {
+      await wsClient.approvalResolve(approvalId, wsDecision, denyMessage);
+    } catch (err) {
+      throw wrapWsError(err, "confirm_tool_failed");
+    }
+  }
+
   private buildSpawnOptions(
     sessionId: string,
     agent: AgentConfig,
@@ -294,6 +321,13 @@ export class AgentRouter {
     }
     if (agent.permissionPolicy.type === "deny") {
       env.OPENCLAW_DENIED_TOOLS = agent.permissionPolicy.tools.join(",");
+    }
+    if (agent.permissionPolicy.type === "always_ask") {
+      // When `tools` is undefined, the plugin confirms ALL tools.
+      // When `tools` is an array, only those tools require confirmation.
+      env.OPENCLAW_CONFIRM_TOOLS = agent.permissionPolicy.tools
+        ? agent.permissionPolicy.tools.join(",")
+        : "__ALL__";
     }
 
     return {
@@ -520,7 +554,8 @@ export type RouterErrorCode =
   | "no_active_container"
   | "chat_completions_failed"
   | "cancel_failed"
-  | "patch_failed";
+  | "patch_failed"
+  | "confirm_tool_failed";
 
 export class RouterError extends Error {
   constructor(
