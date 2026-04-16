@@ -39,6 +39,14 @@ services:
       PORT: "8080"
       OPENCLAW_DOCKER_NETWORK: openclaw-net
       OPENCLAW_RUNTIME_IMAGE: ghcr.io/stainlu/openclaw-managed-agents-agent:latest
+      # HOST-side path to data/sessions (not the orchestrator's in-container
+      # view). The orchestrator passes this to dockerode when it spawns
+      # agent containers; the Docker daemon resolves the path against the
+      # host filesystem, so a container-relative path (e.g. /var/openclaw/
+      # sessions) would fail. ${PWD} is shell-evaluated at `docker compose
+      # up` time — IMPORTANT: always run compose from the repo root, or
+      # this resolves to the wrong directory and agent containers will
+      # bind-mount an empty/missing path.
       OPENCLAW_HOST_STATE_ROOT: ${PWD}/data/sessions
       OPENCLAW_GATEWAY_PORT: "18789"
       # 10 min container-ready timeout. Hetzner CAX11 fully boots Pi's
@@ -80,6 +88,14 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Moonshot price overrides (per million tokens). Moonshot's plugin
+      # does not publish catalog prices upstream, so `cost_usd` reads zero
+      # unless real numbers are supplied here. Check
+      # https://platform.moonshot.ai/docs/pricing and set whichever apply.
+      OPENCLAW_MOONSHOT_PRICE_INPUT_USD_PER_M: ${OPENCLAW_MOONSHOT_PRICE_INPUT_USD_PER_M:-}
+      OPENCLAW_MOONSHOT_PRICE_OUTPUT_USD_PER_M: ${OPENCLAW_MOONSHOT_PRICE_OUTPUT_USD_PER_M:-}
+      OPENCLAW_MOONSHOT_PRICE_CACHE_READ_USD_PER_M: ${OPENCLAW_MOONSHOT_PRICE_CACHE_READ_USD_PER_M:-}
+      OPENCLAW_MOONSHOT_PRICE_CACHE_WRITE_USD_PER_M: ${OPENCLAW_MOONSHOT_PRICE_CACHE_WRITE_USD_PER_M:-}
       # Extend with custom provider env vars without recompiling:
       OPENCLAW_PASSTHROUGH_ENV: ${OPENCLAW_PASSTHROUGH_ENV:-}
     volumes:

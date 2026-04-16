@@ -152,16 +152,27 @@ export class AgentRouter {
    * Pre-warm a container for an agent template so sessions on this agent
    * can claim an already-booted container instead of cold-spawning.
    * Fire-and-forget — failure is logged but not propagated.
+   *
+   * Skipped for delegating agents. `buildSpawnOptions` bakes the
+   * sessionId into both Docker labels and the signed OPENCLAW_ORCHESTRATOR_TOKEN
+   * env var, and Docker env is immutable post-create. A warm container
+   * built with a placeholder sessionId would carry that placeholder into
+   * every subagent spawn it later hosts — labels and the signed
+   * parentSessionId would reference `__warm__` instead of the real
+   * session. The orchestrator doesn't currently verify parentSessionId
+   * against the session store, so the failure would be silent (wrong
+   * lineage, not a crash). Skipping warm-up for delegating agents keeps
+   * the benefit for the common non-delegating case while avoiding the
+   * identity smear.
    */
   async warmForAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent) return;
-    // Build spawn options with a synthetic session context. The warm
-    // container doesn't have a real session yet; it uses a placeholder
-    // session ID in the labels (overwritten at claim time is a future
-    // improvement) and a no-delegation parent token.
+    if (agent.callableAgents.length > 0 || agent.maxSubagentDepth > 0) {
+      return;
+    }
     const spawnOptions = this.buildSpawnOptions("__warm__", agent, {
-      remainingSubagentDepth: agent.maxSubagentDepth,
+      remainingSubagentDepth: 0,
       environmentId: null,
     } as Session);
     await this.pool.warmForAgent(agentId, spawnOptions);
@@ -406,12 +417,11 @@ export class AgentRouter {
     // waits for /readyz, and runs the WS handshake; subsequent events
     // reuse the live container and live WS client. NO finally { stop } —
     // teardown is the pool's responsibility.
-    let container: Container;
-    try {
-      container = await this.pool.acquireForSession({ sessionId, spawnOptions, agentId: agent.agentId });
-    } catch (err) {
-      throw err;
-    }
+    const container: Container = await this.pool.acquireForSession({
+      sessionId,
+      spawnOptions,
+      agentId: agent.agentId,
+    });
 
     // Subscribe to approval broadcasts when the agent has always_ask.
     // The WS client was opened during acquireForSession; we attach a

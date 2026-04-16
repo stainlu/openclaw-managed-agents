@@ -171,7 +171,7 @@ The SSE stream emits an initial status event on connect and checks for status tr
 
 **Permission policy.** Three modes: `always_allow` (default), `deny` (block specific tools entirely), and `always_ask` (pause for client confirmation before executing specific tools). The `always_ask` flow uses OpenClaw's `before_tool_call` plugin hook with `requireApproval` — the agent blocks, the orchestrator surfaces a confirmation request via SSE, and the client resolves it via `user.tool_confirmation`.
 
-**Environments.** Declare packages (`pip`, `apt`, `npm`) and networking policy per environment. Compose any agent with any environment at session creation. Packages install inside the container before the agent boots.
+**Environments.** Declare packages (`pip`, `apt`, `npm`) and networking policy per environment. Compose any agent with any environment at session creation. Packages install inside the container before the agent boots. Two properties worth calling out: `networking: "limited"` is schema-rejected until per-container iptables enforcement ships (only `unrestricted` takes effect today — accepting `limited` without enforcing would be false security); and `npm install` runs arbitrary package postinstall scripts at container boot, so when agent creation is open to untrusted users, package names should come from a trusted source.
 
 **Pre-warmed container pool.** When an agent is created, a container boots in the background. The first session on that agent claims the pre-warmed container instead of cold-spawning. After claiming, the pool replenishes automatically. Idle containers are reaped after 10 minutes. Pool reuse measured at 4s vs 78s cold-start.
 
@@ -181,7 +181,7 @@ The SSE stream emits an initial status event on connect and checks for status tr
 
 **Cancel + queue.** Cancel aborts the in-flight run via the WebSocket control plane. Events posted to a busy session queue automatically and drain in order.
 
-**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from the provider's own billing data — cache-aware, not a static price sheet.
+**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from the provider's own billing data — cache-aware, not a static price sheet. Anthropic, OpenAI, Google, xAI, Mistral, OpenRouter, and Bedrock auto-report non-zero cost with no config. Moonshot's upstream plugin does not publish catalog prices, so `cost_usd` reads zero unless you supply them via `OPENCLAW_MOONSHOT_PRICE_{INPUT,OUTPUT,CACHE_READ,CACHE_WRITE}_USD_PER_M` (USD per million tokens).
 
 **OpenAI SDK drop-in.** Point any OpenAI SDK at `http://<host>:8080/v1` with an `x-openclaw-agent-id` header. Sticky sessions via the `user` field. Emulated streaming (`stream: true`).
 

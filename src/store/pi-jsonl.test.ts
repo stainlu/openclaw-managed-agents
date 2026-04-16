@@ -1,0 +1,293 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PiJsonlEventReader } from "./pi-jsonl.js";
+
+// Pi's JSONL uses a canonical session-key scheme in sessions.json:
+//   key = "agent:main:<our_session_id>"
+//   value = { sessionId: "<pi_internal_session_id>", ... }
+// The reader opens <stateRoot>/<agentId>/agents/main/sessions/<piSessionId>.jsonl
+// and parses each line as one PiLine. These tests build a tiny but
+// representative fixture tree and assert the event shapes we expose.
+
+type Fixture = {
+  root: string;
+  agentId: string;
+  sessionId: string;
+  piSessionId: string;
+};
+
+function makeFixture(lines: Array<Record<string, unknown>> | undefined): Fixture {
+  const root = mkdtempSync(join(tmpdir(), "pi-jsonl-test-"));
+  const agentId = "agt_test";
+  const sessionId = "ses_test";
+  const piSessionId = "pi-0000";
+  const sessionsDir = join(root, agentId, "agents", "main", "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(
+    join(sessionsDir, "sessions.json"),
+    JSON.stringify({
+      [`agent:main:${sessionId}`]: { sessionId: piSessionId },
+    }),
+    "utf8",
+  );
+  if (lines) {
+    const jsonl = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+    writeFileSync(join(sessionsDir, `${piSessionId}.jsonl`), jsonl, "utf8");
+  }
+  return { root, agentId, sessionId, piSessionId };
+}
+
+describe("PiJsonlEventReader", () => {
+  let fixtures: Fixture[] = [];
+  beforeEach(() => {
+    fixtures = [];
+  });
+  afterEach(() => {
+    for (const f of fixtures) rmSync(f.root, { recursive: true, force: true });
+  });
+
+  it("returns [] when sessions.json is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-jsonl-test-"));
+    fixtures.push({ root, agentId: "x", sessionId: "y", piSessionId: "z" });
+    const reader = new PiJsonlEventReader(root);
+    expect(reader.listBySession("no-agent", "no-session")).toEqual([]);
+    expect(reader.latestAgentMessage("no-agent", "no-session")).toBeUndefined();
+  });
+
+  it("returns [] when the JSONL file is missing but sessions.json maps the key", () => {
+    const f = makeFixture(undefined);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    expect(reader.listBySession(f.agentId, f.sessionId)).toEqual([]);
+  });
+
+  it("parses user + assistant messages with usage and cost", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-1",
+        timestamp: "2026-04-17T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "hi" }] },
+      },
+      {
+        type: "message",
+        id: "evt-2",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "hello there" }],
+          provider: "moonshot",
+          model: "kimi-k2.5",
+          usage: { input: 42, output: 7, cost: { total: 0.00012 } },
+        },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      eventId: "evt-1",
+      type: "user.message",
+      content: "hi",
+    });
+    expect(events[1]).toMatchObject({
+      eventId: "evt-2",
+      type: "agent.message",
+      content: "hello there",
+      tokensIn: 42,
+      tokensOut: 7,
+      costUsd: 0.00012,
+      model: "moonshot/kimi-k2.5",
+    });
+  });
+
+  it("latestAgentMessage returns the newest agent.message (scans in reverse)", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-a",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "first" }],
+        },
+      },
+      {
+        type: "message",
+        id: "evt-b",
+        message: { role: "user", content: [{ type: "text", text: "q?" }] },
+      },
+      {
+        type: "message",
+        id: "evt-c",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "second" }],
+        },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const latest = reader.latestAgentMessage(f.agentId, f.sessionId);
+    expect(latest?.content).toBe("second");
+    expect(latest?.eventId).toBe("evt-c");
+  });
+
+  it("drops empty-content assistant messages (Pi auto-retry noise)", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-retry",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          stopReason: "error",
+          errorMessage: "transient",
+        },
+      },
+      {
+        type: "message",
+        id: "evt-real",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "final answer" }],
+        },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.eventId).toBe("evt-real");
+  });
+
+  it("emits tool_use events for toolCall content blocks", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-toolcall",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-123",
+              name: "bash",
+              arguments: { cmd: "ls" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "evt-toolresult",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-123",
+          toolName: "bash",
+          content: [{ type: "text", text: "file1\nfile2\n" }],
+        },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      type: "agent.tool_use",
+      toolName: "bash",
+      toolCallId: "call-123",
+      toolArguments: { cmd: "ls" },
+    });
+    expect(events[1]).toMatchObject({
+      type: "agent.tool_result",
+      toolName: "bash",
+      toolCallId: "call-123",
+      content: "file1\nfile2\n",
+    });
+  });
+
+  it("surfaces session-level metadata events (model_change, thinking_level_change, compaction)", () => {
+    const f = makeFixture([
+      {
+        type: "model_change",
+        id: "evt-m",
+        provider: "anthropic",
+        modelId: "claude-sonnet-4-6",
+      },
+      { type: "thinking_level_change", id: "evt-t", thinkingLevel: "medium" },
+      { type: "compaction", id: "evt-c", summary: "compacted turns 1-5" },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events.map((e) => e.type)).toEqual([
+      "session.model_change",
+      "session.thinking_level_change",
+      "session.compaction",
+    ]);
+    expect(events[0]?.content).toBe("anthropic/claude-sonnet-4-6");
+    expect(events[1]?.content).toBe("medium");
+    expect(events[2]?.content).toBe("compacted turns 1-5");
+  });
+
+  it("skips malformed JSONL lines instead of failing the whole read", () => {
+    const f = makeFixture(undefined);
+    fixtures.push(f);
+    const sessionsDir = join(f.root, f.agentId, "agents", "main", "sessions");
+    const mixed =
+      JSON.stringify({
+        type: "message",
+        id: "evt-good",
+        message: { role: "user", content: [{ type: "text", text: "hi" }] },
+      }) +
+      "\n{ this is not valid json \n" +
+      JSON.stringify({
+        type: "message",
+        id: "evt-good-2",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+        },
+      }) +
+      "\n";
+    writeFileSync(join(sessionsDir, `${f.piSessionId}.jsonl`), mixed, "utf8");
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.eventId)).toEqual(["evt-good", "evt-good-2"]);
+  });
+
+  it("deleteBySession removes the JSONL file AND the sessions.json entry", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-1",
+        message: { role: "user", content: [{ type: "text", text: "hi" }] },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    expect(reader.listBySession(f.agentId, f.sessionId)).toHaveLength(1);
+
+    reader.deleteBySession(f.agentId, f.sessionId);
+
+    expect(reader.listBySession(f.agentId, f.sessionId)).toHaveLength(0);
+    const sessionsJson = JSON.parse(
+      readFileSync(
+        join(f.root, f.agentId, "agents", "main", "sessions", "sessions.json"),
+        "utf8",
+      ) as string,
+    );
+    expect(sessionsJson[`agent:main:${f.sessionId}`]).toBeUndefined();
+  });
+
+  it("deleteBySession is a no-op when the session is unknown", () => {
+    const f = makeFixture(undefined);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    expect(() => reader.deleteBySession("no-agent", "no-session")).not.toThrow();
+  });
+});

@@ -89,6 +89,15 @@ function collectPassthroughEnv(): Record<string, string> {
     "OPENROUTER_API_KEY",
     "FIREWORKS_API_KEY",
     "GROQ_API_KEY",
+    // Optional per-provider price overrides. Moonshot's plugin does not
+    // publish catalog prices upstream, so cost_usd reads zero unless the
+    // operator supplies real numbers. See docker/entrypoint.sh for the
+    // per-M USD semantics. Forwarding these matches how provider API
+    // keys flow — set once on the orchestrator host, picked up at spawn.
+    "OPENCLAW_MOONSHOT_PRICE_INPUT_USD_PER_M",
+    "OPENCLAW_MOONSHOT_PRICE_OUTPUT_USD_PER_M",
+    "OPENCLAW_MOONSHOT_PRICE_CACHE_READ_USD_PER_M",
+    "OPENCLAW_MOONSHOT_PRICE_CACHE_WRITE_USD_PER_M",
   ];
   const extraKeys = (process.env.OPENCLAW_PASSTHROUGH_ENV ?? "")
     .split(",")
@@ -120,6 +129,13 @@ async function main(): Promise<void> {
   // mounts on spawned agent containers. The actual Docker daemon resolves
   // paths against the host filesystem, not the orchestrator's.
   const hostStateRoot = env("OPENCLAW_HOST_STATE_ROOT", "/var/openclaw/sessions");
+  if (!hostStateRoot.startsWith("/")) {
+    throw new Error(
+      `OPENCLAW_HOST_STATE_ROOT must be an absolute HOST-side path (got ${JSON.stringify(hostStateRoot)}). ` +
+        `If you see a relative path or $PWD artifact, docker compose was run from a directory other than ` +
+        `the repo root — cd to the repo root before starting the stack.`,
+    );
+  }
   // stateRoot is the in-process path of the SAME directory as seen from
   // inside the orchestrator container. The JSONL reader opens files via
   // this path. In docker-compose the two point to the same volume; in
@@ -131,6 +147,16 @@ async function main(): Promise<void> {
   const runTimeoutMs = envInt("OPENCLAW_RUN_TIMEOUT_MS", 10 * 60_000);
   const idleTimeoutMs = envInt("OPENCLAW_IDLE_TIMEOUT_MS", 10 * 60_000);
   const sweepIntervalMs = envInt("OPENCLAW_SWEEP_INTERVAL_MS", 60_000);
+  // Warm pool is bounded so a host with many agent templates does not
+  // accumulate one persistent container per template. Default 5 warm
+  // containers at 2 GiB each is comfortable on a 4-8 GiB host. Warm
+  // idle timeout defaults to the active timeout — if a warm container
+  // has been waiting that long unclaimed, its agent is rarely used.
+  const maxWarmContainers = envInt("OPENCLAW_MAX_WARM_CONTAINERS", 5);
+  const warmIdleTimeoutMs = envInt(
+    "OPENCLAW_WARM_IDLE_TIMEOUT_MS",
+    idleTimeoutMs,
+  );
 
   const runtime = new DockerContainerRuntime({ network });
   await runtime.ensureNetwork();
@@ -177,6 +203,8 @@ async function main(): Promise<void> {
     idleTimeoutMs,
     readyTimeoutMs,
     sweepIntervalMs,
+    maxWarmContainers,
+    warmIdleTimeoutMs,
     isBusy: (sessionId) => store.sessions.get(sessionId)?.status === "running",
     cleanupOnReap: async (sessionId) => {
       const session = store.sessions.get(sessionId);
@@ -233,7 +261,7 @@ async function main(): Promise<void> {
     `[orchestrator] store: ${storeBackend}${storePath ? ` (${storePath})` : ""}`,
   );
   console.log(
-    `[orchestrator] pool: idleTimeout=${idleTimeoutMs}ms sweepInterval=${sweepIntervalMs}ms readyTimeout=${readyTimeoutMs}ms`,
+    `[orchestrator] pool: idleTimeout=${idleTimeoutMs}ms sweepInterval=${sweepIntervalMs}ms readyTimeout=${readyTimeoutMs}ms warmMax=${maxWarmContainers} warmIdleTimeout=${warmIdleTimeoutMs}ms`,
   );
   if (orphanedContainers > 0) {
     console.log(

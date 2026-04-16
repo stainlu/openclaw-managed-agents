@@ -29,6 +29,23 @@ export type PoolConfig = {
   /** How often the sweeper runs. Should be less than idleTimeoutMs / 2. */
   sweepIntervalMs: number;
   /**
+   * Maximum number of pre-warmed containers that can sit in the warm pool
+   * simultaneously. When `warmForAgent` would exceed this cap, the oldest
+   * warm container (by spawnedAt) is reaped first to make room. Unbounded
+   * pre-warming was the default before this; on a host with many distinct
+   * agent templates that was an unbounded resource leak (N agents → N
+   * warm containers at 2 GiB each).
+   */
+  maxWarmContainers: number;
+  /**
+   * Milliseconds a pre-warmed container can sit unclaimed before the
+   * sweeper reaps it. Unlike active containers (which track lastUsedAt),
+   * warm containers are scored on spawnedAt — if nobody has claimed it
+   * within this window, something upstream is off and we'd rather give
+   * the RAM back than hold it forever.
+   */
+  warmIdleTimeoutMs: number;
+  /**
    * Predicate that returns true if the named session currently has a run in
    * flight. The sweeper uses this to avoid tearing down a container that is
    * about to be used again. The caller closes over its session store to
@@ -95,9 +112,15 @@ export class SessionContainerPool {
    * claimed by a session via acquireForSession(). Fire-and-forget — the
    * caller does not wait for completion. Silently no-ops if a warm
    * container already exists for this agent.
+   *
+   * When the warm pool is at `maxWarmContainers`, the oldest warm entry
+   * (by spawnedAt) is evicted before adding the new one. Keeps the warm
+   * pool bounded so that a host with many agent templates doesn't
+   * accumulate one persistent 2 GiB container per template.
    */
   async warmForAgent(agentId: string, spawnOptions: SpawnOptions): Promise<void> {
     if (this.warm.has(agentId)) return;
+    await this.evictOldestWarmIfAtCap();
     const container = await this.runtime.spawn(spawnOptions);
     try {
       await this.runtime.waitForReady(container, this.cfg.readyTimeoutMs);
@@ -324,5 +347,48 @@ export class SessionContainerPool {
         }
       }
     }
+
+    // Reap warm containers that have been sitting unclaimed longer than
+    // warmIdleTimeoutMs. Measured on spawnedAt (warm entries have no
+    // lastUsedAt — they haven't been used yet). If a warm container is
+    // this old, the agent template is either rarely used or something
+    // upstream is broken; either way, give the RAM back.
+    const warmThreshold = now - this.cfg.warmIdleTimeoutMs;
+    for (const entry of Array.from(this.warm.values())) {
+      if (entry.spawnedAt >= warmThreshold) continue;
+      await this.reapWarmEntry(entry, "idle");
+    }
+  }
+
+  /**
+   * When a new warmForAgent would push the warm pool over the cap,
+   * evict the oldest warm entry first. LRU isn't quite the right model
+   * here — warm entries aren't "used" until claimed — so we use "oldest
+   * spawned first" as a reasonable proxy (likely least popular agent).
+   */
+  private async evictOldestWarmIfAtCap(): Promise<void> {
+    if (this.warm.size < this.cfg.maxWarmContainers) return;
+    let oldest: WarmContainer | undefined;
+    for (const entry of this.warm.values()) {
+      if (!oldest || entry.spawnedAt < oldest.spawnedAt) oldest = entry;
+    }
+    if (oldest) await this.reapWarmEntry(oldest, "cap-exceeded");
+  }
+
+  private async reapWarmEntry(
+    entry: WarmContainer,
+    reason: "idle" | "cap-exceeded",
+  ): Promise<void> {
+    this.warm.delete(entry.agentId);
+    const ageSec = Math.round((Date.now() - entry.spawnedAt) / 1000);
+    console.log(
+      `[pool] reaping warm container for agent ${entry.agentId} (${reason}, age ${ageSec}s)`,
+    );
+    await entry.wsClient.close().catch(() => {
+      /* best-effort */
+    });
+    await this.runtime.stop(entry.container.id).catch((err) => {
+      console.warn(`[pool] warm reap stop ${entry.container.id} failed:`, err);
+    });
   }
 }
