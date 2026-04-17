@@ -157,6 +157,11 @@ async function main(): Promise<void> {
   // exposing port 8080 beyond loopback. Matches Claude Managed Agents'
   // API-key depth: one shared token per deployment, nothing fancier.
   const apiToken = (process.env.OPENCLAW_API_TOKEN ?? "").trim();
+  // Per-caller rate limit. 0 or unset = disabled. Keyed by Bearer token
+  // when present, else client IP. `/healthz` and `/metrics` always bypass.
+  // 120 req/min is generous for legitimate SDK traffic (2/s sustained,
+  // 120-burst); stops blind-loop DoS without hindering real workloads.
+  const rateLimitRpm = envInt("OPENCLAW_RATE_LIMIT_RPM", 120);
 
   const runtime = new DockerContainerRuntime({ network });
   await runtime.ensureNetwork();
@@ -272,6 +277,7 @@ async function main(): Promise<void> {
       orphaned_sessions_failed: orphaned,
       passthrough_env_keys: passthroughEnvKeys,
       api_auth: apiToken ? "bearer-token" : "disabled",
+      rate_limit_rpm: rateLimitRpm > 0 ? rateLimitRpm : "disabled",
     },
     `OpenClaw Managed Agents v${version} starting`,
   );
@@ -296,6 +302,7 @@ async function main(): Promise<void> {
       tokenMinter,
       version,
       apiToken: apiToken || undefined,
+      rateLimitRpm: rateLimitRpm > 0 ? rateLimitRpm : undefined,
     },
     { port },
   );

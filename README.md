@@ -222,6 +222,8 @@ The SSE stream emits an initial status event on connect and checks for status tr
 
 **Baseline bearer-token auth.** Set `OPENCLAW_API_TOKEN=<random-secret>` on the orchestrator host and every request must attach `Authorization: Bearer <token>` — except `/healthz` and `/metrics` (infra endpoints). Unset = auth disabled (localhost dev default). One token per deployment, matching Claude Managed Agents' API-key depth. Multi-tenancy / per-user ACLs are deliberately out of scope today; stack a reverse proxy (Caddy, Cloudflare Access) when you need them. One-command rotation on any live deploy: `./scripts/rotate-api-token.sh hetzner|lightsail|gcp|local <host-or-instance>` (generates + applies + verifies with a 401-then-200 curl pair).
 
+**Rate limiting.** Per-caller token-bucket in front of every route except `/healthz` and `/metrics`. Keyed by Bearer token when present, else client IP (`x-forwarded-for` first entry, else peer). Defaults to 120 req/min (2 req/s sustained, 120-burst). Override via `OPENCLAW_RATE_LIMIT_RPM` (0 = disabled). Runs BEFORE auth so unauthenticated floods can't exhaust the orchestrator even while auth middleware rejects them. Rejections surface as HTTP 429 with a `Retry-After` header and increment `rate_limit_rejections_total{kind="token"|"ip"}` on the metrics endpoint.
+
 ## Deploy
 
 Three one-command deploy scripts, each using the same `DockerContainerRuntime` and the same multi-arch GHCR images.

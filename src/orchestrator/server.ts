@@ -4,6 +4,7 @@ import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createAuthMiddleware } from "../auth.js";
 import { addContext, getLogger, withContext } from "../log.js";
+import { createRateLimitMiddleware } from "../rate-limit.js";
 import {
   agentsCreatedTotal,
   httpRequestDurationSeconds,
@@ -94,6 +95,13 @@ export type ServerDeps = {
    * `Authorization: Bearer <apiToken>`.
    */
   apiToken?: string;
+  /**
+   * Per-caller rate limit in requests-per-minute. 0 or undefined
+   * disables rate limiting. Keyed by Bearer token when present, else
+   * client IP (x-forwarded-for first entry, else peer). `/healthz`
+   * and `/metrics` always bypass.
+   */
+  rateLimitRpm?: number;
   /**
    * Item 12-14: parent-token minter/verifier. POST /v1/sessions verifies
    * an optional X-OpenClaw-Parent-Token header against this minter when a
@@ -200,10 +208,13 @@ export function buildApp(deps: ServerDeps): Hono {
   // Register the observability middleware first so every downstream
   // handler (including SSE streams) runs inside the request-id scope
   // and contributes to http_requests_total / http_request_duration_seconds.
-  // Auth middleware runs AFTER observability so 401s still show up in
-  // metrics (you want to see auth failures); /healthz and /metrics are
-  // whitelisted inside the auth middleware itself.
+  // Rate limiting runs BEFORE auth so unauthenticated floods are capped
+  // even while auth middleware cheaply rejects them — the attacker still
+  // has to burn one request per rejection. Auth then runs so 401s still
+  // show up in metrics (you want to see auth failures). `/healthz` and
+  // `/metrics` are whitelisted by all three middlewares independently.
   app.use("*", observabilityMiddleware);
+  app.use("*", createRateLimitMiddleware({ rpm: deps.rateLimitRpm ?? 0 }));
   app.use("*", createAuthMiddleware({ token: deps.apiToken }));
 
   // Prometheus scrape endpoint. Not auth-gated (matches /healthz) —
@@ -224,6 +235,9 @@ export function buildApp(deps: ServerDeps): Hono {
       auth: deps.apiToken
         ? "required (Authorization: Bearer <OPENCLAW_API_TOKEN>)"
         : "disabled (OPENCLAW_API_TOKEN unset — do NOT expose this port beyond loopback)",
+      rate_limit: deps.rateLimitRpm
+        ? `${deps.rateLimitRpm} req/min per caller (keyed by token, else IP)`
+        : "disabled (OPENCLAW_RATE_LIMIT_RPM unset or 0)",
       endpoints: {
         agents: {
           create: "POST /v1/agents",

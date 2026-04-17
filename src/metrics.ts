@@ -102,3 +102,11 @@ export const sessionEventsTotal = new Counter({
   labelNames: ["type"] as const, // "user.message" | "user.tool_confirmation"
   registers: [registry],
 });
+
+/** Total rate-limit rejections, by key kind. */
+export const rateLimitRejectionsTotal = new Counter({
+  name: "rate_limit_rejections_total",
+  help: "Total requests rejected by the rate limiter.",
+  labelNames: ["kind"] as const, // "token" | "ip"
+  registers: [registry],
+});
