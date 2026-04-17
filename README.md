@@ -189,6 +189,8 @@ The SSE stream emits an initial status event on connect and checks for status tr
 
 **Observability.** Structured pino logs in JSON (production) or pretty TTY (dev); every log line carries `request_id`, `agent_id`, `session_id` automatically via AsyncLocalStorage. Prometheus metrics at `GET /metrics` — HTTP counters + duration histograms, pool active/warm gauges, spawn + run duration histograms, per-source pool-acquire counters. See [docs/architecture.md#observability](./docs/architecture.md#observability).
 
+**Baseline bearer-token auth.** Set `OPENCLAW_API_TOKEN=<random-secret>` on the orchestrator host and every request must attach `Authorization: Bearer <token>` — except `/healthz` and `/metrics` (infra endpoints). Unset = auth disabled (localhost dev default). One token per deployment, matching Claude Managed Agents' API-key depth. Multi-tenancy / per-user ACLs are deliberately out of scope today; stack a reverse proxy (Caddy, Cloudflare Access) when you need them.
+
 ## Deploy
 
 Three one-command deploy scripts, each using the same `DockerContainerRuntime` and the same multi-arch GHCR images.

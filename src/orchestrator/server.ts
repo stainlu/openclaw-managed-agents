@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { streamSSE } from "hono/streaming";
+import { createAuthMiddleware } from "../auth.js";
 import { addContext, getLogger, withContext } from "../log.js";
 import {
   agentsCreatedTotal,
@@ -86,6 +87,13 @@ export type ServerDeps = {
   sessions: SessionStore;
   events: PiJsonlEventReader;
   router: AgentRouter;
+  /**
+   * Baseline bearer-token auth. Undefined or empty string → auth
+   * disabled (localhost dev default). Any non-empty string → every
+   * route except /healthz and /metrics requires
+   * `Authorization: Bearer <apiToken>`.
+   */
+  apiToken?: string;
   /**
    * Item 12-14: parent-token minter/verifier. POST /v1/sessions verifies
    * an optional X-OpenClaw-Parent-Token header against this minter when a
@@ -192,7 +200,11 @@ export function buildApp(deps: ServerDeps): Hono {
   // Register the observability middleware first so every downstream
   // handler (including SSE streams) runs inside the request-id scope
   // and contributes to http_requests_total / http_request_duration_seconds.
+  // Auth middleware runs AFTER observability so 401s still show up in
+  // metrics (you want to see auth failures); /healthz and /metrics are
+  // whitelisted inside the auth middleware itself.
   app.use("*", observabilityMiddleware);
+  app.use("*", createAuthMiddleware({ token: deps.apiToken }));
 
   // Prometheus scrape endpoint. Not auth-gated (matches /healthz) —
   // operators firewall :8080 if the metrics should not be public.
@@ -209,6 +221,9 @@ export function buildApp(deps: ServerDeps): Hono {
       description: "The open alternative to Claude Managed Agents.",
       version: deps.version,
       docs: "https://github.com/stainlu/openclaw-managed-agents",
+      auth: deps.apiToken
+        ? "required (Authorization: Bearer <OPENCLAW_API_TOKEN>)"
+        : "disabled (OPENCLAW_API_TOKEN unset — do NOT expose this port beyond loopback)",
       endpoints: {
         agents: {
           create: "POST /v1/agents",

@@ -151,6 +151,12 @@ async function main(): Promise<void> {
     "OPENCLAW_WARM_IDLE_TIMEOUT_MS",
     idleTimeoutMs,
   );
+  // Optional baseline bearer-token auth for the public HTTP API. When
+  // unset or empty, every route (except /healthz and /metrics) is open
+  // — fine for `docker compose up` on localhost. Set on any deploy
+  // exposing port 8080 beyond loopback. Matches Claude Managed Agents'
+  // API-key depth: one shared token per deployment, nothing fancier.
+  const apiToken = (process.env.OPENCLAW_API_TOKEN ?? "").trim();
 
   const runtime = new DockerContainerRuntime({ network });
   await runtime.ensureNetwork();
@@ -265,12 +271,18 @@ async function main(): Promise<void> {
       orphaned_containers_reaped: orphanedContainers,
       orphaned_sessions_failed: orphaned,
       passthrough_env_keys: passthroughEnvKeys,
+      api_auth: apiToken ? "bearer-token" : "disabled",
     },
     `OpenClaw Managed Agents v${version} starting`,
   );
   if (passthroughEnvKeys.length === 0) {
     log.warn(
       "no provider API keys detected in the host env. Export at least one (e.g. MOONSHOT_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY) before spawning agents, or runs will fail.",
+    );
+  }
+  if (!apiToken) {
+    log.warn(
+      "OPENCLAW_API_TOKEN is unset — the public HTTP API on port 8080 is open to any caller. Set OPENCLAW_API_TOKEN on every deploy that exposes the port beyond loopback.",
     );
   }
 
@@ -283,6 +295,7 @@ async function main(): Promise<void> {
       router,
       tokenMinter,
       version,
+      apiToken: apiToken || undefined,
     },
     { port },
   );

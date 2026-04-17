@@ -168,6 +168,7 @@ The orchestrator process itself reads a small set of env vars at startup. Everyt
 | `OPENCLAW_WARM_IDLE_TIMEOUT_MS` | Unclaimed-warm reap threshold | same as `OPENCLAW_IDLE_TIMEOUT_MS` |
 | `OPENCLAW_ORCHESTRATOR_URL` | URL injected into each spawned container so `openclaw-call-agent` can reach back | `http://openclaw-orchestrator:${PORT}` |
 | `OPENCLAW_PASSTHROUGH_ENV` | Comma-separated extra env var names to forward into agent containers | `""` |
+| `OPENCLAW_API_TOKEN` | Baseline bearer token for the public HTTP API. Empty = auth disabled. When set, every route except `/healthz` and `/metrics` requires `Authorization: Bearer <token>` (constant-time comparison). One token per deployment. | `""` (disabled) |
 
 Provider API keys (`MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_*`, etc.) are forwarded via the `collectPassthroughEnv()` allowlist in `src/index.ts`. Add custom vars via `OPENCLAW_PASSTHROUGH_ENV`. The four `OPENCLAW_MOONSHOT_PRICE_*_USD_PER_M` overrides are in that allowlist by default.
 
@@ -614,7 +615,8 @@ Covering `router.ts` and `pool.ts` in unit tests is harder because both take con
 
 ## Security notes
 
-- **Container auth.** Every spawned agent container gets a random 32-byte-hex `OPENCLAW_GATEWAY_TOKEN`. The orchestrator keeps the token in memory on the `Container` object and attaches it as a Bearer header on every call to that container. `/healthz` and `/readyz` bypass auth (they have to, for Docker healthchecks and orchestrator readiness polling); everything else requires the token.
+- **Public API auth (`src/auth.ts`).** The orchestrator's HTTP surface on port 8080 is gated by a single bearer-token check when `OPENCLAW_API_TOKEN` is set. Every route except `/healthz` and `/metrics` (both need to be reachable by probes and Prometheus without credentials) requires `Authorization: Bearer <OPENCLAW_API_TOKEN>`. Comparison is constant-time. Unset/empty = auth disabled (localhost-dev default). This matches Claude Managed Agents' API-key depth — one token per deployment, no per-user ACLs. Any deploy that exposes port 8080 beyond loopback MUST set this env var; the orchestrator emits a WARN log at startup when auth is disabled.
+- **Container auth (`OPENCLAW_GATEWAY_TOKEN`).** Every spawned agent container gets a random 32-byte-hex `OPENCLAW_GATEWAY_TOKEN` that's distinct from the public-API token above. The orchestrator keeps it in memory on the `Container` object and attaches it as a Bearer header on every call to that container. `/healthz` and `/readyz` bypass auth (Docker healthchecks + orchestrator readiness polling); everything else requires the token. This is purely internal — the container is bound to `openclaw-net` and not reachable from outside the Docker network.
 - **Network isolation.** Containers join `openclaw-net` (a bridge network) and are addressable only by their container name. They do not publish ports to the host. The orchestrator reaches them by name over the shared network.
 - **Resource limits.** Each container is capped at 2 GiB memory and 512 PIDs. Adjust in `src/runtime/docker.ts`:`spawn()` for production deploys.
 - **Credential passthrough.** Provider API keys are passed as env vars from the orchestrator into each spawned container. A future item replaces this with cloud-native secret managers (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, etc.) via an upstream OpenClaw `SecretRef` extension.
