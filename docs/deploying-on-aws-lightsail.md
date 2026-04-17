@@ -258,7 +258,11 @@ Each new backend is a ~300-line sibling of this script. No orchestrator core cha
 ## Security notes
 
 - **API key in cloud-init user-data.** The provider API key (e.g., `MOONSHOT_API_KEY`) is written to `/opt/openclaw/.env` via cloud-init. The user-data is visible via `aws lightsail get-instance --include-details` and in the instance's `/var/log/cloud-init-output.log`. Acceptable for a proof point; for production, use AWS Secrets Manager and pull the key at container start.
-- **Public API auth.** The orchestrator on port 8080 has NO bearer-token check unless you set `OPENCLAW_API_TOKEN`. SSH into the instance, append `OPENCLAW_API_TOKEN=<random-32-byte-hex>` to `/opt/openclaw/.env`, and run `cd /opt/openclaw && docker compose up -d` to apply. Clients then attach `Authorization: Bearer <that-value>` on every request. The orchestrator logs a WARN at startup when this is unset — any deploy exposing port 8080 to the public internet must set it.
+- **Public API auth.** The orchestrator on port 8080 has NO bearer-token check unless you set `OPENCLAW_API_TOKEN`. One command to generate + apply + verify end-to-end:
+  ```bash
+  ./scripts/rotate-api-token.sh lightsail <your-ip>
+  ```
+  The script SSHes in as `ubuntu`, rewrites `/opt/openclaw/.env` with sudo, restarts the orchestrator container, and verifies with a 401-then-200 curl pair. Prints the token for you to save. Re-run anytime to rotate. Any deploy exposing port 8080 to the public internet must set this — the orchestrator logs a WARN at startup when it's unset.
 - **Public ingress on port 8080.** Even with `OPENCLAW_API_TOKEN` set, the orchestrator is internet-reachable. For stronger isolation: (a) restrict the Lightsail firewall to specific source IPs via `aws lightsail put-instance-public-ports` with a `cidrs` field, (b) front with a Cloudflare Tunnel (no ports exposed), or (c) put the orchestrator behind an Application Load Balancer with IAM authorization.
 - **No TLS by default.** The quick deploy exposes HTTP on port 8080 without a certificate. For any real access, terminate TLS at a reverse proxy (Caddy is simplest) or front with Cloudflare. A Caddy sidecar with `--tls your-domain.example.com` is the two-line fix.
 - **Single instance = no HA.** If the Lightsail instance dies, all in-flight sessions fail and the orchestrator restarts. Lightsail's instance uptime SLA is best-effort. For HA, run two instances behind a Lightsail Load Balancer (~$18/month) with shared session state on S3 — Item 11 territory, not shipped today.

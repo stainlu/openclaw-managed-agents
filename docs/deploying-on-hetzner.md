@@ -221,7 +221,11 @@ Each new backend is a ~300-line sibling of `scripts/deploy-hetzner.sh` with a di
 
 ## Security notes
 
-- **Public API is open by default on this deploy.** The orchestrator on port 8080 is reachable from the internet and has no bearer-token check unless you set `OPENCLAW_API_TOKEN`. For any deploy that leaves port 8080 public, SSH into the server, append `OPENCLAW_API_TOKEN=<random-32-byte-hex>` to `/opt/openclaw/.env`, and run `cd /opt/openclaw && docker compose up -d` to apply. Clients then attach `Authorization: Bearer <that-value>` on every request. The orchestrator logs a WARN at startup when this is unset.
+- **Public API is open by default on this deploy.** The orchestrator on port 8080 is reachable from the internet and has no bearer-token check unless you set `OPENCLAW_API_TOKEN`. One command to generate + apply + verify end-to-end:
+  ```bash
+  ./scripts/rotate-api-token.sh hetzner <your-ip>
+  ```
+  The script SSHes in as `root`, rewrites `/opt/openclaw/.env`, restarts the orchestrator container, and verifies with a 401-then-200 curl pair. Prints the token for you to save. Re-run anytime to rotate.
 - **API key in cloud-init.** The provider API key (e.g., `MOONSHOT_API_KEY`) is written to `/opt/openclaw/.env` via cloud-init user-data. This means the key is visible in Hetzner's cloud-init logs and in `/var/log/cloud-init-output.log` on the server. Acceptable for a proof point; for production, use a secrets manager and swap the `.env` file for a pull at container start.
 - **Firewall.** The default Hetzner server has no firewall rules; port 8080 is publicly reachable. For production, add a Hetzner Cloud Firewall or use `ufw` to restrict to your known client IPs. Or put the orchestrator behind a Cloudflare Tunnel — no ports exposed, authenticated access only.
 - **No TLS by default.** The quick deploy exposes HTTP on port 8080 without a certificate. For any external access, terminate TLS at a reverse proxy (Caddy, Traefik, Nginx) or front it with Cloudflare. A Caddy sidecar with `--tls your-domain.example.com` is the simplest option.
