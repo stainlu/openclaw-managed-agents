@@ -1,0 +1,68 @@
+name: test
+
+# Gatekeeper for every push and PR: TypeScript typecheck (pnpm build) +
+# vitest unit suite (pnpm test). Runs on GitHub-hosted ubuntu — no
+# Docker spawn here (that lives in a separate workflow), so this is
+# fast (~1-2 minutes) and cheap. Any future regression on the 51-test
+# unit suite surfaces as a red PR badge before merge, not as a broken
+# container pulled from GHCR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: build + unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm lint` is `tsc --noEmit -p tsconfig.json` per package.json.
+      # Keeps the gate honest about type errors independent of dist/ output.
+      - name: Typecheck (pnpm lint)
+        run: pnpm lint
+
+      # Full build — catches cases where emit fails even though noEmit passed
+      # (rare but possible around declaration-file generation).
+      - name: Build (pnpm build)
+        run: pnpm build
+
+      - name: Unit tests (pnpm test)
+        run: pnpm test
+
+      - name: Entrypoint bash syntax
+        run: bash -n docker/entrypoint.sh
+
+      - name: Deploy script bash syntax
+        run: |
+          for script in scripts/deploy-*.sh; do
+            echo "checking $script"
+            bash -n "$script"
+          done
+
+      - name: apply-provider-config.mjs syntax
+        run: node --check docker/apply-provider-config.mjs
