@@ -20,7 +20,7 @@ Anthropic's [Claude Managed Agents](https://www.anthropic.com/engineering/manage
 | Subagent observability | Opaque (tool result only) | First-class — every child session is inspectable via the same API |
 | Event types | 12+ types | 10 types + synthetic session status events |
 | Agent versioning | Immutable history | Immutable history + optimistic concurrency + archive |
-| SDK | 7 languages + CLI | OpenAI drop-in (any language with an OpenAI SDK) |
+| SDK | 7 languages + CLI | Python + TypeScript + OpenAI drop-in |
 
 ## Quick start
 
@@ -76,6 +76,20 @@ for event in client.sessions.stream(session.session_id):
 ```
 
 See [`examples/research-assistant/`](./examples/research-assistant/) for a ~200-line copy-paste starting point that streams events in real time.
+
+Or use the TypeScript SDK:
+
+```ts
+import { OpenClawClient } from "@stainlu/openclaw-managed-agents";
+
+const client = new OpenClawClient({ baseUrl: "http://localhost:8080" });
+const agent = await client.agents.create({ model: "moonshot/kimi-k2.5", instructions: "You are helpful." });
+const session = await client.sessions.create({ agentId: agent.agent_id });
+await client.sessions.send(session.session_id, { content: "What is 2+2?" });
+for await (const event of client.sessions.stream(session.session_id)) {
+  if (event.type === "agent.message") { console.log(event.content); break; }
+}
+```
 
 Or use the OpenAI SDK — just change `base_url`:
 

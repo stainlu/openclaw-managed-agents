@@ -1,0 +1,47 @@
+{
+  "name": "@stainlu/openclaw-managed-agents",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for OpenClaw Managed Agents — the open alternative to Claude Managed Agents",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "sideEffects": false,
+  "keywords": [
+    "openclaw",
+    "managed-agents",
+    "agents",
+    "llm",
+    "ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stainlu/openclaw-managed-agents.git",
+    "directory": "sdk/typescript"
+  },
+  "homepage": "https://github.com/stainlu/openclaw-managed-agents#typescript-sdk",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.1"
+  }
+}

@@ -1,10 +1,10 @@
 name: test
 
 # Gatekeeper for every push and PR: TypeScript typecheck (pnpm build) +
-# vitest unit suite (pnpm test). Runs on GitHub-hosted ubuntu — no
-# Docker spawn here (that lives in a separate workflow), so this is
-# fast (~1-2 minutes) and cheap. Any future regression on the 51-test
-# unit suite surfaces as a red PR badge before merge, not as a broken
+# vitest unit suite (pnpm test) + TypeScript SDK build and test. Runs on
+# GitHub-hosted ubuntu — no Docker spawn here (that lives in a separate
+# workflow), so this is fast (~1-2 minutes) and cheap. Regressions on
+# the unit suite surface as a red PR badge before merge, not as a broken
 # container pulled from GHCR.
 
 on:
@@ -66,3 +66,18 @@ jobs:
 
       - name: apply-provider-config.mjs syntax
         run: node --check docker/apply-provider-config.mjs
+
+      # TypeScript SDK lives in its own package with its own deps (vitest,
+      # typescript). Install via npm (not pnpm workspaces) so it stays
+      # self-contained and can be published independently.
+      - name: TypeScript SDK — install
+        working-directory: sdk/typescript
+        run: npm install --no-audit --no-fund
+
+      - name: TypeScript SDK — build
+        working-directory: sdk/typescript
+        run: npm run build
+
+      - name: TypeScript SDK — tests
+        working-directory: sdk/typescript
+        run: npm test
