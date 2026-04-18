@@ -229,14 +229,16 @@ export class AgentRouter {
       log.warn({ session_id: sessionId, agent_id: session.agentId }, "warmSession: agent not found, skipping warm-up");
       return;
     }
-    const spawnOptions = this.buildSpawnOptions(sessionId, agent, session);
-    const networking = this.resolveNetworking(session);
-    await this.pool.acquireForSession({
-      sessionId,
-      spawnOptions,
-      agentId: agent.agentId,
-      networking,
-    });
+    // Delegate to warmForAgent so the shared per-agent dedup map in the
+    // pool prevents a parallel spawn against the same agent-workspace
+    // bind mount. The previous implementation spawned a session-scoped
+    // container here that could collide with the warmForAgent triggered
+    // on agent-create, causing one of them to exit(1) under Pi's
+    // SessionManager lock. Sessions for delegating agents (subagent
+    // tokens baked into env) skip warm pool entirely via warmForAgent's
+    // own guard, so the first POST /events on those sessions still
+    // cold-spawns on demand.
+    await this.warmForAgent(agent.agentId);
   }
 
   /**
@@ -1059,12 +1061,37 @@ export class AgentRouter {
     const data = (await res.json()) as ChatCompletionResponse;
     const output = data.choices?.[0]?.message?.content ?? "";
     const usage = data.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+
+    // OpenClaw's OpenAI-compat endpoint returns HTTP 200 even when the
+    // upstream provider errored — the failure surfaces as one of these
+    // content shapes (see openclaw dist/openai-http / agent-runner.runtime):
+    //   - empty string (assistant payloads filtered to nothing)
+    //   - "No response from OpenClaw." sentinel
+    //   - "⚠️ ..." user-facing fallback (auth / rate-limit / overload / context)
+    // Accepting these as success silently corrupts the session — the run
+    // looks idle with null error but the caller never got a real reply.
+    // Raise here so handleBackgroundFailure / endRunFailure surface it
+    // through HTTP like any other infrastructure failure.
+    if (isOpenClawFailureContent(output)) {
+      throw new RouterError(
+        "chat_completions_failed",
+        `upstream model call failed: ${output || "<empty reply>"}`,
+      );
+    }
+
     return {
       output,
       tokensIn: usage.prompt_tokens ?? 0,
       tokensOut: usage.completion_tokens ?? 0,
     };
   }
+}
+
+function isOpenClawFailureContent(content: string): boolean {
+  if (content === "" || content.trim() === "") return true;
+  if (content === "No response from OpenClaw.") return true;
+  if (content.startsWith("⚠️")) return true;
+  return false;
 }
 
 type ChatCompletionResponse = {

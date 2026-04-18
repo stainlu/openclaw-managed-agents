@@ -137,6 +137,16 @@ export class SessionContainerPool {
   private readonly pending = new Map<string, Promise<Container>>();
   /** Pre-warmed containers keyed by agentId, waiting to be claimed. */
   private readonly warm = new Map<string, WarmContainer>();
+  /**
+   * Inflight spawn promises keyed by agentId — used to dedupe concurrent
+   * warmForAgent calls AND concurrent first-event acquireForSession calls
+   * for sessions on the same agent. This is load-bearing: Pi's
+   * SessionManager takes an exclusive SQLite lock on the agent workspace
+   * bind mount, so two containers spawning against the same `agt_<id>`
+   * workspace race and one exits(1). Serialize per-agent to eliminate the
+   * collision entirely.
+   */
+  private readonly pendingByAgent = new Map<string, Promise<void>>();
   private sweeperHandle: NodeJS.Timeout | undefined;
 
   constructor(
@@ -167,6 +177,18 @@ export class SessionContainerPool {
    */
   async warmForAgent(agentId: string, spawnOptions: SpawnOptions): Promise<void> {
     if (this.warm.has(agentId)) return;
+    const inflight = this.pendingByAgent.get(agentId);
+    if (inflight) return inflight;
+    const promise = this.doWarmForAgent(agentId, spawnOptions);
+    this.pendingByAgent.set(agentId, promise);
+    try {
+      await promise;
+    } finally {
+      this.pendingByAgent.delete(agentId);
+    }
+  }
+
+  private async doWarmForAgent(agentId: string, spawnOptions: SpawnOptions): Promise<void> {
     await this.evictOldestWarmIfAtCap();
     const container = await this.runtime.spawn(spawnOptions);
     try {
@@ -234,8 +256,18 @@ export class SessionContainerPool {
       });
     }
 
-    // Check the warm pool for a matching pre-warmed container.
+    // Check the warm pool for a matching pre-warmed container. If a warm
+    // spawn is inflight for this agent, wait for it — starting our own
+    // parallel spawn would collide on the shared agent-workspace bind
+    // mount and Pi's SessionManager would exit(1) one of them. The
+    // pendingByAgent map makes warmForAgent idempotent.
     if (args.agentId) {
+      const inflight = this.pendingByAgent.get(args.agentId);
+      if (inflight) {
+        await inflight.catch(() => {
+          /* if the warm spawn threw, fall through to a fresh spawn below */
+        });
+      }
       const warmEntry = this.warm.get(args.agentId);
       if (warmEntry) {
         this.warm.delete(args.agentId);
