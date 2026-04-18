@@ -1,0 +1,16 @@
+{
+  "name": "openclaw-managed-agents-telegram-adapter",
+  "private": true,
+  "version": "0.1.0-dev",
+  "description": "First-party Telegram adapter for openclaw-managed-agents. Routes Telegram chats to managed-agent sessions.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

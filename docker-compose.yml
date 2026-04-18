@@ -131,6 +131,34 @@ services:
     command: ["true"]
     restart: "no"
 
+  # First-party Telegram adapter. Opt in with `docker compose
+  # --profile telegram up -d`. Needs TELEGRAM_BOT_TOKEN (from @BotFather)
+  # and OPENCLAW_TELEGRAM_AGENT_ID (the agt_... id of the agent you
+  # want the bot to route messages to — create it first via
+  # `POST /v1/agents`). Persists chat→session mappings at
+  # ./data/telegram-adapter/chats.json so conversations survive
+  # adapter restarts.
+  telegram-adapter:
+    image: ghcr.io/stainlu/openclaw-managed-agents-telegram-adapter:latest
+    build:
+      context: .
+      dockerfile: docker/telegram-adapter/Dockerfile
+    container_name: openclaw-telegram-adapter
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      OPENCLAW_AGENT_ID: ${OPENCLAW_TELEGRAM_AGENT_ID:-}
+      OPENCLAW_ORCHESTRATOR_URL: http://openclaw-orchestrator:8080
+      OPENCLAW_API_TOKEN: ${OPENCLAW_API_TOKEN:-}
+    volumes:
+      - ./data/telegram-adapter:/state
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - openclaw-net
+    restart: unless-stopped
+    profiles: ["telegram"]
+
 networks:
   openclaw-net:
     name: openclaw-net
