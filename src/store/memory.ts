@@ -10,6 +10,7 @@ import type {
   UpdateAgentRequest,
 } from "../orchestrator/types.js";
 import type {
+  AddCredentialInput,
   AgentStore,
   AuditRecord,
   AuditStore,
@@ -22,6 +23,7 @@ import type {
   Store,
   Vault,
   VaultCredential,
+  VaultCredentialMcpOAuth,
   VaultStore,
 } from "./types.js";
 
@@ -411,29 +413,59 @@ class InMemoryVaultStore implements VaultStore {
     return removed;
   }
 
-  addCredential(args: {
-    vaultId: string;
-    name: string;
-    type: "static_bearer";
-    matchUrl: string;
-    token: string;
-  }): VaultCredential | undefined {
+  addCredential(args: AddCredentialInput): VaultCredential | undefined {
     if (!this.vaults.has(args.vaultId)) return undefined;
     const now = Date.now();
-    const cred: VaultCredential = {
-      credentialId: `crd_${nanoid()}`,
-      vaultId: args.vaultId,
-      name: args.name,
-      type: args.type,
-      matchUrl: args.matchUrl,
-      token: args.token,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const credentialId = `crd_${nanoid()}`;
+    const cred: VaultCredential = args.type === "static_bearer"
+      ? {
+          credentialId,
+          vaultId: args.vaultId,
+          name: args.name,
+          type: "static_bearer",
+          matchUrl: args.matchUrl,
+          token: args.token,
+          createdAt: now,
+          updatedAt: now,
+        }
+      : {
+          credentialId,
+          vaultId: args.vaultId,
+          name: args.name,
+          type: "mcp_oauth",
+          matchUrl: args.matchUrl,
+          accessToken: args.accessToken,
+          refreshToken: args.refreshToken,
+          expiresAt: args.expiresAt,
+          tokenEndpoint: args.tokenEndpoint,
+          clientId: args.clientId,
+          clientSecret: args.clientSecret,
+          scopes: args.scopes,
+          createdAt: now,
+          updatedAt: now,
+        };
     this.credentials.set(cred.credentialId, cred);
     const vault = this.vaults.get(args.vaultId);
     if (vault) this.vaults.set(args.vaultId, { ...vault, updatedAt: now });
     return cred;
+  }
+
+  updateOAuthTokens(
+    credentialId: string,
+    args: { accessToken: string; refreshToken?: string; expiresAt: number },
+  ): VaultCredentialMcpOAuth | undefined {
+    const existing = this.credentials.get(credentialId);
+    if (!existing || existing.type !== "mcp_oauth") return undefined;
+    const now = Date.now();
+    const updated: VaultCredentialMcpOAuth = {
+      ...existing,
+      accessToken: args.accessToken,
+      refreshToken: args.refreshToken ?? existing.refreshToken,
+      expiresAt: args.expiresAt,
+      updatedAt: now,
+    };
+    this.credentials.set(credentialId, updated);
+    return updated;
   }
 
   getCredential(credentialId: string): VaultCredential | undefined {

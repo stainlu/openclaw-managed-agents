@@ -95,34 +95,102 @@ export type Vault = {
 };
 
 /**
- * One credential inside a vault. v1 supports `static_bearer` only —
- * when a session's MCP server URL has `matchUrl` as a prefix, we
- * inject `Authorization: Bearer <token>`.
+ * One credential inside a vault. Discriminated by `type`:
  *
- * `mcp_oauth` with auto-refresh is a planned v2. Its shape will add
- * refreshToken / tokenEndpoint / clientId / clientSecret / expiresAt
- * plus a refresh path on session spawn. The type discriminator is
- * called `type` (not `kind`) so it maps directly onto CMA's JSON shape.
+ *   - `static_bearer` — plain token, injected as
+ *     `Authorization: Bearer <token>`. Never rotates; rotate by
+ *     delete + re-add.
+ *
+ *   - `mcp_oauth` — OAuth 2.0 credential with auto-refresh. Stores
+ *     access + refresh tokens, expiry, and the refresh endpoint /
+ *     client_id / client_secret needed to refresh. At session spawn,
+ *     the orchestrator refreshes if expiry is within 60s and updates
+ *     the stored credential with the new tokens before injecting
+ *     `Authorization: Bearer <accessToken>`.
+ *
+ * Shape matches Claude MA's vault so migration is a rename. Secret
+ * fields (`token`, `accessToken`, `refreshToken`, `clientSecret`) are
+ * NEVER returned by the API — responses strip them to
+ * `VaultCredentialPublic`.
  */
-export type VaultCredential = {
+export type VaultCredential = VaultCredentialStaticBearer | VaultCredentialMcpOAuth;
+
+export type VaultCredentialStaticBearer = {
   credentialId: string;
   vaultId: string;
   name: string;
   type: "static_bearer";
   matchUrl: string;
-  /** Secret material — NEVER returned to API callers. Only used at spawn. */
+  /** Secret. */
   token: string;
   createdAt: number;
   updatedAt: number;
 };
 
+export type VaultCredentialMcpOAuth = {
+  credentialId: string;
+  vaultId: string;
+  name: string;
+  type: "mcp_oauth";
+  matchUrl: string;
+  /** Current access token. Rotated in place on refresh. Secret. */
+  accessToken: string;
+  /** Refresh token. Rotated in place if the provider issues a new one
+   *  on refresh (e.g., GitHub rotates refresh tokens). Secret. */
+  refreshToken: string;
+  /** Unix ms when `accessToken` expires. Orchestrator refreshes when
+   *  `expiresAt - 60_000 < Date.now()`. */
+  expiresAt: number;
+  /** OAuth 2.0 token endpoint (e.g.,
+   *  `https://github.com/login/oauth/access_token`). */
+  tokenEndpoint: string;
+  /** OAuth app client id. Public metadata — returned in API responses. */
+  clientId: string;
+  /** OAuth app client secret. Secret — never returned. */
+  clientSecret: string;
+  /** Optional scopes granted at the initial OAuth dance. Kept for
+   *  audit/display; not sent on refresh. */
+  scopes?: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 /**
- * Shape returned by the HTTP API for a credential — the secret is
- * stripped. Consumers never see `token`. The only way to retrieve the
- * secret is inside the spawn path where the orchestrator reads it from
- * the VaultStore to inject into MCP headers.
+ * Shape returned by the HTTP API for a credential — all secret fields
+ * stripped. Consumers never see `token`, `accessToken`, `refreshToken`,
+ * or `clientSecret`. The only path that reads plaintext secrets is the
+ * spawn-time injection internal to the router.
  */
-export type VaultCredentialSansSecret = Omit<VaultCredential, "token">;
+export type VaultCredentialPublic =
+  | (Omit<VaultCredentialStaticBearer, "token">)
+  | (Omit<VaultCredentialMcpOAuth, "accessToken" | "refreshToken" | "clientSecret">);
+
+/** Legacy alias kept for callers that used the old name. */
+export type VaultCredentialSansSecret = VaultCredentialPublic;
+
+/** Discriminated union of credential-creation inputs, passed to
+ *  VaultStore.addCredential. Shape matches the HTTP request body. */
+export type AddCredentialInput =
+  | {
+      vaultId: string;
+      name: string;
+      type: "static_bearer";
+      matchUrl: string;
+      token: string;
+    }
+  | {
+      vaultId: string;
+      name: string;
+      type: "mcp_oauth";
+      matchUrl: string;
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: number;
+      tokenEndpoint: string;
+      clientId: string;
+      clientSecret: string;
+      scopes?: string[];
+    };
 
 export interface VaultStore {
   createVault(args: { userId: string; name: string }): Vault;
@@ -130,16 +198,19 @@ export interface VaultStore {
   listVaults(filter?: { userId?: string }): Vault[];
   deleteVault(vaultId: string): boolean;
 
-  addCredential(args: {
-    vaultId: string;
-    name: string;
-    type: "static_bearer";
-    matchUrl: string;
-    token: string;
-  }): VaultCredential | undefined;
+  addCredential(args: AddCredentialInput): VaultCredential | undefined;
   getCredential(credentialId: string): VaultCredential | undefined;
   listCredentials(vaultId: string): VaultCredential[];
   deleteCredential(credentialId: string): boolean;
+
+  /** Update an mcp_oauth credential's tokens in place after a refresh
+   *  round-trip. Updates `accessToken`, optionally `refreshToken`,
+   *  `expiresAt`, and `updatedAt`. Returns the updated credential or
+   *  undefined if the credentialId doesn't exist or isn't mcp_oauth. */
+  updateOAuthTokens(
+    credentialId: string,
+    args: { accessToken: string; refreshToken?: string; expiresAt: number },
+  ): VaultCredentialMcpOAuth | undefined;
 }
 
 export interface AgentStore {

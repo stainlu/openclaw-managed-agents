@@ -79,6 +79,11 @@ services:
       # for the single-token model (matches Claude Managed Agents' API-key
       # depth).
       OPENCLAW_API_TOKEN: ${OPENCLAW_API_TOKEN:-}
+      # Master key for vault credential encryption-at-rest. 32 bytes as
+      # 64 hex chars (or base64 / base64url). Unset = orchestrator
+      # generates + persists in SQLite (fine for dev, but then key
+      # rotation requires DB access rather than env change).
+      OPENCLAW_VAULT_KEY: ${OPENCLAW_VAULT_KEY:-}
       # AWS credential chain (Bedrock)
       AWS_REGION: ${AWS_REGION:-}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}

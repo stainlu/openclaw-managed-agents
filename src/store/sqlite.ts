@@ -21,6 +21,7 @@ import type {
   AuditRecord,
   AuditStore,
   EnvironmentStore,
+  AddCredentialInput,
   QueuedEvent,
   QueueStore,
   RunUsage,
@@ -29,6 +30,7 @@ import type {
   Store,
   Vault,
   VaultCredential,
+  VaultCredentialMcpOAuth,
   VaultStore,
 } from "./types.js";
 
@@ -279,7 +281,16 @@ CREATE TABLE IF NOT EXISTS vault_credentials (
   name TEXT NOT NULL,
   cred_type TEXT NOT NULL,
   match_url TEXT NOT NULL,
+  -- Encrypted at rest (AES-256-GCM via VaultCrypto). Contents vary by
+  -- type: static_bearer = the raw bearer token; mcp_oauth = JSON blob
+  -- of accessToken + refreshToken + clientSecret. Non-secret OAuth
+  -- fields live in their own columns below.
   token TEXT NOT NULL,
+  -- mcp_oauth only (NULL for static_bearer)
+  token_endpoint TEXT,
+  client_id TEXT,
+  scopes_json TEXT,
+  expires_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -724,6 +735,23 @@ class SqliteSessionStore implements SessionStore {
 // VaultStore interface). The data IS protected by file-system
 // permissions on the orchestrator's state dir — a compromised SQLite
 // file is still a compromise.
+// Row shape reflecting the full vault_credentials table post-mcp_oauth.
+// OAuth-only columns are NULL for static_bearer rows.
+type VaultCredentialRow = {
+  credential_id: string;
+  vault_id: string;
+  name: string;
+  cred_type: string;
+  match_url: string;
+  token: string;
+  token_endpoint: string | null;
+  client_id: string | null;
+  scopes_json: string | null;
+  expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
 class SqliteVaultStore implements VaultStore {
   private readonly insertVaultStmt: Database.Statement;
   private readonly getVaultStmt: Database.Statement;
@@ -735,6 +763,7 @@ class SqliteVaultStore implements VaultStore {
   private readonly listCredsStmt: Database.Statement;
   private readonly deleteCredStmt: Database.Statement;
   private readonly touchVaultStmt: Database.Statement;
+  private readonly updateOAuthTokensStmt: Database.Statement;
 
   private readonly dbRef: Database.Database;
 
@@ -753,11 +782,18 @@ class SqliteVaultStore implements VaultStore {
     this.insertCredStmt = db.prepare(
       `INSERT INTO vault_credentials (
         credential_id, vault_id, name, cred_type, match_url, token,
+        token_endpoint, client_id, scopes_json, expires_at,
         created_at, updated_at
        ) VALUES (
         @credential_id, @vault_id, @name, @cred_type, @match_url, @token,
+        @token_endpoint, @client_id, @scopes_json, @expires_at,
         @now, @now
        )`,
+    );
+    this.updateOAuthTokensStmt = db.prepare(
+      `UPDATE vault_credentials
+         SET token = @token, expires_at = @expires_at, updated_at = @now
+       WHERE credential_id = @credential_id AND cred_type = 'mcp_oauth'`,
     );
     this.getCredStmt = db.prepare(`SELECT * FROM vault_credentials WHERE credential_id = ?`);
     this.listCredsStmt = db.prepare(
@@ -826,89 +862,166 @@ class SqliteVaultStore implements VaultStore {
     return info.changes > 0;
   }
 
-  addCredential(args: {
-    vaultId: string;
-    name: string;
-    type: "static_bearer";
-    matchUrl: string;
-    token: string;
-  }): VaultCredential | undefined {
+  addCredential(args: AddCredentialInput): VaultCredential | undefined {
     if (!this.getVault(args.vaultId)) return undefined;
     const now = Date.now();
+    const credentialId = `crd_${nanoid()}`;
+    // Encrypt at rest so a leaked SQLite file alone doesn't leak
+    // plaintext credentials. The master key lives in env
+    // (OPENCLAW_VAULT_KEY) or in kv_secrets — out-of-band from the
+    // vault_credentials table.
+    if (args.type === "static_bearer") {
+      const cred: VaultCredential = {
+        credentialId,
+        vaultId: args.vaultId,
+        name: args.name,
+        type: "static_bearer",
+        matchUrl: args.matchUrl,
+        token: args.token,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.insertCredStmt.run({
+        credential_id: credentialId,
+        vault_id: args.vaultId,
+        name: args.name,
+        cred_type: "static_bearer",
+        match_url: args.matchUrl,
+        token: this.crypto.encrypt(args.token),
+        token_endpoint: null,
+        client_id: null,
+        scopes_json: null,
+        expires_at: null,
+        now,
+      });
+      this.touchVaultStmt.run({ vault_id: args.vaultId, now });
+      return cred;
+    }
+    // mcp_oauth: store an encrypted JSON blob of the secret triple in
+    // the `token` column; public OAuth metadata goes in dedicated
+    // columns so refresh can read expires_at without decrypting.
     const cred: VaultCredential = {
-      credentialId: `crd_${nanoid()}`,
+      credentialId,
       vaultId: args.vaultId,
       name: args.name,
-      type: args.type,
+      type: "mcp_oauth",
       matchUrl: args.matchUrl,
-      token: args.token,
+      accessToken: args.accessToken,
+      refreshToken: args.refreshToken,
+      expiresAt: args.expiresAt,
+      tokenEndpoint: args.tokenEndpoint,
+      clientId: args.clientId,
+      clientSecret: args.clientSecret,
+      scopes: args.scopes,
       createdAt: now,
       updatedAt: now,
     };
     this.insertCredStmt.run({
-      credential_id: cred.credentialId,
-      vault_id: cred.vaultId,
-      name: cred.name,
-      cred_type: cred.type,
-      match_url: cred.matchUrl,
-      // Encrypt at rest so a leaked SQLite file alone doesn't leak
-      // plaintext credentials. The master key lives in env
-      // (OPENCLAW_VAULT_KEY) or in kv_secrets — out-of-band from the
-      // vault_credentials table.
-      token: this.crypto.encrypt(cred.token),
+      credential_id: credentialId,
+      vault_id: args.vaultId,
+      name: args.name,
+      cred_type: "mcp_oauth",
+      match_url: args.matchUrl,
+      token: this.crypto.encrypt(
+        JSON.stringify({
+          accessToken: args.accessToken,
+          refreshToken: args.refreshToken,
+          clientSecret: args.clientSecret,
+        }),
+      ),
+      token_endpoint: args.tokenEndpoint,
+      client_id: args.clientId,
+      scopes_json: args.scopes ? JSON.stringify(args.scopes) : null,
+      expires_at: args.expiresAt,
       now,
     });
-    this.touchVaultStmt.run({ vault_id: cred.vaultId, now });
+    this.touchVaultStmt.run({ vault_id: args.vaultId, now });
     return cred;
   }
 
   getCredential(credentialId: string): VaultCredential | undefined {
-    const row = this.getCredStmt.get(credentialId) as
-      | {
-          credential_id: string;
-          vault_id: string;
-          name: string;
-          cred_type: string;
-          match_url: string;
-          token: string;
-          created_at: number;
-          updated_at: number;
-        }
-      | undefined;
+    const row = this.getCredStmt.get(credentialId) as VaultCredentialRow | undefined;
     if (!row) return undefined;
-    return {
-      credentialId: row.credential_id,
-      vaultId: row.vault_id,
-      name: row.name,
-      type: row.cred_type as "static_bearer",
-      matchUrl: row.match_url,
-      token: this.decryptStored(row.token),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    return this.rowToCredential(row);
   }
 
   listCredentials(vaultId: string): VaultCredential[] {
-    const rows = this.listCredsStmt.all(vaultId) as Array<{
-      credential_id: string;
-      vault_id: string;
-      name: string;
-      cred_type: string;
-      match_url: string;
-      token: string;
-      created_at: number;
-      updated_at: number;
-    }>;
-    return rows.map((r) => ({
+    const rows = this.listCredsStmt.all(vaultId) as VaultCredentialRow[];
+    return rows.map((r) => this.rowToCredential(r));
+  }
+
+  updateOAuthTokens(
+    credentialId: string,
+    args: { accessToken: string; refreshToken?: string; expiresAt: number },
+  ): VaultCredentialMcpOAuth | undefined {
+    const existing = this.getCredential(credentialId);
+    if (!existing || existing.type !== "mcp_oauth") return undefined;
+    const now = Date.now();
+    const newSecrets = {
+      accessToken: args.accessToken,
+      refreshToken: args.refreshToken ?? existing.refreshToken,
+      clientSecret: existing.clientSecret,
+    };
+    const info = this.updateOAuthTokensStmt.run({
+      credential_id: credentialId,
+      token: this.crypto.encrypt(JSON.stringify(newSecrets)),
+      expires_at: args.expiresAt,
+      now,
+    });
+    if (info.changes === 0) return undefined;
+    return {
+      ...existing,
+      accessToken: newSecrets.accessToken,
+      refreshToken: newSecrets.refreshToken,
+      expiresAt: args.expiresAt,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Decode a stored row back into a typed VaultCredential. Decrypts
+   * the secret blob based on cred_type and splits OAuth public/secret
+   * columns back into one object.
+   */
+  private rowToCredential(r: VaultCredentialRow): VaultCredential {
+    const plain = this.decryptStored(r.token);
+    if (r.cred_type === "static_bearer") {
+      return {
+        credentialId: r.credential_id,
+        vaultId: r.vault_id,
+        name: r.name,
+        type: "static_bearer",
+        matchUrl: r.match_url,
+        token: plain,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      };
+    }
+    // mcp_oauth: plain is a JSON blob of secrets.
+    let secrets: { accessToken: string; refreshToken: string; clientSecret: string };
+    try {
+      secrets = JSON.parse(plain);
+    } catch {
+      throw new Error(
+        `vault credential ${r.credential_id} is mcp_oauth but decrypted payload is not valid JSON`,
+      );
+    }
+    return {
       credentialId: r.credential_id,
       vaultId: r.vault_id,
       name: r.name,
-      type: r.cred_type as "static_bearer",
+      type: "mcp_oauth",
       matchUrl: r.match_url,
-      token: this.decryptStored(r.token),
+      accessToken: secrets.accessToken,
+      refreshToken: secrets.refreshToken,
+      expiresAt: r.expires_at ?? 0,
+      tokenEndpoint: r.token_endpoint ?? "",
+      clientId: r.client_id ?? "",
+      clientSecret: secrets.clientSecret,
+      scopes: r.scopes_json ? (JSON.parse(r.scopes_json) as string[]) : undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-    }));
+    };
   }
 
   /**
@@ -1213,6 +1326,23 @@ export class SqliteStore implements Store {
       // Vault binding. Pre-migration rows default to NULL (no vault),
       // which is the existing behavior — no credentials injected.
       this.db.exec("ALTER TABLE sessions ADD COLUMN vault_id TEXT");
+    }
+    // mcp_oauth columns on vault_credentials. Pre-migration rows are
+    // all static_bearer with these NULL, which matches their type.
+    const vaultCredsCols = this.db.pragma("table_info(vault_credentials)") as Array<{
+      name: string;
+    }>;
+    if (vaultCredsCols.length > 0 && !vaultCredsCols.some((c) => c.name === "token_endpoint")) {
+      this.db.exec("ALTER TABLE vault_credentials ADD COLUMN token_endpoint TEXT");
+    }
+    if (vaultCredsCols.length > 0 && !vaultCredsCols.some((c) => c.name === "client_id")) {
+      this.db.exec("ALTER TABLE vault_credentials ADD COLUMN client_id TEXT");
+    }
+    if (vaultCredsCols.length > 0 && !vaultCredsCols.some((c) => c.name === "scopes_json")) {
+      this.db.exec("ALTER TABLE vault_credentials ADD COLUMN scopes_json TEXT");
+    }
+    if (vaultCredsCols.length > 0 && !vaultCredsCols.some((c) => c.name === "expires_at")) {
+      this.db.exec("ALTER TABLE vault_credentials ADD COLUMN expires_at INTEGER");
     }
     const agentsCols = this.db.pragma("table_info(agents)") as Array<{
       name: string;

@@ -24,6 +24,7 @@ import type {
   SessionStore,
   VaultStore,
 } from "../store/types.js";
+import type { VaultCredentialMcpOAuth } from "../store/types.js";
 import type { AgentConfig, Session } from "./types.js";
 
 const log = getLogger("router");
@@ -411,6 +412,12 @@ export class AgentRouter {
     addContext({ sessionId: args.sessionId, agentId: agent.agentId });
 
     try {
+      // Refresh any OAuth credentials bound to this session that are
+      // about to expire, BEFORE we build spawn options (buildSpawnOptions
+      // reads the updated creds via injectVaultCredentials). Throws
+      // `credential_expired` on refresh failure so the caller's app
+      // knows to re-run OAuth for the end-user.
+      await this.refreshExpiringOAuthCredentials(agent, running.vaultId ?? null);
       const spawnOptions = this.buildSpawnOptions(args.sessionId, agent, running);
       const networking = this.resolveNetworking(running);
       const container = await this.pool.acquireForSession({
@@ -839,16 +846,134 @@ export class AgentRouter {
         out[name] = server;
         continue;
       }
+      const bearer = match.type === "mcp_oauth" ? match.accessToken : match.token;
       const existingHeaders = (server.headers ?? {}) as Record<string, string>;
       out[name] = {
         ...server,
         headers: {
           ...existingHeaders,
-          Authorization: `Bearer ${match.token}`,
+          Authorization: `Bearer ${bearer}`,
         },
       };
     }
     return out;
+  }
+
+  /**
+   * Refresh any mcp_oauth credentials in the vault that are within the
+   * `expiresAt - 60s` window before they're injected into a session.
+   * Updates the stored credential in place (vaultStore.updateOAuthTokens)
+   * so subsequent spawns use the fresh access token.
+   *
+   * Called exactly once per acquire (from executeInBackground and
+   * streamEvent, before buildSpawnOptions). Failures throw
+   * `credential_expired` — the caller surfaces a 401 so the developer's
+   * app knows to re-run its OAuth flow for that end-user.
+   *
+   * Only refreshes credentials whose `matchUrl` is a prefix of at least
+   * one MCP server URL on the agent. Prevents pointless refresh of
+   * credentials that aren't about to be used.
+   */
+  private async refreshExpiringOAuthCredentials(
+    agent: AgentConfig,
+    vaultId: string | null,
+  ): Promise<void> {
+    if (!vaultId) return;
+    if (!agent.mcpServers || Object.keys(agent.mcpServers).length === 0) return;
+    const creds = this.vaults.listCredentials(vaultId);
+    const oauthCreds = creds.filter(
+      (c): c is VaultCredentialMcpOAuth => c.type === "mcp_oauth",
+    );
+    if (oauthCreds.length === 0) return;
+    const serverUrls = Object.values(agent.mcpServers)
+      .map((s) => (typeof s.url === "string" ? s.url : undefined))
+      .filter((u): u is string => typeof u === "string");
+    if (serverUrls.length === 0) return;
+    const now = Date.now();
+    const refreshThreshold = 60_000;
+    for (const cred of oauthCreds) {
+      const willBeUsed = serverUrls.some((u) => u.startsWith(cred.matchUrl));
+      if (!willBeUsed) continue;
+      if (cred.expiresAt - refreshThreshold > now) continue;
+      try {
+        const refreshed = await this.performOAuthRefresh(cred);
+        this.vaults.updateOAuthTokens(cred.credentialId, refreshed);
+        log.info(
+          {
+            credential_id: cred.credentialId,
+            vault_id: vaultId,
+            new_expires_at: refreshed.expiresAt,
+          },
+          "refreshed mcp_oauth credential",
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new RouterError(
+          "credential_expired",
+          `mcp_oauth credential ${cred.credentialId} refresh failed: ${msg}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * RFC 6749 section 6: token refresh via `grant_type=refresh_token`.
+   * Provider-agnostic — works for GitHub, Google, Notion, Asana, any
+   * OAuth 2.0 server that honors the standard refresh grant.
+   *
+   * Some providers return a new refresh_token on every rotation (GitHub
+   * does); we persist it when present. Some return only an
+   * `access_token` + `expires_in`; we keep the old refresh token in that
+   * case. Some providers use a non-standard response shape — add a
+   * provider discriminator here if we hit one in practice.
+   */
+  private async performOAuthRefresh(
+    cred: VaultCredentialMcpOAuth,
+  ): Promise<{ accessToken: string; refreshToken?: string; expiresAt: number }> {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: cred.refreshToken,
+      client_id: cred.clientId,
+      client_secret: cred.clientSecret,
+    });
+    const res = await fetch(cred.tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`token endpoint returned HTTP ${res.status}: ${text.slice(0, 500)}`);
+    }
+    // GitHub historically returned application/x-www-form-urlencoded
+    // on success; most other providers return JSON. Handle both.
+    const contentType = res.headers.get("content-type") ?? "";
+    let parsed: Record<string, unknown>;
+    if (contentType.includes("application/json")) {
+      parsed = (await res.json()) as Record<string, unknown>;
+    } else {
+      const text = await res.text();
+      parsed = Object.fromEntries(new URLSearchParams(text).entries());
+    }
+    const accessToken = parsed.access_token;
+    const refreshToken = parsed.refresh_token;
+    const expiresIn = parsed.expires_in;
+    if (typeof accessToken !== "string" || accessToken.length === 0) {
+      throw new Error(`token endpoint response missing access_token`);
+    }
+    const expiresAt =
+      typeof expiresIn === "number" || (typeof expiresIn === "string" && !Number.isNaN(Number(expiresIn)))
+        ? Date.now() + Number(expiresIn) * 1000
+        : Date.now() + 3600_000; // fallback: 1 hour
+    return {
+      accessToken,
+      refreshToken: typeof refreshToken === "string" && refreshToken.length > 0 ? refreshToken : undefined,
+      expiresAt,
+    };
   }
 
   async cancel(sessionId: string): Promise<Session> {
@@ -1044,6 +1169,10 @@ export class AgentRouter {
     thinkingLevelOverride?: string,
   ): Promise<void> {
     const currentSession = this.sessions.get(sessionId);
+    // Refresh OAuth credentials before spawn — same rationale as the
+    // streamEvent path above: buildSpawnOptions reads the freshly
+    // rotated access tokens via injectVaultCredentials.
+    await this.refreshExpiringOAuthCredentials(agent, currentSession?.vaultId ?? null);
     const spawnOptions = this.buildSpawnOptions(
       sessionId,
       agent,
@@ -1461,7 +1590,8 @@ export type RouterErrorCode =
   | "quota_exceeded"
   | "file_not_found"
   | "invalid_path"
-  | "vault_not_found";
+  | "vault_not_found"
+  | "credential_expired";
 
 export class RouterError extends Error {
   constructor(

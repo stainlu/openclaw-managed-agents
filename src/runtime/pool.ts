@@ -265,18 +265,30 @@ export class SessionContainerPool {
       });
     }
 
-    // Check the warm pool for a matching pre-warmed container. If a warm
-    // spawn is inflight for this agent, wait for it — starting our own
-    // parallel spawn would collide on the shared agent-workspace bind
-    // mount and Pi's SessionManager would exit(1) one of them. The
-    // pendingByAgent map makes warmForAgent idempotent.
-    if (args.agentId && !args.bypassWarmPool) {
+    // If any warm spawn is inflight for this agent, wait for it BEFORE
+    // we proceed — whether we'd claim it or do our own fresh spawn. The
+    // agent's workspace bind mount is shared across all containers for
+    // that agent (including the warm/__warm__ and our per-session ones),
+    // and both entrypoints write the same /workspace/openclaw.json. Two
+    // writers racing produces a corrupt concatenated file that trips
+    // apply-provider-config's JSON.parse. The pendingByAgent map makes
+    // warmForAgent idempotent, so this wait is cheap: it resolves
+    // instantly if there's no inflight spawn.
+    if (args.agentId) {
       const inflight = this.pendingByAgent.get(args.agentId);
       if (inflight) {
         await inflight.catch(() => {
           /* if the warm spawn threw, fall through to a fresh spawn below */
         });
       }
+    }
+
+    // Check the warm pool for a matching pre-warmed container — but
+    // only if the caller is willing to claim one. Vault-bound sessions
+    // carry session-specific env (OPENCLAW_MCP_SERVERS_JSON with
+    // per-session Authorization headers) that warm containers built
+    // with placeholder "__warm__" context can't carry.
+    if (args.agentId && !args.bypassWarmPool) {
       const warmEntry = this.warm.get(args.agentId);
       if (warmEntry) {
         this.warm.delete(args.agentId);

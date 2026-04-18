@@ -160,9 +160,14 @@ function vaultResponse(vault: Vault) {
 }
 
 function credentialResponse(cred: VaultCredential) {
-  // Deliberately omits `token` — secrets are write-only. Clients rotate
-  // by deleting and re-adding.
-  return {
+  // Deliberately omits all secret fields. Rotation = delete + re-add
+  // for static_bearer; OAuth access/refresh rotate in place at spawn
+  // via refresh, so for mcp_oauth the secret story is:
+  //   - initial POST accepts access+refresh+client_secret
+  //   - subsequent GETs show everything EXCEPT those three secrets
+  //   - expiresAt IS surfaced so callers can see when a refresh will
+  //     happen on the next spawn
+  const base = {
     credential_id: cred.credentialId,
     vault_id: cred.vaultId,
     name: cred.name,
@@ -171,6 +176,16 @@ function credentialResponse(cred: VaultCredential) {
     created_at: cred.createdAt,
     updated_at: cred.updatedAt,
   };
+  if (cred.type === "mcp_oauth") {
+    return {
+      ...base,
+      token_endpoint: cred.tokenEndpoint,
+      client_id: cred.clientId,
+      scopes: cred.scopes,
+      expires_at: cred.expiresAt,
+    };
+  }
+  return base;
 }
 
 function environmentResponse(env: EnvironmentConfig) {
@@ -247,6 +262,9 @@ function handleRouterError(err: unknown, c: Context): Response {
     }
     if (err.code === "quota_exceeded") {
       return c.json({ error: err.code, message: err.message }, 429);
+    }
+    if (err.code === "credential_expired") {
+      return c.json({ error: err.code, message: err.message }, 401);
     }
     return c.json({ error: err.code, message: err.message }, 500);
   }

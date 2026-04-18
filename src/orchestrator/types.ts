@@ -320,19 +320,45 @@ export const CreateVaultRequestSchema = z.object({
 
 export type CreateVaultRequest = z.infer<typeof CreateVaultRequestSchema>;
 
-export const AddCredentialRequestSchema = z.object({
-  name: z.string().min(1).max(256),
-  type: z.literal("static_bearer"),
-  /**
-   * URL prefix used to match against MCP server URLs at spawn time.
-   * When an MCP server's url in agent.mcpServers starts with this
-   * value, the credential's token is injected as
-   * `Authorization: Bearer <token>` in the server's headers.
-   */
-  matchUrl: z.string().min(1).max(2048),
-  /** Secret — write-only. Never returned in responses. */
-  token: z.string().min(1).max(65_536),
-});
+// Discriminated union. `type` = "static_bearer" → token only. `type` =
+// "mcp_oauth" → access + refresh tokens, expiry, refresh endpoint config.
+// Shape matches Claude MA's so SDK porting is copy-paste.
+export const AddCredentialRequestSchema = z.discriminatedUnion("type", [
+  z.object({
+    name: z.string().min(1).max(256),
+    type: z.literal("static_bearer"),
+    /**
+     * URL prefix used to match against MCP server URLs at spawn time.
+     * When an MCP server's url in agent.mcpServers starts with this
+     * value, the credential's token is injected as
+     * `Authorization: Bearer <token>` in the server's headers.
+     */
+    matchUrl: z.string().min(1).max(2048),
+    /** Secret — write-only. Never returned in responses. */
+    token: z.string().min(1).max(65_536),
+  }),
+  z.object({
+    name: z.string().min(1).max(256),
+    type: z.literal("mcp_oauth"),
+    matchUrl: z.string().min(1).max(2048),
+    /** Current OAuth access token. Secret. Rotates in place on refresh. */
+    accessToken: z.string().min(1).max(65_536),
+    /** OAuth refresh token. Secret. Rotates in place if the provider
+     *  issues a new one during refresh (GitHub does). */
+    refreshToken: z.string().min(1).max(65_536),
+    /** Unix ms when the access token expires. The orchestrator
+     *  refreshes when expiresAt - 60_000 < now. */
+    expiresAt: z.number().int().min(0),
+    /** RFC 6749 token endpoint. GitHub: `https://github.com/login/oauth/access_token`. */
+    tokenEndpoint: z.string().url().max(2048),
+    /** OAuth app client id. Public metadata; visible in API responses. */
+    clientId: z.string().min(1).max(2048),
+    /** OAuth app client secret. Secret — never returned. */
+    clientSecret: z.string().min(1).max(65_536),
+    /** Optional scopes granted at the initial grant. For audit only. */
+    scopes: z.array(z.string().min(1).max(256)).max(64).optional(),
+  }),
+]);
 
 export type AddCredentialRequest = z.infer<typeof AddCredentialRequestSchema>;
 
