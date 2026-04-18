@@ -10,6 +10,12 @@ export type BuildStoreOptions = {
   backend: StoreBackend;
   /** Required when backend is sqlite. Ignored for memory. */
   path?: string;
+  /** OPENCLAW_VAULT_KEY env value (hex/base64/base64url 32 bytes).
+   *  Ignored for memory. Undefined for sqlite means "generate on first
+   *  boot and persist in kv_secrets" — convenient for dev, operators
+   *  running in production should set the env var explicitly so key
+   *  management is theirs. */
+  vaultKeyEnv?: string;
 };
 
 // Factory entry point. Callers pick a backend via OPENCLAW_STORE env var
@@ -24,7 +30,7 @@ export function buildStore(opts: BuildStoreOptions): Store {
         throw new Error("sqlite store backend requires a path");
       }
       mkdirSync(dirname(opts.path), { recursive: true });
-      return new SqliteStore(opts.path);
+      return new SqliteStore(opts.path, { vaultKeyEnv: opts.vaultKeyEnv });
     }
     default: {
       const exhaustive: never = opts.backend;

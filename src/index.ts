@@ -212,7 +212,12 @@ async function main(): Promise<void> {
     storeBackend === "sqlite"
       ? env("OPENCLAW_STORE_PATH", "/var/openclaw/state/managed-runtime.db")
       : undefined;
-  const store = buildStore({ backend: storeBackend, path: storePath });
+  const vaultKeyEnv = process.env.OPENCLAW_VAULT_KEY?.trim() || undefined;
+  const store = buildStore({
+    backend: storeBackend,
+    path: storePath,
+    vaultKeyEnv,
+  });
 
   const passthroughEnv = collectPassthroughEnv();
   const passthroughEnvKeys = Object.keys(passthroughEnv).sort();
@@ -482,9 +487,22 @@ async function main(): Promise<void> {
       api_auth: apiToken ? "bearer-token" : "disabled",
       rate_limit_rpm: rateLimitRpm > 0 ? rateLimitRpm : "disabled",
       parent_token_secret: generatedParentSecret ? "generated" : "restored",
+      vault_key_source: (store as { vaultKeySource?: string }).vaultKeySource ?? "n/a",
+      vault_migrated_plaintext:
+        (store as { migratedVaultCredentials?: number }).migratedVaultCredentials ?? 0,
     },
     `OpenClaw Managed Agents v${version} starting`,
   );
+  if (
+    (store as { vaultKeySource?: string }).vaultKeySource === "generated" ||
+    (store as { vaultKeySource?: string }).vaultKeySource === "restored"
+  ) {
+    if (!vaultKeyEnv) {
+      log.warn(
+        "OPENCLAW_VAULT_KEY is unset; the vault master key is stored in the orchestrator SQLite file (kv_secrets). Set OPENCLAW_VAULT_KEY (64 hex chars or 32-byte base64) in production so key management is yours — rotating the env var rotates the key cleanly.",
+      );
+    }
+  }
   if (passthroughEnvKeys.length === 0) {
     log.warn(
       "no provider API keys detected in the host env. Export at least one (e.g. MOONSHOT_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY) before spawning agents, or runs will fail.",

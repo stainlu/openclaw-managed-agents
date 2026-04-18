@@ -370,6 +370,13 @@ class InMemoryVaultStore implements VaultStore {
   private readonly vaults = new Map<string, Vault>();
   private readonly credentials = new Map<string, VaultCredential>();
 
+  // NOTE on encryption: the InMemoryStore is test-only. Real
+  // production storage is SqliteStore, which accepts a VaultCrypto in
+  // its constructor and encrypts credentials at rest. This in-memory
+  // variant just holds the plaintext token on the object — the
+  // process boundary is the only protection. If a future test wants
+  // to exercise crypto round-tripping, it can use SqliteStore with
+  // `:memory:` instead.
   createVault(args: { userId: string; name: string }): Vault {
     const now = Date.now();
     const vault: Vault = {

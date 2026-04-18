@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { customAlphabet } from "nanoid";
+import { VaultCrypto } from "../crypto/vault-crypto.js";
 import type {
   AgentConfig,
   CreateAgentRequest,
@@ -735,7 +736,10 @@ class SqliteVaultStore implements VaultStore {
   private readonly deleteCredStmt: Database.Statement;
   private readonly touchVaultStmt: Database.Statement;
 
-  constructor(db: Database.Database) {
+  private readonly dbRef: Database.Database;
+
+  constructor(db: Database.Database, private readonly crypto: VaultCrypto) {
+    this.dbRef = db;
     this.insertVaultStmt = db.prepare(
       `INSERT INTO vaults (vault_id, user_id, name, created_at, updated_at)
        VALUES (@vault_id, @user_id, @name, @now, @now)`,
@@ -847,7 +851,11 @@ class SqliteVaultStore implements VaultStore {
       name: cred.name,
       cred_type: cred.type,
       match_url: cred.matchUrl,
-      token: cred.token,
+      // Encrypt at rest so a leaked SQLite file alone doesn't leak
+      // plaintext credentials. The master key lives in env
+      // (OPENCLAW_VAULT_KEY) or in kv_secrets — out-of-band from the
+      // vault_credentials table.
+      token: this.crypto.encrypt(cred.token),
       now,
     });
     this.touchVaultStmt.run({ vault_id: cred.vaultId, now });
@@ -874,7 +882,7 @@ class SqliteVaultStore implements VaultStore {
       name: row.name,
       type: row.cred_type as "static_bearer",
       matchUrl: row.match_url,
-      token: row.token,
+      token: this.decryptStored(row.token),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -897,10 +905,44 @@ class SqliteVaultStore implements VaultStore {
       name: r.name,
       type: r.cred_type as "static_bearer",
       matchUrl: r.match_url,
-      token: r.token,
+      token: this.decryptStored(r.token),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));
+  }
+
+  /**
+   * Decrypt a stored token, passing through values that pre-date the
+   * encryption-at-rest rollout. The boot-time migration in
+   * `migratePlaintextCredentials` re-encrypts any remaining plaintext,
+   * so this fallback is only hit during the rollout window itself.
+   * After migration runs, every row starts with `v1:`.
+   */
+  private decryptStored(stored: string): string {
+    if (!VaultCrypto.isCiphertext(stored)) return stored;
+    return this.crypto.decrypt(stored);
+  }
+
+  /**
+   * One-time migration: re-encrypt any credential still stored as
+   * plaintext (added before OPENCLAW_VAULT_KEY was wired up). Runs on
+   * store construction. Returns the number of rows migrated for
+   * visibility in startup logs.
+   */
+  migratePlaintextCredentials(): number {
+    const rows = this.dbRef
+      .prepare(`SELECT credential_id, token FROM vault_credentials`)
+      .all() as Array<{ credential_id: string; token: string }>;
+    const update = this.dbRef.prepare(
+      `UPDATE vault_credentials SET token = @token WHERE credential_id = @credential_id`,
+    );
+    let migrated = 0;
+    for (const r of rows) {
+      if (VaultCrypto.isCiphertext(r.token)) continue;
+      update.run({ credential_id: r.credential_id, token: this.crypto.encrypt(r.token) });
+      migrated++;
+    }
+    return migrated;
   }
 
   deleteCredential(credentialId: string): boolean {
@@ -1117,10 +1159,17 @@ export class SqliteStore implements Store {
   readonly queue: QueueStore;
   readonly audit: AuditStore;
   readonly vaults: VaultStore;
+  /** Number of vault credentials re-encrypted during boot migration.
+   *  Surfaced via src/index.ts startup log when > 0. */
+  readonly migratedVaultCredentials: number = 0;
+  /** "env" if OPENCLAW_VAULT_KEY was set, "restored" if loaded from a
+   *  previous boot's persisted key, "generated" if this boot minted a
+   *  fresh one. */
+  readonly vaultKeySource: "env" | "restored" | "generated" = "generated";
   private readonly db: Database.Database;
   private closed = false;
 
-  constructor(path: string) {
+  constructor(path: string, opts?: { vaultKeyEnv?: string }) {
     this.db = new Database(path);
     // WAL gives concurrent readers while one writer is active, which matters
     // as soon as more than one orchestrator thread/worker is introduced.
@@ -1228,7 +1277,34 @@ export class SqliteStore implements Store {
     this.secrets = new SqliteSecretStore(this.db);
     this.queue = new SqliteQueueStore(this.db);
     this.audit = new SqliteAuditStore(this.db);
-    this.vaults = new SqliteVaultStore(this.db);
+    // Resolve vault master key. Priority:
+    //   1. OPENCLAW_VAULT_KEY env (hex/base64/base64url 32 bytes)
+    //   2. Row in kv_secrets (persisted from a previous boot)
+    //   3. Generate + persist (first-boot default — logs warn at the
+    //      index.ts level so operators know to pin the key for prod)
+    const VAULT_KEY_SECRET = "vault_master_key";
+    let rawKey: Buffer;
+    if (opts?.vaultKeyEnv && opts.vaultKeyEnv.trim() !== "") {
+      rawKey = VaultCrypto.parseKey(opts.vaultKeyEnv);
+      this.vaultKeySource = "env";
+    } else {
+      const stored = this.secrets.get(VAULT_KEY_SECRET);
+      if (stored) {
+        rawKey = stored;
+        this.vaultKeySource = "restored";
+      } else {
+        rawKey = VaultCrypto.generateKey();
+        this.secrets.set(VAULT_KEY_SECRET, rawKey);
+        this.vaultKeySource = "generated";
+      }
+    }
+    const vaultCrypto = new VaultCrypto(rawKey);
+    const vaultsStore = new SqliteVaultStore(this.db, vaultCrypto);
+    this.vaults = vaultsStore;
+    // Lazy migration: re-encrypt any credentials that were stored
+    // plaintext before at-rest encryption was wired. Idempotent — a
+    // second pass on an already-encrypted DB is a no-op.
+    this.migratedVaultCredentials = vaultsStore.migratePlaintextCredentials();
   }
 
   close(): void {
