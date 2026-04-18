@@ -53,6 +53,7 @@ class InMemoryAgentStore implements AgentStore {
       mcpServers: req.mcpServers,
       quota: req.quota,
       thinkingLevel: req.thinkingLevel,
+      channels: req.channels,
     };
     this.agents.set(agent.agentId, agent);
     this.versions.set(agent.agentId, [{ ...agent }]);
@@ -88,6 +89,7 @@ class InMemoryAgentStore implements AgentStore {
       mcpServers: req.mcpServers === null ? {} : (req.mcpServers ?? current.mcpServers),
       quota: req.quota === null ? undefined : (req.quota ?? current.quota),
       thinkingLevel: req.thinkingLevel ?? current.thinkingLevel,
+      channels: req.channels ?? current.channels,
       updatedAt: now,
       version: current.version + 1,
     };
@@ -101,7 +103,8 @@ class InMemoryAgentStore implements AgentStore {
       updated.maxSubagentDepth === current.maxSubagentDepth &&
       JSON.stringify(updated.mcpServers) === JSON.stringify(current.mcpServers) &&
       JSON.stringify(updated.quota) === JSON.stringify(current.quota) &&
-      updated.thinkingLevel === current.thinkingLevel
+      updated.thinkingLevel === current.thinkingLevel &&
+      JSON.stringify(updated.channels) === JSON.stringify(current.channels)
     ) {
       return current;
     }

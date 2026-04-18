@@ -54,19 +54,39 @@ Optional env vars:
 
 1. Get a bot token from [@BotFather](https://t.me/botfather). Note the
    bot's username so users can find it.
-2. Create an agent:
+2. Create a Telegram-enabled agent:
    ```bash
    curl -sX POST http://localhost:8080/v1/agents \
      -H 'Content-Type: application/json' \
-     -d '{"model":"moonshot/kimi-k2.5","instructions":"You are a friendly assistant."}' \
+     -d '{
+       "model":"moonshot/kimi-k2.5",
+       "instructions":"You are a friendly assistant.",
+       "channels":{"telegram":{"enabled":true}}
+     }' \
      | jq -r .agent_id
    # => agt_XXXXXXXX
    ```
-3. Add both to your `.env`:
+   The `channels.telegram.enabled` field is mandatory — the adapter
+   validates it at startup and refuses to run against agents that
+   haven't opted into Telegram routing. This prevents
+   "pointed at the wrong agent id" bugs from silently leaking messages
+   to an agent the operator didn't intend to expose on Telegram.
+   To retrofit an existing agent:
+   ```bash
+   AGV=$(curl -s http://localhost:8080/v1/agents/agt_XXXXXXXX | jq -r .version)
+   curl -sX PATCH http://localhost:8080/v1/agents/agt_XXXXXXXX \
+     -H 'Content-Type: application/json' \
+     -d "{\"version\":$AGV,\"channels\":{\"telegram\":{\"enabled\":true}}}"
+   ```
+3. Add credentials + binding to your `.env`:
    ```
    TELEGRAM_BOT_TOKEN=123456:ABCdefGhi...
    OPENCLAW_TELEGRAM_AGENT_ID=agt_XXXXXXXX
    ```
+   Tier A (`.env`): the bot token is deployment-scoped infrastructure.
+   Tier B (`POST /v1/agents`): the `channels.telegram.enabled` flag on
+   the agent is declarative product config — shows up in the agent's
+   HTTP response for portals + audit.
 4. Start the adapter:
    ```bash
    docker compose --profile telegram up -d

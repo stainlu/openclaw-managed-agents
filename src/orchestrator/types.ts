@@ -62,6 +62,19 @@ export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export type McpServers = Record<string, McpServerConfig>;
 
 /**
+ * Declarative channel bindings on an agent. Tier B (per-agent product
+ * config). Tells channel adapters "this agent answers on your
+ * platform"; adapters validate this at startup and refuse to route
+ * messages to agents that haven't opted in. Adapters still need their
+ * platform credentials in Tier A (e.g., TELEGRAM_BOT_TOKEN in `.env`).
+ */
+export const ChannelsSchema = z.object({
+  telegram: z.object({ enabled: z.boolean().default(false) }).default({}),
+}).default({});
+
+export type Channels = z.infer<typeof ChannelsSchema>;
+
+/**
  * Pi's extended-thinking levels. "off" suppresses thinking output even on
  * reasoning-capable models; "low" through "xhigh" allocate increasing
  * thinking budget. Accepted verbatim by openclaw.json's
@@ -113,6 +126,17 @@ export const CreateAgentRequestSchema = z.object({
   mcpServers: z.record(z.string(), McpServerConfigSchema).default({}),
   /** Optional per-session budget caps. Absent = no cap. */
   quota: QuotaSchema.optional(),
+  /**
+   * Declarative channel bindings — which adapters this agent accepts
+   * messages from. The channel adapter itself lives in a separate
+   * container with deployment-level credentials (Tier A). This field
+   * is Tier B: the agent announces "I answer on Telegram" so adapters
+   * can validate at startup and the portal / operator UIs can surface
+   * channel assignments at a glance. Setting `enabled: true` does NOT
+   * wire any plumbing — the developer still runs the adapter service.
+   * Default: all channels disabled.
+   */
+  channels: ChannelsSchema.default({}),
 });
 
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
@@ -132,6 +156,7 @@ export const UpdateAgentRequestSchema = z.object({
     .optional(),
   quota: QuotaSchema.nullable().optional(),
   thinkingLevel: ThinkingLevelSchema.optional(),
+  channels: ChannelsSchema.optional(),
 });
 
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
@@ -152,6 +177,7 @@ export type AgentConfig = {
   mcpServers: McpServers;
   quota?: Quota;
   thinkingLevel: ThinkingLevel;
+  channels: Channels;
 };
 
 // ---------- Environment (container configuration template) ----------

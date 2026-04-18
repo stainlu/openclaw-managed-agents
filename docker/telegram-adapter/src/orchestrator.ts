@@ -20,6 +20,12 @@ export type Event = {
   createdAt: number;
 };
 
+export type AgentSummary = {
+  agentId: string;
+  archivedAt: number | null;
+  channels: { telegram: { enabled: boolean } };
+};
+
 export class OrchestratorClient {
   constructor(
     private readonly baseUrl: string,
@@ -30,6 +36,35 @@ export class OrchestratorClient {
     const h: Record<string, string> = { "Content-Type": "application/json" };
     if (this.apiToken) h.Authorization = `Bearer ${this.apiToken}`;
     return h;
+  }
+
+  /**
+   * Fetch an agent's channel config so the adapter can validate that
+   * it's pointed at a Telegram-enabled agent at startup — fail fast
+   * with a clear error rather than silently routing messages to an
+   * agent the operator didn't intend to expose on Telegram.
+   */
+  async getAgent(agentId: string): Promise<AgentSummary | undefined> {
+    const res = await fetch(`${this.baseUrl}/v1/agents/${encodeURIComponent(agentId)}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.status === 404) return undefined;
+    if (!res.ok) {
+      throw new Error(`orchestrator getAgent: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as {
+      agent_id: string;
+      archived_at: number | null;
+      channels?: { telegram?: { enabled?: boolean } };
+    };
+    return {
+      agentId: data.agent_id,
+      archivedAt: data.archived_at ?? null,
+      channels: {
+        telegram: { enabled: Boolean(data.channels?.telegram?.enabled) },
+      },
+    };
   }
 
   async health(): Promise<void> {

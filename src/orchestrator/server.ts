@@ -142,6 +142,7 @@ function agentResponse(agent: AgentConfig) {
     mcp_servers: agent.mcpServers,
     quota: agent.quota,
     thinking_level: agent.thinkingLevel,
+    channels: agent.channels,
     version: agent.version,
     created_at: agent.createdAt,
     updated_at: agent.updatedAt,

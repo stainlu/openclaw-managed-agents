@@ -56,6 +56,31 @@ async function main(): Promise<void> {
   await waitForOrchestrator(orchestrator, 120_000);
   console.log("[telegram-adapter] orchestrator is healthy");
 
+  // Validate the target agent exists AND has opted into Telegram via
+  // its channels.telegram.enabled flag. Refusing to start when the
+  // agent hasn't opted in prevents "I pointed my adapter at the wrong
+  // agent id" bugs from silently leaking messages to the wrong agent.
+  const agent = await orchestrator.getAgent(cfg.agentId);
+  if (!agent) {
+    throw new Error(
+      `agent ${cfg.agentId} not found on the orchestrator. Create it via POST /v1/agents first.`,
+    );
+  }
+  if (agent.archivedAt !== null) {
+    throw new Error(
+      `agent ${cfg.agentId} is archived. Unarchive or retarget OPENCLAW_AGENT_ID to a live agent.`,
+    );
+  }
+  if (!agent.channels.telegram.enabled) {
+    throw new Error(
+      `agent ${cfg.agentId} does not have channels.telegram.enabled = true. ` +
+        `Set it via PATCH /v1/agents/${cfg.agentId} with body ` +
+        `{"channels":{"telegram":{"enabled":true}}} (and include the current ` +
+        `version for optimistic concurrency).`,
+    );
+  }
+  console.log(`[telegram-adapter] agent ${cfg.agentId} is Telegram-enabled`);
+
   // getUpdates requires that no webhook be registered. An old webhook
   // from a previous deploy would make every poll 409. dropPending=false
   // keeps the backlog so users whose messages arrived during the

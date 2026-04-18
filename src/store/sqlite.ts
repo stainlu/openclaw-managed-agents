@@ -54,6 +54,7 @@ type AgentRow = {
   mcp_servers_json: string | null;
   quota_json: string | null;
   thinking_level: string | null;
+  channels_json: string | null;
 };
 
 type EnvironmentRow = {
@@ -80,6 +81,13 @@ type SessionRow = {
   vault_id: string | null;
 };
 
+/** True when at least one channel is enabled on the agent — used to
+ *  decide whether to persist a row in `channels_json` or leave it NULL
+ *  (NULL = "all channels disabled", the default agent shape). */
+function hasAnyChannelEnabled(channels: AgentConfig["channels"]): boolean {
+  return Boolean(channels?.telegram?.enabled);
+}
+
 function rowToAgent(r: AgentRow): AgentConfig {
   return {
     agentId: r.agent_id,
@@ -103,6 +111,9 @@ function rowToAgent(r: AgentRow): AgentConfig {
       : {},
     quota: r.quota_json ? (JSON.parse(r.quota_json) as Quota) : undefined,
     thinkingLevel: (r.thinking_level as ThinkingLevel | null) ?? "off",
+    channels: r.channels_json
+      ? (JSON.parse(r.channels_json) as AgentConfig["channels"])
+      : { telegram: { enabled: false } },
   };
 }
 
@@ -168,7 +179,8 @@ CREATE TABLE IF NOT EXISTS agents (
   max_subagent_depth INTEGER NOT NULL DEFAULT 0,
   mcp_servers_json TEXT,
   quota_json TEXT,
-  thinking_level TEXT
+  thinking_level TEXT,
+  channels_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agent_versions (
@@ -184,6 +196,7 @@ CREATE TABLE IF NOT EXISTS agent_versions (
   mcp_servers_json TEXT,
   quota_json TEXT,
   thinking_level TEXT,
+  channels_json TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (agent_id, version)
 );
@@ -317,12 +330,12 @@ class SqliteAgentStore implements AgentStore {
         agent_id, model, tools_json, instructions, permission_policy_json,
         name, created_at, updated_at, archived_at, version,
         callable_agents_json, max_subagent_depth, mcp_servers_json, quota_json,
-        thinking_level
+        thinking_level, channels_json
        ) VALUES (
         @agent_id, @model, @tools_json, @instructions, @permission_policy_json,
         @name, @created_at, @updated_at, NULL, 1,
         @callable_agents_json, @max_subagent_depth, @mcp_servers_json, @quota_json,
-        @thinking_level
+        @thinking_level, @channels_json
        )`,
     );
     this.insertVersionStmt = db.prepare(
@@ -330,12 +343,12 @@ class SqliteAgentStore implements AgentStore {
         agent_id, version, model, tools_json, instructions,
         permission_policy_json, name,
         callable_agents_json, max_subagent_depth, mcp_servers_json, quota_json,
-        thinking_level, created_at
+        thinking_level, channels_json, created_at
        ) VALUES (
         @agent_id, @version, @model, @tools_json, @instructions,
         @permission_policy_json, @name,
         @callable_agents_json, @max_subagent_depth, @mcp_servers_json, @quota_json,
-        @thinking_level, @created_at
+        @thinking_level, @channels_json, @created_at
        )`,
     );
     this.getStmt = db.prepare(`SELECT * FROM agents WHERE agent_id = ?`);
@@ -351,6 +364,7 @@ class SqliteAgentStore implements AgentStore {
         mcp_servers_json = @mcp_servers_json,
         quota_json = @quota_json,
         thinking_level = @thinking_level,
+        channels_json = @channels_json,
         version = @version, updated_at = @updated_at
        WHERE agent_id = @agent_id AND version = @prev_version`,
     );
@@ -358,7 +372,7 @@ class SqliteAgentStore implements AgentStore {
       `SELECT agent_id, version, model, tools_json, instructions,
               permission_policy_json, name,
               callable_agents_json, max_subagent_depth, mcp_servers_json,
-              quota_json, thinking_level,
+              quota_json, thinking_level, channels_json,
               created_at,
               created_at as updated_at, NULL as archived_at
        FROM agent_versions WHERE agent_id = ? ORDER BY version ASC`,
@@ -388,6 +402,9 @@ class SqliteAgentStore implements AgentStore {
           : null,
       quota_json: agent.quota ? JSON.stringify(agent.quota) : null,
       thinking_level: agent.thinkingLevel === "off" ? null : agent.thinkingLevel,
+      channels_json: hasAnyChannelEnabled(agent.channels)
+        ? JSON.stringify(agent.channels)
+        : null,
     };
   }
 
@@ -409,6 +426,7 @@ class SqliteAgentStore implements AgentStore {
       mcpServers: req.mcpServers,
       quota: req.quota,
       thinkingLevel: req.thinkingLevel,
+      channels: req.channels,
     };
     const row = this.agentToRow(agent);
     this.insertStmt.run({ ...row, created_at: now, updated_at: now });
@@ -448,6 +466,7 @@ class SqliteAgentStore implements AgentStore {
       mcpServers: req.mcpServers === null ? {} : (req.mcpServers ?? current.mcpServers),
       quota: req.quota === null ? undefined : (req.quota ?? current.quota),
       thinkingLevel: req.thinkingLevel ?? current.thinkingLevel,
+      channels: req.channels ?? current.channels,
       updatedAt: now,
       version: current.version + 1,
     };
@@ -461,7 +480,8 @@ class SqliteAgentStore implements AgentStore {
       updated.maxSubagentDepth === current.maxSubagentDepth &&
       JSON.stringify(updated.mcpServers) === JSON.stringify(current.mcpServers) &&
       JSON.stringify(updated.quota) === JSON.stringify(current.quota) &&
-      updated.thinkingLevel === current.thinkingLevel
+      updated.thinkingLevel === current.thinkingLevel &&
+      JSON.stringify(updated.channels) === JSON.stringify(current.channels)
     ) {
       return current;
     }
@@ -1387,6 +1407,12 @@ export class SqliteStore implements Store {
       // "off", matching pre-D1 behavior (no thinking blocks emitted).
       this.db.exec("ALTER TABLE agents ADD COLUMN thinking_level TEXT");
     }
+    if (!agentsCols.some((c) => c.name === "channels_json")) {
+      // D2: declarative channel bindings (e.g., telegram). Pre-D2
+      // rows default to NULL = no channels; rowToAgent maps that to
+      // `{ telegram: { enabled: false } }`.
+      this.db.exec("ALTER TABLE agents ADD COLUMN channels_json TEXT");
+    }
     const versionsCols = this.db.pragma("table_info(agent_versions)") as Array<{ name: string }>;
     if (versionsCols.length > 0 && !versionsCols.some((c) => c.name === "permission_policy_json")) {
       this.db.exec("ALTER TABLE agent_versions ADD COLUMN permission_policy_json TEXT");
@@ -1399,6 +1425,9 @@ export class SqliteStore implements Store {
     }
     if (versionsCols.length > 0 && !versionsCols.some((c) => c.name === "thinking_level")) {
       this.db.exec("ALTER TABLE agent_versions ADD COLUMN thinking_level TEXT");
+    }
+    if (versionsCols.length > 0 && !versionsCols.some((c) => c.name === "channels_json")) {
+      this.db.exec("ALTER TABLE agent_versions ADD COLUMN channels_json TEXT");
     }
 
     this.agents = new SqliteAgentStore(this.db);
