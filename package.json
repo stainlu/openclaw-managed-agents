@@ -13,7 +13,7 @@
     "node": ">=22.14.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/orchestrator/portal-v2.html dist/orchestrator/portal-v2.html",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",

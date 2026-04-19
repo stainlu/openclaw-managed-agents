@@ -31,6 +31,11 @@ COPY package.json ./
 RUN pnpm install --prod --no-frozen-lockfile && pnpm store prune
 
 COPY --from=builder /app/dist ./dist
+# The portal-v2 design ships as a static HTML asset that portal-v2.ts
+# reads at startup via readFileSync. package.json's build script
+# copies src/orchestrator/portal-v2.html into dist/ during the
+# builder stage above; this second COPY just carries that file
+# through to the runtime layer along with the rest of dist/.
 
 ENV NODE_ENV=production \
     PORT=8080 \

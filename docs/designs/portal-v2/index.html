@@ -1,0 +1,2871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OpenClaw · Managed Agents</title>
+<style>
+/* ============================================================
+   OpenClaw Design System — Tokens + Semantic Classes
+   Modern, editorial, Are.na-adjacent: monochrome paper, sans only,
+   lobster orange used with extreme restraint.
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* ---------- Canvas & surfaces ---------- */
+  --paper: #f5f4f0;          /* warm off-white canvas (Are.na-adjacent) */
+  --paper-2: #eceae4;        /* hover on paper */
+  --paper-3: #e3e0d8;        /* pressed */
+  --card: #ffffff;           /* card fill */
+  --scrim: rgba(20, 20, 19, 0.32);
+  --chrome: rgba(245, 244, 240, 0.78);
+
+  /* ---------- Ink ---------- */
+  --ink: #141413;            /* primary text */
+  --ink-2: #4a4843;          /* secondary */
+  --ink-3: #817d74;          /* tertiary / labels */
+  --ink-4: #b5b0a5;          /* disabled */
+  --ink-inv: #f5f4f0;        /* on dark */
+
+  /* ---------- Lines ---------- */
+  --line: #e3e0d8;
+  --line-2: #c9c4b7;
+  --line-3: #141413;         /* hard line for editorial frames */
+
+  /* ---------- Lobster — the single accent, used RARELY ---------- */
+  --lobster: #ff4d14;
+  --lobster-hover: #e64411;
+  --lobster-press: #c23709;
+  --lobster-soft: #ffe5da;
+  --lobster-wash: #fff3ed;
+  --lobster-ring: rgba(255, 77, 20, 0.32);
+
+  /* ---------- Semantic ---------- */
+  --ok: #2f7a4e;
+  --warn: #a67318;
+  --danger: #c23709;
+  --info: #3a5fa8;
+
+  /* ---------- Typography ---------- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.6875rem;   /* 11 */
+  --text-sm: 0.8125rem;   /* 13 */
+  --text-base: 0.9375rem; /* 15 */
+  --text-md: 1.0625rem;   /* 17 */
+  --text-lg: 1.375rem;    /* 22 */
+  --text-xl: 1.875rem;    /* 30 */
+  --text-2xl: 2.625rem;   /* 42 */
+  --text-3xl: 4rem;       /* 64 */
+  --text-4xl: 6rem;       /* 96 */
+
+  --lh-tight: 1.05;
+  --lh-snug: 1.25;
+  --lh-normal: 1.5;
+
+  --track-display: -0.035em;
+  --track-body: -0.011em;
+  --track-caps: 0.02em;
+
+  /* ---------- Spacing ---------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-24: 96px;
+  --s-32: 128px;
+
+  /* ---------- Radii — deliberately small ---------- */
+  --r-xs: 2px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-full: 9999px;
+
+  /* ---------- Shadows — almost never ---------- */
+  --shadow-1: 0 1px 0 rgba(20, 20, 19, 0.04);
+  --shadow-2: 0 4px 16px rgba(20, 20, 19, 0.06);
+  --shadow-3: 0 20px 40px rgba(20, 20, 19, 0.10);
+
+  /* ---------- Motion ---------- */
+  --d-instant: 120ms;
+  --d-fast: 200ms;
+  --d-med: 360ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --focus-ring: 0 0 0 2px var(--paper), 0 0 0 4px var(--lobster-ring);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--track-body);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* ============================================================
+   Editorial type scale — ALL sans, Inter tight tracking,
+   weights used sparingly (400/500 are the system; 600 is rare)
+   ============================================================ */
+
+.display-xl, h1.display {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-4xl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.045em;
+  color: var(--ink);
+  margin: 0;
+}
+
+.display-lg {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-3xl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h1, .h1 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-2xl);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-display);
+  color: var(--ink);
+  margin: 0;
+}
+
+h2, .h2 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-xl);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h3, .h3 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-lg);
+  line-height: var(--lh-snug);
+  letter-spacing: -0.022em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h4, .h4 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-md);
+  line-height: var(--lh-snug);
+  letter-spacing: -0.018em;
+  color: var(--ink);
+  margin: 0;
+}
+
+p, .body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  color: var(--ink-2);
+  margin: 0;
+}
+
+.body-lg {
+  font-size: var(--text-base);
+  line-height: 1.55;
+}
+
+.lede {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-md);
+  line-height: 1.5;
+  letter-spacing: -0.015em;
+  color: var(--ink-2);
+}
+
+.eyebrow, .label {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: var(--text-xs);
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.caption {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+
+code, .code, kbd {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--paper-2);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  color: var(--ink);
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-4);
+  overflow-x: auto;
+  margin: 0;
+}
+
+pre code { background: transparent; padding: 0; }
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  transition: text-decoration-color var(--d-instant) var(--ease), color var(--d-instant) var(--ease);
+}
+a:hover { text-decoration-color: var(--lobster); color: var(--lobster-press); }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: var(--s-6) 0; }
+
+::selection { background: var(--lobster-soft); color: var(--ink); }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+</style>
+<style>
+  html, body, #root { height: 100%; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    overflow: hidden;
+    font-feature-settings: "ss01", "cv11";
+  }
+  code { font-family: var(--font-mono); font-size: 0.92em; background: var(--paper-2); padding: 1px 5px; border-radius: 2px; color: var(--ink); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 9999px; border: 3px solid var(--paper); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @keyframes oc-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+  @keyframes oc-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.45 } }
+
+  /* density modes */
+  body.density-comfy { font-size: 15px; }
+  body.density-compact { font-size: 13px; }
+
+  /* frames toggle: if off, soften hard ink rules down to line */
+  body.frames-off .hardrule { background: var(--line) !important; }
+  body.frames-off aside,
+  body.frames-off header,
+  body.frames-off main > div {
+    border-color: var(--line) !important;
+  }
+</style>
+</head>
+<body class="density-compact">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel">
+
+/* ===== icons ===== */
+// Lucide-style icons, 1.5 stroke, round caps
+const ICON_PATHS = {
+  home: 'M3 12l9-9 9 9M5 10v10a1 1 0 0 0 1 1h3v-6h6v6h3a1 1 0 0 0 1-1V10',
+  agents: 'M12 2l9 5v10l-9 5-9-5V7z M12 2v20 M3 7l9 5 9-5',
+  env: 'M3 7h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2 M7 12h10',
+  sessions: 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-6l-4 4v-4H5a2 2 0 0 1-2-2z',
+  vaults: 'M6 10V7a6 6 0 0 1 12 0v3 M4 10h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z M12 15v3',
+  audit: 'M4 4h16v16H4z M8 8h8 M8 12h8 M8 16h5',
+  metrics: 'M3 18v-5 M9 18v-9 M15 18v-3 M21 18V6 M3 21h18',
+  docs: 'M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20 M9 7h6 M9 11h6',
+  plus: 'M12 5v14 M5 12h14',
+  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
+  chevron: 'M6 9l6 6 6-6',
+  chevronR: 'M9 6l6 6-6 6',
+  copy: 'M8 2h10a2 2 0 0 1 2 2v12 M16 6H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2z',
+  close: 'M18 6L6 18 M6 6l12 12',
+  terminal: 'M4 17l6-6-6-6 M12 19h8',
+  send: 'M5 12h14 M13 5l7 7-7 7',
+  external: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3',
+  dot: 'M12 12.01L12 12',
+  pause: 'M6 4h4v16H6z M14 4h4v16h-4z',
+  play: 'M6 3l14 9-14 9z',
+  spark: 'M12 3v4 M12 17v4 M3 12h4 M17 12h4 M5.6 5.6l2.8 2.8 M15.6 15.6l2.8 2.8 M5.6 18.4l2.8-2.8 M15.6 8.4l2.8-2.8',
+  check: 'M4 12l5 5L20 6',
+  question: 'M9 9a3 3 0 1 1 4.5 2.6c-.9.5-1.5 1.2-1.5 2.4 M12 17v0.01',
+  git: 'M18 3v6 a3 3 0 0 1-3 3H9 a3 3 0 0 0-3 3v6 M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  clock: 'M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z M12 6v6l4 2',
+  cpu: 'M4 7h16v10H4z M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3 M9 9h6v6H9z',
+  link: 'M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1 M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
+  arrowR: 'M5 12h14 M13 5l7 7-7 7',
+  file: 'M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z M13 2v7h7',
+};
+
+function Icon({ n, s = 16, w = 1.5, style }) {
+  const d = ICON_PATHS[n];
+  if (!d) return null;
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={w} strokeLinecap="round" strokeLinejoin="round"
+      style={{ flexShrink: 0, ...style }}>
+      {d.split(' M').map((seg, i) => <path key={i} d={(i === 0 ? '' : 'M') + seg} />)}
+    </svg>
+  );
+}
+
+// LogoMark inline
+function LogoMark({ size = 22 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" role="img" aria-label="OpenClaw">
+      <defs><linearGradient id="ocshell" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stopColor="#ef6a41"/><stop offset="100%" stopColor="#d24f27"/>
+      </linearGradient></defs>
+      <path d="M32 10c-12 0-19 9-19 19 0 11 7 19 14 22v2a2 2 0 0 0 4 0v-1h2v1a2 2 0 0 0 4 0v-2c7-3 14-11 14-22 0-10-7-19-19-19z" fill="url(#ocshell)"/>
+      <path d="M15 27c-6-2-10 1-10 5 0 5 5 7 9 5 3-1 4-4 4-6 0-2-1-3-3-4z" fill="url(#ocshell)"/>
+      <path d="M49 27c6-2 10 1 10 5 0 5-5 7-9 5-3-1-4-4-4-6 0-2 1-3 3-4z" fill="url(#ocshell)"/>
+      <path d="M25 14q-6-5-10-3" stroke="#e85a2f" strokeWidth="1.75" strokeLinecap="round" fill="none"/>
+      <path d="M39 14q6-5 10-3" stroke="#e85a2f" strokeWidth="1.75" strokeLinecap="round" fill="none"/>
+      <circle cx="26" cy="24" r="2.4" fill="#1a1613"/><circle cx="38" cy="24" r="2.4" fill="#1a1613"/>
+      <circle cx="26.8" cy="23.3" r="0.8" fill="#faf7f2"/><circle cx="38.8" cy="23.3" r="0.8" fill="#faf7f2"/>
+    </svg>
+  );
+}
+
+Object.assign(window, { Icon, LogoMark });
+
+
+/* ===== primitives ===== */
+const { useState, useEffect, useRef } = React;
+
+// ---- Primitives for OpenClaw Managed Agents dashboard ----
+
+function Button({ variant = 'secondary', size = 'md', icon, iconRight, children, onClick, style, disabled }) {
+  const base = {
+    display: 'inline-flex', alignItems: 'center', gap: 7,
+    fontFamily: 'var(--font-sans)', fontWeight: 500,
+    border: '1px solid transparent', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease)',
+    letterSpacing: '-0.011em', whiteSpace: 'nowrap',
+    opacity: disabled ? 0.5 : 1,
+  };
+  const sizes = {
+    xs: { padding: '3px 8px', fontSize: 11 },
+    sm: { padding: '5px 10px', fontSize: 12 },
+    md: { padding: '7px 13px', fontSize: 13 },
+  };
+  const variants = {
+    primary: { background: 'var(--accent, var(--lobster))', color: '#fff' },
+    hard: { background: 'var(--ink)', color: 'var(--paper)' },
+    secondary: { background: 'var(--card)', color: 'var(--ink)', borderColor: 'var(--line-2)' },
+    ghost: { background: 'transparent', color: 'var(--ink-2)' },
+    danger: { background: 'var(--card)', color: 'var(--danger)', borderColor: 'var(--line-2)' },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled} style={{ ...base, ...sizes[size], ...variants[variant], ...style }}>
+      {icon && <Icon n={icon} s={size === 'xs' ? 11 : size === 'sm' ? 12 : 13} />}
+      {children}
+      {iconRight && <Icon n={iconRight} s={size === 'xs' ? 11 : size === 'sm' ? 12 : 13} />}
+    </button>
+  );
+}
+
+function Badge({ tone = 'neutral', children, dotOnly, style }) {
+  const tones = {
+    neutral: { bg: 'transparent', fg: 'var(--ink-2)', border: 'var(--line-2)', dot: 'var(--ink-3)' },
+    ink:     { bg: 'var(--ink)', fg: 'var(--paper)', border: 'var(--ink)', dot: 'var(--paper)' },
+    live:    { bg: 'var(--ink)', fg: 'var(--paper)', border: 'var(--ink)', dot: 'var(--accent, var(--lobster))' },
+    ok:      { bg: 'transparent', fg: 'var(--ok)', border: 'var(--line-2)', dot: 'var(--ok)' },
+    warn:    { bg: 'transparent', fg: 'var(--warn)', border: 'var(--line-2)', dot: 'var(--warn)' },
+    err:     { bg: 'transparent', fg: 'var(--danger)', border: 'var(--line-2)', dot: 'var(--danger)' },
+    soft:    { bg: 'var(--lobster-wash)', fg: 'var(--lobster-press)', border: 'var(--lobster-soft)', dot: 'var(--accent, var(--lobster))' },
+  };
+  const t = tones[tone];
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      borderRadius: 9999, padding: dotOnly ? 4 : '2px 9px',
+      fontSize: 11, fontWeight: 500,
+      fontFamily: 'var(--font-sans)',
+      background: t.bg, color: t.fg, border: `1px solid ${t.border}`,
+      lineHeight: 1.4, ...style,
+    }}>
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%', background: t.dot,
+        boxShadow: tone === 'live' ? '0 0 0 3px color-mix(in srgb, var(--accent, var(--lobster)) 28%, transparent)' : 'none',
+        animation: tone === 'live' ? 'oc-pulse 2.4s var(--ease) infinite' : 'none',
+      }} />
+      {!dotOnly && children}
+    </span>
+  );
+}
+
+const Mono = ({ children, c, s = 12, bg, style }) => (
+  <span style={{
+    fontFamily: 'var(--font-mono)', fontSize: s,
+    color: c || 'var(--ink-2)',
+    background: bg,
+    padding: bg ? '2px 6px' : 0,
+    borderRadius: bg ? 3 : 0,
+    ...style,
+  }}>{children}</span>
+);
+
+const Eyebrow = ({ children, c, style }) => (
+  <span style={{
+    fontFamily: 'var(--font-mono)', fontSize: 11,
+    color: c || 'var(--ink-3)',
+    textTransform: 'uppercase', letterSpacing: '0.04em',
+    ...style,
+  }}>{children}</span>
+);
+
+const Kbd = ({ children }) => (
+  <span style={{
+    fontFamily: 'var(--font-mono)', fontSize: 10,
+    padding: '1px 5px',
+    border: '1px solid var(--line-2)',
+    borderRadius: 3, color: 'var(--ink-2)',
+    background: 'var(--card)',
+  }}>{children}</span>
+);
+
+function HardRule({ color = 'var(--ink)', margin = '0' }) {
+  return <div style={{ height: 1, background: color, margin, width: '100%' }} />;
+}
+
+Object.assign(window, { Button, Badge, Mono, Eyebrow, Kbd, HardRule });
+
+
+/* ===== data ===== */
+// Mock data for OpenClaw Managed Agents dashboard
+
+const AGENTS = [
+  {
+    id: 'ag_7k2fLq',
+    name: 'research-assistant',
+    model: 'moonshot/kimi-k2.5',
+    version: 4,
+    tools: ['web.search', 'web.fetch', 'file.write', 'python'],
+    mcp: ['linear', 'notion'],
+    policy: 'always_ask',
+    sessions: 142,
+    cost24h: '$4.82',
+    updated: '2h ago',
+  },
+  {
+    id: 'ag_h9b1vM',
+    name: 'telegram-bridge',
+    model: 'anthropic/claude-haiku-4.5',
+    version: 12,
+    tools: ['channels.send', 'channels.subscribe'],
+    mcp: [],
+    policy: 'always_allow',
+    sessions: 2104,
+    cost24h: '$11.40',
+    updated: '9m ago',
+  },
+  {
+    id: 'ag_3xP0aE',
+    name: 'inbox-triage',
+    model: 'openai/gpt-5-mini',
+    version: 2,
+    tools: ['gmail.read', 'gmail.label', 'web.fetch'],
+    mcp: ['gmail'],
+    policy: 'deny',
+    sessions: 88,
+    cost24h: '$0.94',
+    updated: '1d ago',
+  },
+  {
+    id: 'ag_Wq8oYt',
+    name: 'lease-watch',
+    model: 'google/gemini-2.5-flash',
+    version: 1,
+    tools: ['signal.read', 'notify'],
+    mcp: [],
+    policy: 'always_allow',
+    sessions: 6,
+    cost24h: '$0.01',
+    updated: '3d ago',
+  },
+];
+
+const SESSIONS = [
+  {
+    id: 'sx_a91c8b42',
+    agent: 'research-assistant',
+    agentId: 'ag_7k2fLq',
+    model: 'moonshot/kimi-k2.5',
+    status: 'running',
+    started: '2m ago',
+    wallMs: 142_300,
+    tokens: 8_412,
+    tokensCap: 50_000,
+    cost: 0.063,
+    costCap: 1.00,
+    turns: 4,
+    env: 'env_py_stdlib',
+    container: 'oc-sx-a91c8b42',
+    pool: 'warm-reuse',
+    bootMs: 4_100,
+  },
+  {
+    id: 'sx_7712dd09',
+    agent: 'telegram-bridge',
+    agentId: 'ag_h9b1vM',
+    model: 'anthropic/claude-haiku-4.5',
+    status: 'running',
+    started: '14m ago',
+    wallMs: 842_000,
+    tokens: 24_140,
+    tokensCap: 50_000,
+    cost: 0.181,
+    costCap: 2.00,
+    turns: 22,
+    env: 'env_default',
+    container: 'oc-sx-7712dd09',
+    pool: 'warm-reuse',
+    bootMs: 3_900,
+  },
+  {
+    id: 'sx_4203ff21',
+    agent: 'research-assistant',
+    agentId: 'ag_7k2fLq',
+    model: 'moonshot/kimi-k2.5',
+    status: 'awaiting',
+    started: '1m ago',
+    wallMs: 38_000,
+    tokens: 1_204,
+    tokensCap: 50_000,
+    cost: 0.014,
+    costCap: 1.00,
+    turns: 1,
+    env: 'env_py_stdlib',
+    container: 'oc-sx-4203ff21',
+    pool: 'cold',
+    bootMs: 78_200,
+  },
+  {
+    id: 'sx_8a0e2c17',
+    agent: 'lease-watch',
+    agentId: 'ag_Wq8oYt',
+    model: 'google/gemini-2.5-flash',
+    status: 'idle',
+    started: '3h ago',
+    wallMs: 11_042_100,
+    tokens: 812,
+    tokensCap: 50_000,
+    cost: 0.004,
+    costCap: 1.00,
+    turns: 2,
+    env: 'env_default',
+    container: 'oc-sx-8a0e2c17',
+    pool: 'warm-reuse',
+    bootMs: 4_000,
+  },
+  {
+    id: 'sx_ff21aa10',
+    agent: 'inbox-triage',
+    agentId: 'ag_3xP0aE',
+    model: 'openai/gpt-5-mini',
+    status: 'failed',
+    started: '1d ago',
+    wallMs: 1_200,
+    tokens: 112,
+    tokensCap: 50_000,
+    cost: 0.001,
+    costCap: 1.00,
+    turns: 1,
+    env: 'env_default',
+    container: '—',
+    pool: 'cold',
+    bootMs: 82_100,
+    error: 'gmail.read denied by permission policy',
+  },
+  {
+    id: 'sx_1c88bb0a',
+    agent: 'telegram-bridge',
+    agentId: 'ag_h9b1vM',
+    model: 'anthropic/claude-haiku-4.5',
+    status: 'ended',
+    started: '2d ago',
+    wallMs: 4_182_000,
+    tokens: 42_101,
+    tokensCap: 50_000,
+    cost: 0.312,
+    costCap: 2.00,
+    turns: 34,
+    env: 'env_default',
+    container: '—',
+    pool: 'warm-reuse',
+    bootMs: 4_200,
+  },
+  {
+    id: 'sx_b54c9100',
+    agent: 'research-assistant',
+    agentId: 'ag_7k2fLq',
+    model: 'moonshot/kimi-k2.5',
+    status: 'quota',
+    started: '5h ago',
+    wallMs: 9_100_000,
+    tokens: 49_812,
+    tokensCap: 50_000,
+    cost: 0.982,
+    costCap: 1.00,
+    turns: 18,
+    env: 'env_py_stdlib',
+    container: 'oc-sx-b54c9100',
+    pool: 'warm-reuse',
+    bootMs: 4_100,
+    error: 'maxCostUsdPerSession hit: $0.982 / $1.000',
+  },
+];
+
+// Live event stream for the focused session sx_a91c8b42
+const EVENTS = [
+  { t: '+00:00.142', type: 'session.status_running',  actor: 'orchestrator' },
+  { t: '+00:00.418', type: 'user.message',            actor: 'user',
+    text: 'Summarize the managed-agent platform landscape in 2026. Pull real citations. Save as research.md.' },
+  { t: '+00:01.027', type: 'agent.thinking',          actor: 'kimi-k2.5',
+    text: "Okay — I'll break this into three buckets: hyperscaler-native (Claude Managed Agents, OpenAI Responses API, Gemini Vertex Agents), open-source runtimes (OpenClaw, LangGraph Cloud, CrewAI Enterprise), and BYOC wrappers. I'll need web.search for primary sources and file.write to save the output." },
+  { t: '+00:01.601', type: 'agent.tool_use',          actor: 'kimi-k2.5',
+    tool: 'web.search', args: { q: 'claude managed agents pricing 2026', max: 8 }, toolUseId: 'tu_01' },
+  { t: '+00:02.840', type: 'agent.tool_result',       actor: 'web.search',
+    toolUseId: 'tu_01', summary: '8 results · 1.2s · cached', isError: false },
+  { t: '+00:02.991', type: 'agent.tool_use',          actor: 'kimi-k2.5',
+    tool: 'web.fetch', args: { url: 'anthropic.com/news/managed-agents-2026-pricing' }, toolUseId: 'tu_02' },
+  { t: '+00:04.210', type: 'agent.tool_result',       actor: 'web.fetch',
+    toolUseId: 'tu_02', summary: '42 KB · text/html · 0.9s', isError: false },
+  { t: '+00:04.380', type: 'agent.tool_use',          actor: 'kimi-k2.5',
+    tool: 'file.write', args: { path: 'research.md', bytes: 4810 }, toolUseId: 'tu_03',
+    needsApproval: true },
+  { t: '+00:04.412', type: 'agent.tool_confirmation_request', actor: 'orchestrator',
+    toolUseId: 'tu_03', policy: 'always_ask',
+    prompt: 'Agent wants to write research.md (4.8 KB) to the session container' },
+];
+
+// Partial streaming tokens for the next agent.message (shown cursor-blinking)
+const STREAMING_TOKENS = "Two distinct layers have emerged in 2026. The **hyperscaler-native** tier (Anthropic Managed Agents, OpenAI Responses, Gemini Vertex) is closed-source but solid engineering — real token streaming, versioning, audit. The **open tier**";
+
+const AUDIT_ROWS = [
+  { ts: '2026-04-19 14:02:11.481Z', actor: 'token.af1e…', action: 'session.create',     target: 'sx_a91c8b42', outcome: 'ok' },
+  { ts: '2026-04-19 14:02:10.204Z', actor: 'token.af1e…', action: 'agent.patch',        target: 'ag_7k2fLq',   outcome: 'ok' },
+  { ts: '2026-04-19 13:57:02.118Z', actor: '10.0.0.42',    action: 'session.create',     target: 'sx_4203ff21', outcome: 'ok' },
+  { ts: '2026-04-19 13:51:40.002Z', actor: 'token.af1e…', action: 'agent.create',       target: 'ag_7k2fLq',   outcome: 'ok' },
+  { ts: '2026-04-19 12:20:11.914Z', actor: 'token.91cb…', action: 'session.cancel',     target: 'sx_1c88bb0a', outcome: 'ok' },
+  { ts: '2026-04-19 11:02:44.510Z', actor: 'token.91cb…', action: 'vault.credential.add', target: 'vl_notion01', outcome: 'ok' },
+  { ts: '2026-04-19 09:44:01.112Z', actor: '10.0.0.42',    action: 'session.create',     target: 'sx_ff21aa10', outcome: 'rejected · deny:gmail.read' },
+];
+
+const STATS = [
+  { label: 'Sessions · live',  value: '14',        sub: '3 awaiting' },
+  { label: 'Warm pool',        value: '5 / 5',     sub: 'full' },
+  { label: 'Tokens · 24h',     value: '4.21M',     sub: '+4.8%' },
+  { label: 'Cost · 24h',       value: '$18.04',    sub: '−2.1%' },
+  { label: 'Cold starts · 24h', value: '9',        sub: '78s avg' },
+];
+
+Object.assign(window, { AGENTS, SESSIONS, EVENTS, STREAMING_TOKENS, AUDIT_ROWS, STATS });
+
+
+/* ===== chrome ===== */
+const { useState: useStateChrome } = React;
+
+function Topbar({ route, setRoute, onTweaks }) {
+  return (
+    <header style={{
+      height: 48, flexShrink: 0,
+      borderBottom: '1px solid var(--ink)',
+      display: 'grid', gridTemplateColumns: '240px 1fr auto',
+      alignItems: 'stretch', background: 'var(--paper)',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '0 18px',
+        borderRight: '1px solid var(--ink)',
+      }}>
+        <LogoMark size={20} />
+        <span style={{ fontSize: 14, fontWeight: 500, letterSpacing: '-0.032em' }}>OpenClaw</span>
+        <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Managed&nbsp;Agents
+        </Mono>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '0 18px' }}>
+        <Mono s={11} c="var(--ink-3)">org_</Mono>
+        <Mono s={11} c="var(--ink)">stainlu</Mono>
+        <Icon n="chevronR" s={11} style={{ color: 'var(--ink-4)', margin: '0 6px' }} />
+        <Mono s={11} c="var(--ink-3)">deployment_</Mono>
+        <Mono s={11} c="var(--ink)">prod-hetzner-cax11</Mono>
+        <Badge tone="ok" style={{ marginLeft: 10 }}>healthy</Badge>
+        <Mono s={11} c="var(--ink-3)" style={{ marginLeft: 10 }}>commit af1ec32 · 175/175 tests</Mono>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 16px' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 7,
+          border: '1px solid var(--line-2)', borderRadius: 6,
+          padding: '4px 9px', background: 'var(--card)', minWidth: 240,
+        }}>
+          <Icon n="search" s={12} style={{ color: 'var(--ink-3)' }} />
+          <span style={{ fontSize: 12, color: 'var(--ink-3)', flex: 1 }}>Jump to session, agent…</span>
+          <Kbd>⌘K</Kbd>
+        </div>
+        <Button variant="ghost" size="sm" icon="spark" onClick={onTweaks}>Tweaks</Button>
+        <Button variant="ghost" size="sm" icon="docs">Docs</Button>
+        <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ink)', color: 'var(--paper)', display: 'grid', placeItems: 'center', fontSize: 10, fontFamily: 'var(--font-mono)' }}>sl</div>
+      </div>
+    </header>
+  );
+}
+
+function Sidebar({ route, setRoute }) {
+  const items = [
+    { id: 'overview',    label: 'Overview',     count: null,  icon: 'home' },
+    { id: 'agents',      label: 'Agents',       count: 4,     icon: 'agents' },
+    { id: 'environments', label: 'Environments', count: 3,    icon: 'env' },
+    { id: 'sessions',    label: 'Sessions',     count: 14,    icon: 'sessions', live: true },
+    { id: 'vaults',      label: 'Vaults',       count: 2,     icon: 'vaults' },
+    { id: 'audit',       label: 'Audit log',    count: null,  icon: 'audit' },
+    { id: 'metrics',     label: 'Metrics',      count: null,  icon: 'metrics' },
+  ];
+  return (
+    <aside style={{
+      width: 240, flexShrink: 0, height: '100%',
+      borderRight: '1px solid var(--ink)',
+      display: 'flex', flexDirection: 'column',
+      background: 'var(--paper)', padding: '16px 0 0 0',
+    }}>
+      <div style={{ padding: '0 18px 10px' }}>
+        <Eyebrow>API · v1</Eyebrow>
+      </div>
+      <nav style={{ display: 'flex', flexDirection: 'column', padding: '0 8px' }}>
+        {items.map(item => {
+          const active = route.view === item.id;
+          return (
+            <button key={item.id} onClick={() => setRoute({ view: item.id })} style={{
+              all: 'unset', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '8px 10px',
+              borderRadius: 4,
+              background: active ? 'var(--paper-3)' : 'transparent',
+              color: active ? 'var(--ink)' : 'var(--ink-2)',
+              fontSize: 13, fontWeight: active ? 500 : 400,
+              position: 'relative',
+              transition: 'background 120ms var(--ease), color 120ms var(--ease)',
+            }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--paper-2)'; }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <Icon n={item.icon} s={14} style={{ color: active ? 'var(--ink)' : 'var(--ink-3)' }} />
+              <span>{item.label}</span>
+              {item.live && <span style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: 'var(--accent, var(--lobster))',
+                boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent, var(--lobster)) 25%, transparent)',
+                animation: 'oc-pulse 2.4s var(--ease) infinite',
+              }} />}
+              {item.count !== null && (
+                <Mono s={11} c={active ? 'var(--ink-2)' : 'var(--ink-3)'} style={{ marginLeft: 'auto' }}>
+                  {item.count}
+                </Mono>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      <div style={{ height: 1, background: 'var(--line)', margin: '16px 18px' }} />
+
+      <div style={{ padding: '0 18px' }}>
+        <Eyebrow>Deploy</Eyebrow>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 8 }}>
+          {[
+            { n: 'Hetzner · CAX11', live: true, cost: '$4/mo' },
+            { n: 'GCE · e2-medium', live: false, cost: '$25/mo' },
+            { n: 'Lightsail · m_3_0', live: false, cost: '$24/mo' },
+          ].map((d, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12 }}>
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: d.live ? 'var(--ok)' : 'var(--ink-4)',
+              }} />
+              <span style={{ color: d.live ? 'var(--ink)' : 'var(--ink-3)' }}>{d.n}</span>
+              <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>{d.cost}</Mono>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 'auto', padding: '14px 18px', borderTop: '1px solid var(--ink)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: 'var(--accent, var(--lobster))',
+            boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent, var(--lobster)) 22%, transparent)',
+          }} />
+          <span style={{ fontSize: 12, fontWeight: 500 }}>Gateway up</span>
+          <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>14d 2h</Mono>
+        </div>
+        <Mono s={10} c="var(--ink-3)" style={{ marginTop: 4, display: 'block' }}>
+          api.openclaw.stainlu.dev
+        </Mono>
+      </div>
+    </aside>
+  );
+}
+
+Object.assign(window, { Topbar, Sidebar });
+
+
+/* ===== sessions_list ===== */
+const { useState: useStateSessions, useMemo: useMemoSessions } = React;
+
+function StatusBadge({ s }) {
+  if (s === 'running') return <Badge tone="live">Running</Badge>;
+  if (s === 'awaiting') return <Badge tone="soft">Awaits approval</Badge>;
+  if (s === 'idle') return <Badge tone="neutral">Idle</Badge>;
+  if (s === 'ended') return <Badge tone="ok">Ended</Badge>;
+  if (s === 'failed') return <Badge tone="err">Failed</Badge>;
+  if (s === 'quota') return <Badge tone="warn">Quota hit</Badge>;
+  return <Badge tone="neutral">{s}</Badge>;
+}
+
+// Meter bar — the "cost / quota" visual. Editorial: just a hairline track.
+function Meter({ value, cap, unit = '', tone = 'ink', style }) {
+  const pct = Math.min(100, (value / cap) * 100);
+  const hot = pct > 92;
+  const color = hot ? 'var(--danger)' : tone === 'ink' ? 'var(--ink)' : 'var(--accent, var(--lobster))';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, ...style }}>
+      <div style={{ height: 2, background: 'var(--line)', position: 'relative', overflow: 'hidden' }}>
+        <div style={{
+          position: 'absolute', left: 0, top: 0, height: '100%',
+          width: pct + '%', background: color,
+          transition: 'width 240ms var(--ease)',
+        }} />
+      </div>
+    </div>
+  );
+}
+
+function SessionsList({ selectedId, onSelect, filter, setFilter }) {
+  const filtered = filter === 'all' ? SESSIONS : SESSIONS.filter(s => s.status === filter);
+  return (
+    <div style={{
+      width: 360, flexShrink: 0, height: '100%',
+      borderRight: '1px solid var(--ink)',
+      display: 'flex', flexDirection: 'column',
+      background: 'var(--paper)',
+    }}>
+      <div style={{
+        padding: '14px 16px 10px',
+        borderBottom: '1px solid var(--line)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <Eyebrow>Sessions · 14</Eyebrow>
+          <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>SSE · 5s</Mono>
+        </div>
+        <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+          {[
+            ['all', 'All', 14],
+            ['running', 'Running', 2],
+            ['awaiting', 'Awaits', 1],
+            ['idle', 'Idle', 1],
+            ['failed', 'Failed', 1],
+          ].map(([k, l, n]) => {
+            const active = filter === k;
+            return (
+              <button key={k} onClick={() => setFilter(k)} style={{
+                all: 'unset', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'baseline', gap: 5,
+                fontSize: 12, fontWeight: 500,
+                color: active ? 'var(--ink)' : 'var(--ink-3)',
+                borderBottom: active ? '1px solid var(--ink)' : '1px solid transparent',
+                paddingBottom: 2,
+              }}>
+                {l}
+                <Mono s={10} c={active ? 'var(--ink-2)' : 'var(--ink-3)'}>{n}</Mono>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {filtered.map(s => {
+          const sel = s.id === selectedId;
+          return (
+            <button key={s.id} onClick={() => onSelect(s.id)} style={{
+              all: 'unset', cursor: 'pointer', display: 'block',
+              width: '100%', boxSizing: 'border-box',
+              padding: '12px 16px',
+              borderBottom: '1px solid var(--line)',
+              background: sel ? 'var(--card)' : 'transparent',
+              borderLeft: sel ? '2px solid var(--accent, var(--lobster))' : '2px solid transparent',
+              transition: 'background 120ms var(--ease)',
+            }}
+              onMouseEnter={e => { if (!sel) e.currentTarget.style.background = 'var(--paper-2)'; }}
+              onMouseLeave={e => { if (!sel) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Mono s={12} c="var(--ink)" style={{ fontWeight: 500 }}>{s.id}</Mono>
+                <div style={{ marginLeft: 'auto' }}><StatusBadge s={s.status} /></div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                <span style={{ fontSize: 13, color: 'var(--ink)' }}>{s.agent}</span>
+                <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>{s.started}</Mono>
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
+                <Mono s={10} c="var(--ink-3)">{s.turns} turns</Mono>
+                <Mono s={10} c="var(--ink-3)">{(s.tokens/1000).toFixed(1)}k tok</Mono>
+                <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>${s.cost.toFixed(3)}</Mono>
+              </div>
+              <Meter value={s.cost} cap={s.costCap} style={{ marginTop: 8 }} />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { SessionsList, StatusBadge, Meter });
+
+
+/* ===== session_detail ===== */
+const { useState: useStateDetail, useEffect: useEffectDetail, useRef: useRefDetail } = React;
+
+// Event row — this is the hero of the whole design.
+function EventRow({ e, streaming }) {
+  const kindTone = {
+    'session.status_running':  { tag: 'status', c: 'var(--ink-3)' },
+    'user.message':            { tag: 'user',   c: 'var(--ink)' },
+    'agent.thinking':          { tag: 'think',  c: 'var(--ink-3)' },
+    'agent.message':           { tag: 'reply',  c: 'var(--ink)' },
+    'agent.tool_use':          { tag: 'tool·use', c: 'var(--ink-2)' },
+    'agent.tool_result':       { tag: 'tool·ok',  c: 'var(--ok)' },
+    'agent.tool_confirmation_request': { tag: 'approve?', c: 'var(--lobster-press)' },
+  };
+  const k = kindTone[e.type] || { tag: e.type, c: 'var(--ink-3)' };
+
+  // Shared row shell: mono timestamp + type tag + content
+  const Row = ({ children, approveRow }) => (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '92px 92px 1fr',
+      gap: 16,
+      padding: '12px 24px',
+      borderBottom: '1px solid var(--line)',
+      background: approveRow ? 'var(--lobster-wash)' : 'transparent',
+      borderLeft: approveRow ? '2px solid var(--accent, var(--lobster))' : '2px solid transparent',
+    }}>
+      <Mono s={11} c="var(--ink-3)">{e.t}</Mono>
+      <div>
+        <Mono s={11} c={k.c} style={{ textTransform: 'lowercase' }}>{k.tag}</Mono>
+        {e.actor && (
+          <div style={{ marginTop: 2 }}>
+            <Mono s={10} c="var(--ink-4)">{e.actor}</Mono>
+          </div>
+        )}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+
+  if (e.type === 'session.status_running') {
+    return <Row><span style={{ fontSize: 12, color: 'var(--ink-3)' }}>Container <code>oc-sx-a91c8b42</code> attached · warm-pool reuse · 4.1s boot</span></Row>;
+  }
+  if (e.type === 'user.message') {
+    return <Row>
+      <p style={{ margin: 0, fontSize: 14, color: 'var(--ink)', lineHeight: 1.55, maxWidth: '62ch' }}>{e.text}</p>
+    </Row>;
+  }
+  if (e.type === 'agent.thinking') {
+    return <Row>
+      <div style={{
+        borderLeft: '1px solid var(--line-2)', paddingLeft: 12,
+        fontSize: 13, color: 'var(--ink-3)', fontStyle: 'italic',
+        lineHeight: 1.55, maxWidth: '62ch',
+      }}>{e.text}</div>
+    </Row>;
+  }
+  if (e.type === 'agent.tool_use') {
+    return <Row>
+      <div style={{
+        border: '1px solid var(--line-2)', borderRadius: 6,
+        padding: '8px 10px', background: 'var(--card)',
+        display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 10,
+        alignItems: 'center',
+      }}>
+        <span style={{
+          width: 20, height: 20, borderRadius: 4,
+          background: 'var(--ink)', color: 'var(--paper)',
+          display: 'grid', placeItems: 'center',
+        }}>
+          <Icon n="terminal" s={11} />
+        </span>
+        <div>
+          <Mono s={12} c="var(--ink)" style={{ fontWeight: 500 }}>{e.tool}</Mono>
+          <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 8 }}>{e.toolUseId}</Mono>
+          <div style={{ marginTop: 2, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-2)' }}>
+            {JSON.stringify(e.args)}
+          </div>
+        </div>
+        {e.needsApproval && <Badge tone="soft">pending</Badge>}
+      </div>
+    </Row>;
+  }
+  if (e.type === 'agent.tool_result') {
+    return <Row>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 6,
+        background: 'var(--paper-2)',
+      }}>
+        <Icon n="check" s={12} style={{ color: 'var(--ok)' }} />
+        <Mono s={11} c="var(--ink-3)">{e.toolUseId}</Mono>
+        <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{e.summary}</span>
+      </div>
+    </Row>;
+  }
+  if (e.type === 'agent.tool_confirmation_request') {
+    return <Row approveRow>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Badge tone="soft">always_ask</Badge>
+          <span style={{ fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>Tool approval required</span>
+        </div>
+        <p style={{ margin: '6px 0 10px', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5, maxWidth: '58ch' }}>{e.prompt}</p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="hard" size="sm" icon="check">Approve</Button>
+          <Button variant="secondary" size="sm">Deny</Button>
+          <Button variant="ghost" size="sm">Always allow for this agent</Button>
+        </div>
+        <Mono s={10} c="var(--ink-3)" style={{ marginTop: 8, display: 'block' }}>
+          POST /v1/sessions/sx_a91c8b42/events · user.tool_confirmation · toolUseId {e.toolUseId}
+        </Mono>
+      </div>
+    </Row>;
+  }
+  return <Row>{e.type}</Row>;
+}
+
+// The streaming "agent.message" row currently being emitted token-by-token
+function StreamingRow({ text }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '92px 92px 1fr',
+      gap: 16,
+      padding: '12px 24px',
+      borderBottom: '1px solid var(--line)',
+    }}>
+      <Mono s={11} c="var(--ink-3)">+00:05.12…</Mono>
+      <div>
+        <Mono s={11} c="var(--ink)" style={{ fontWeight: 500 }}>reply</Mono>
+        <div style={{ marginTop: 2 }}><Mono s={10} c="var(--ink-4)">kimi-k2.5</Mono></div>
+      </div>
+      <div>
+        <p style={{ margin: 0, fontSize: 14, color: 'var(--ink)', lineHeight: 1.55, maxWidth: '62ch' }}>
+          <span dangerouslySetInnerHTML={{ __html: text.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') }} />
+          <span style={{
+            display: 'inline-block', width: '0.55ch', height: 14,
+            background: 'var(--ink)', verticalAlign: '-2px',
+            marginLeft: 2, animation: 'oc-blink 1.1s steps(2,end) infinite',
+          }} />
+        </p>
+        <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
+          <Mono s={10} c="var(--ink-3)">↓ 128 tok</Mono>
+          <Mono s={10} c="var(--ink-3)">42 tok/s</Mono>
+          <Mono s={10} c="var(--ink-3)">streaming…</Mono>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KV({ k, v, mono }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+      <Mono s={11} c="var(--ink-3)" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k}</Mono>
+      {mono
+        ? <Mono s={12} c="var(--ink)">{v}</Mono>
+        : <span style={{ fontSize: 12, color: 'var(--ink)' }}>{v}</span>}
+    </div>
+  );
+}
+
+function SessionDetail({ sessionId, sessionState, streamLen }) {
+  const s = SESSIONS.find(x => x.id === sessionId) || SESSIONS[0];
+  const scrollRef = useRefDetail(null);
+  useEffectDetail(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [streamLen]);
+
+  // Derive displayed events + streaming based on state tweak
+  const effectiveStatus = sessionState || s.status;
+  const events = effectiveStatus === 'awaiting'
+    ? EVENTS                               // stops at confirmation request
+    : effectiveStatus === 'quota'
+      ? EVENTS.slice(0, 3)
+      : effectiveStatus === 'failed'
+        ? EVENTS.slice(0, 2)
+        : EVENTS.slice(0, 7);              // running: up to tool_result
+
+  const showStream = effectiveStatus === 'running';
+  const partial = STREAMING_TOKENS.slice(0, streamLen || STREAMING_TOKENS.length);
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)', overflow: 'hidden' }}>
+      {/* Session header */}
+      <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid var(--ink)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Mono s={13} c="var(--ink)" style={{ fontWeight: 500 }}>{s.id}</Mono>
+          <Icon n="copy" s={11} style={{ color: 'var(--ink-3)', cursor: 'pointer' }} />
+          <Mono s={11} c="var(--ink-3)" style={{ marginLeft: 6 }}>· {s.agent} v{4} · {s.model}</Mono>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <StatusBadge s={effectiveStatus} />
+            {effectiveStatus === 'running' && (
+              <Button variant="secondary" size="sm" icon="pause">Cancel</Button>
+            )}
+            {effectiveStatus === 'awaiting' && (
+              <Button variant="primary" size="sm" icon="check">Review approval</Button>
+            )}
+            <Button variant="ghost" size="sm" icon="external">Open JSONL</Button>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 20, marginTop: 14 }}>
+          <Stat label="Turns"  value={String(s.turns)} />
+          <Stat label="Wall"   value={formatWall(s.wallMs)} />
+          <Stat label="Tokens" value={(s.tokens/1000).toFixed(1)+'k'} meter={{v: s.tokens, cap: s.tokensCap, suffix: '/ 50k'}} />
+          <Stat label="Cost"   value={'$'+s.cost.toFixed(3)} meter={{v: s.cost, cap: s.costCap, suffix: '/ $'+s.costCap.toFixed(2)}} hot={effectiveStatus==='quota'} />
+          <Stat label="Container" value={s.container} mono sub={`boot ${(s.bootMs/1000).toFixed(1)}s · ${s.pool}`} />
+        </div>
+      </div>
+
+      {/* Events + Inspector split */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 320px', minHeight: 0 }}>
+        {/* Event stream */}
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--line)' }}>
+          <div style={{
+            padding: '10px 24px', display: 'flex', alignItems: 'center', gap: 12,
+            borderBottom: '1px solid var(--line)', background: 'var(--paper)',
+          }}>
+            <Eyebrow>Events · SSE</Eyebrow>
+            <Mono s={10} c="var(--ink-3)">GET /v1/sessions/{s.id}/events?stream=true</Mono>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+              {showStream && <>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%',
+                  background: 'var(--accent, var(--lobster))',
+                  boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent, var(--lobster)) 22%, transparent)',
+                  alignSelf: 'center',
+                  animation: 'oc-pulse 2s var(--ease) infinite',
+                }} />
+                <Mono s={10} c="var(--ink-3)">tail · 42 tok/s</Mono>
+              </>}
+              {!showStream && <Mono s={10} c="var(--ink-3)">paused</Mono>}
+            </div>
+          </div>
+          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto' }}>
+            {events.map((e, i) => <EventRow key={i} e={e} />)}
+            {showStream && <StreamingRow text={partial} />}
+            {effectiveStatus === 'quota' && (
+              <div style={{ padding: '24px', borderBottom: '1px solid var(--line)' }}>
+                <Badge tone="warn">HTTP 429 · quota_exceeded</Badge>
+                <p style={{ marginTop: 12, fontSize: 13, color: 'var(--ink)', maxWidth: '58ch', lineHeight: 1.55 }}>
+                  Session refused further turns. <code>maxCostUsdPerSession</code> reached: $0.982 of $1.000. Open a new session on the same agent to continue, or bump the cap and retry.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <Button variant="hard" size="sm">Raise cap to $2.00</Button>
+                  <Button variant="secondary" size="sm">Open new session</Button>
+                </div>
+              </div>
+            )}
+            {effectiveStatus === 'failed' && (
+              <div style={{ padding: '24px', borderBottom: '1px solid var(--line)' }}>
+                <Badge tone="err">session.failed</Badge>
+                <p style={{ marginTop: 12, fontSize: 13, color: 'var(--ink)', maxWidth: '58ch', lineHeight: 1.55 }}>
+                  {s.error || 'Container failed to boot.'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Composer */}
+          <div style={{ padding: '14px 24px 18px', borderTop: '1px solid var(--ink)' }}>
+            <div style={{
+              border: '1px solid var(--ink)', background: 'var(--card)',
+              padding: '10px 12px', display: 'flex', alignItems: 'flex-end', gap: 10,
+              opacity: effectiveStatus === 'running' || effectiveStatus === 'awaiting' ? 0.6 : 1,
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, color: 'var(--ink-3)', padding: '4px 2px 8px', minHeight: 24 }}>
+                  {effectiveStatus === 'running' ? 'Session is running — your next message will queue.' :
+                   effectiveStatus === 'awaiting' ? 'Paused on tool approval — resolve above to continue.' :
+                   'Send a message to open a new turn…'}
+                </div>
+                <div style={{ display: 'flex', gap: 4, paddingTop: 6, borderTop: '1px solid var(--line)' }}>
+                  <Mono s={10} c="var(--ink-3)" bg="var(--paper-2)">moonshot/kimi-k2.5</Mono>
+                  <Mono s={10} c="var(--ink-3)" bg="var(--paper-2)">/think medium</Mono>
+                  <span style={{ marginLeft: 'auto' }}><Mono s={10} c="var(--ink-3)">POST /events · <Kbd>⌘↵</Kbd></Mono></span>
+                </div>
+              </div>
+              <button style={{
+                width: 30, height: 30, borderRadius: 6,
+                background: 'var(--ink)', border: 0, color: 'var(--paper)',
+                display: 'grid', placeItems: 'center', cursor: 'pointer',
+              }}>
+                <Icon n="send" s={13} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Inspector */}
+        <SessionInspector s={s} status={effectiveStatus} />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, meter, hot, mono, sub }) {
+  return (
+    <div style={{ minWidth: 110 }}>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{
+        marginTop: 3,
+        fontSize: mono ? 13 : 18,
+        fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)',
+        fontWeight: mono ? 400 : 500,
+        letterSpacing: mono ? 0 : '-0.022em',
+        color: hot ? 'var(--danger)' : 'var(--ink)',
+        lineHeight: 1.1,
+      }}>{value}</div>
+      {meter && <Meter value={meter.v} cap={meter.cap} style={{ marginTop: 6, width: 110 }} />}
+      {meter && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{meter.suffix}</Mono>}
+      {sub && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{sub}</Mono>}
+    </div>
+  );
+}
+
+function SessionInspector({ s, status }) {
+  const [tab, setTab] = useStateDetail('config');
+  return (
+    <aside style={{ display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--paper)' }}>
+      <div style={{
+        display: 'flex', gap: 2, padding: '8px 12px 0',
+        borderBottom: '1px solid var(--line)',
+      }}>
+        {['config', 'tree', 'raw'].map(t => {
+          const active = tab === t;
+          return (
+            <button key={t} onClick={() => setTab(t)} style={{
+              all: 'unset', cursor: 'pointer',
+              padding: '8px 10px 9px',
+              fontSize: 12, fontWeight: 500,
+              color: active ? 'var(--ink)' : 'var(--ink-3)',
+              borderBottom: active ? '2px solid var(--ink)' : '2px solid transparent',
+              textTransform: 'lowercase',
+            }}>
+              {t === 'config' ? 'Config' : t === 'tree' ? 'Subagents' : 'Raw JSON'}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
+        {tab === 'config' && <ConfigTab s={s} />}
+        {tab === 'tree' && <TreeTab />}
+        {tab === 'raw' && <RawTab s={s} />}
+      </div>
+    </aside>
+  );
+}
+
+function ConfigTab({ s }) {
+  return (
+    <>
+      <Eyebrow>Agent</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="id"         v={s.agentId} mono />
+        <KV k="name"       v={s.agent} />
+        <KV k="version"    v="4 · latest" mono />
+        <KV k="model"      v={s.model} mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Tools · permission</Eyebrow>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+        {['web.search', 'web.fetch', 'python'].map(t => (
+          <span key={t} style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11,
+            padding: '2px 7px', border: '1px solid var(--line-2)',
+            background: 'var(--card)', color: 'var(--ink-2)', borderRadius: 3,
+          }}>{t} <span style={{ color: 'var(--ink-4)' }}>· allow</span></span>
+        ))}
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11,
+          padding: '2px 7px', border: '1px solid var(--lobster-soft)',
+          background: 'var(--lobster-wash)', color: 'var(--lobster-press)', borderRadius: 3,
+        }}>file.write · ask</span>
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>MCP servers</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="linear"  v="https://mcp.linear.app/sse" mono />
+        <KV k="notion"  v="https://mcp.notion.so/sse" mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Environment</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="id"          v={s.env} mono />
+        <KV k="networking"  v="unrestricted" />
+        <KV k="pip"         v="requests, httpx" mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Quota</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="maxCost"   v="$1.00 / session" mono />
+        <KV k="maxTokens" v="50,000 / session" mono />
+        <KV k="maxWall"   v="30 min" mono />
+      </div>
+    </>
+  );
+}
+
+function TreeTab() {
+  const tree = [
+    { depth: 0, id: 'sx_a91c8b42', name: 'research-assistant', status: 'running', tokens: '8.4k', cost: '$0.063' },
+    { depth: 1, id: 'sx_child_01', name: 'web-analyzer',        status: 'running', tokens: '2.1k', cost: '$0.019' },
+    { depth: 2, id: 'sx_child_02', name: 'fact-check',          status: 'ended',   tokens: '0.8k', cost: '$0.004' },
+    { depth: 1, id: 'sx_child_03', name: 'doc-writer',          status: 'idle',    tokens: '0',    cost: '$0.000' },
+  ];
+  return (
+    <>
+      <Eyebrow>Delegation tree · depth 2 / 3</Eyebrow>
+      <div style={{ marginTop: 10 }}>
+        {tree.map((n, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '1fr auto auto',
+            alignItems: 'center', gap: 8,
+            padding: '8px 0', paddingLeft: n.depth * 16,
+            borderBottom: '1px solid var(--line)',
+          }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {n.depth > 0 && <span style={{ color: 'var(--ink-4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>└─</span>}
+                <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--ink)' }}>{n.name}</span>
+              </div>
+              <Mono s={10} c="var(--ink-3)">{n.id}</Mono>
+            </div>
+            <StatusBadge s={n.status} />
+            <Mono s={10} c="var(--ink-2)">{n.cost}</Mono>
+          </div>
+        ))}
+      </div>
+      <p style={{ marginTop: 14, fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+        Children are first-class sessions. Inspect any of them through the same API — transcripts are never hidden behind opaque tool results.
+      </p>
+    </>
+  );
+}
+
+function RawTab({ s }) {
+  const json = {
+    session_id: s.id,
+    agent_id: s.agentId,
+    status: s.status,
+    model: s.model,
+    tokens_in: 6_140, tokens_out: 2_272,
+    cost_usd: s.cost,
+    turns: s.turns,
+    container: s.container,
+    environment_id: s.env,
+    last_event_id: 'evt_000042',
+  };
+  return (
+    <pre style={{
+      margin: 0, fontSize: 11, lineHeight: 1.55,
+      background: 'var(--paper-2)', border: '1px solid var(--line)',
+      padding: 12, borderRadius: 4, color: 'var(--ink)',
+      whiteSpace: 'pre-wrap',
+    }}>{JSON.stringify(json, null, 2)}</pre>
+  );
+}
+
+function formatWall(ms) {
+  const s = Math.floor(ms/1000);
+  if (s < 60) return s+'s';
+  const m = Math.floor(s/60);
+  if (m < 60) return m+'m '+(s%60)+'s';
+  const h = Math.floor(m/60);
+  return h+'h '+(m%60)+'m';
+}
+
+Object.assign(window, { SessionDetail });
+
+
+/* ===== other_views ===== */
+// Overview / Agents / Audit views + Tweaks panel
+
+function OverviewView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '32px 40px 28px' }}>
+        <Eyebrow>Managed Agents · 4-primitive REST API</Eyebrow>
+        <h1 style={{ marginTop: 10, fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1.05 }}>
+          Autonomous agents, your cloud,<br/><span style={{ color: 'var(--ink-3)' }}>any model.</span>
+        </h1>
+        <p style={{ marginTop: 14, maxWidth: '58ch', fontSize: 15, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+          One Docker container per session. HMAC-durable event queue. Real SSE streaming. Lives on your $4 Hetzner VPS or anywhere Docker runs.
+        </p>
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--ink)', borderBottom: '1px solid var(--ink)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
+          {STATS.map((s, i) => (
+            <div key={i} style={{
+              padding: '18px 20px',
+              borderRight: i < STATS.length - 1 ? '1px solid var(--ink)' : 0,
+            }}>
+              <Eyebrow>{s.label}</Eyebrow>
+              <div style={{ marginTop: 8, fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', lineHeight: 1 }}>{s.value}</div>
+              <Mono s={11} c="var(--ink-3)" style={{ marginTop: 6, display: 'block' }}>{s.sub}</Mono>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px' }}>
+        <div style={{ padding: '28px 40px', borderRight: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', paddingBottom: 10, borderBottom: '1px solid var(--ink)' }}>
+            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 500, letterSpacing: '-0.022em' }}>Recent sessions</h2>
+            <Mono s={11} c="var(--ink-3)">auto-refresh · 5s</Mono>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr 110px 88px 88px', gap: 16, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+            {['Session', 'Agent', 'Status', 'Turns', 'Cost'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+          </div>
+          {SESSIONS.slice(0, 6).map(s => (
+            <div key={s.id} style={{
+              display: 'grid', gridTemplateColumns: '160px 1fr 110px 88px 88px',
+              gap: 16, padding: '12px 0', borderBottom: '1px solid var(--line)',
+              alignItems: 'center',
+            }}>
+              <Mono s={12} c="var(--ink)">{s.id}</Mono>
+              <span style={{ fontSize: 13, color: 'var(--ink)' }}>{s.agent}</span>
+              <StatusBadge s={s.status} />
+              <Mono s={12} c="var(--ink-2)">{s.turns}</Mono>
+              <Mono s={12} c="var(--ink)">${s.cost.toFixed(3)}</Mono>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: '28px 32px' }}>
+          <Eyebrow>Quickstart · curl</Eyebrow>
+          <pre style={{
+            margin: '10px 0 0', fontSize: 11, lineHeight: 1.6,
+            background: 'var(--ink)', color: 'var(--paper)',
+            padding: 14, borderRadius: 6, overflow: 'auto',
+            border: '1px solid var(--ink)',
+          }}>{`# Create agent
+POST /v1/agents
+  model: moonshot/kimi-k2.5
+  instructions: "…"
+
+# Open session
+POST /v1/sessions
+  agentId: ag_7k2fLq
+
+# Stream events
+GET /v1/sessions/:id/events
+  ?stream=true
+  Last-Event-ID: evt_42`}</pre>
+          <div style={{ marginTop: 14, padding: '12px 14px', border: '1px solid var(--line-2)', background: 'var(--card)', borderRadius: 6 }}>
+            <Eyebrow>Or the OpenAI SDK, drop-in</Eyebrow>
+            <pre style={{ margin: '8px 0 0', fontSize: 11, lineHeight: 1.55, color: 'var(--ink)', background: 'transparent' }}>{`client = OpenAI(
+  base_url="…/v1",
+  default_headers={
+    "x-openclaw-agent-id": "ag_7k2fLq",
+  })`}</pre>
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <Eyebrow>Restart-safe</Eyebrow>
+            <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none' }}>
+              {[
+                'Durable event queue (SQLite WAL)',
+                'HMAC subagent tokens persist',
+                'Running containers re-adopted on boot',
+                'Observer-side run completion',
+              ].map(x => (
+                <li key={x} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                  <Icon n="check" s={12} style={{ color: 'var(--ok)', marginTop: 3 }} />
+                  <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{x}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentsView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
+          <div>
+            <Eyebrow>v1 · agents</Eyebrow>
+            <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Agents</h1>
+            <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
+              Reusable configs: model, instructions, tools, MCP servers, permission policy, delegation rules, quotas. Versioned with immutable history.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="secondary" size="md" icon="docs">Spec</Button>
+            <Button variant="hard" size="md" icon="plus">New agent</Button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Name', 'Model · tools · MCP', 'Policy', 'Version', 'Sessions', 'Cost · 24h', 'Updated'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {AGENTS.map(a => (
+          <div key={a.id} style={{
+            display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px',
+            gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)',
+            alignItems: 'center', cursor: 'pointer',
+            transition: 'background 120ms var(--ease)',
+          }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-2)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: '-0.015em' }}>{a.name}</div>
+              <Mono s={11} c="var(--ink-3)">{a.id}</Mono>
+            </div>
+            <div>
+              <Mono s={12} c="var(--ink)">{a.model}</Mono>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                {a.tools.slice(0, 3).map(t => (
+                  <span key={t} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    padding: '1px 6px', border: '1px solid var(--line)',
+                    background: 'var(--card)', color: 'var(--ink-3)', borderRadius: 3,
+                  }}>{t}</span>
+                ))}
+                {a.tools.length > 3 && <Mono s={10} c="var(--ink-4)">+{a.tools.length - 3}</Mono>}
+                {a.mcp.map(m => (
+                  <span key={m} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    padding: '1px 6px', border: '1px solid var(--ink)',
+                    background: 'var(--ink)', color: 'var(--paper)', borderRadius: 3,
+                  }}>mcp · {m}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              {a.policy === 'always_ask' && <Badge tone="soft">always_ask</Badge>}
+              {a.policy === 'always_allow' && <Badge tone="neutral">always_allow</Badge>}
+              {a.policy === 'deny' && <Badge tone="warn">deny</Badge>}
+            </div>
+            <Mono s={12} c="var(--ink-2)">v{a.version} · latest</Mono>
+            <Mono s={12} c="var(--ink)">{a.sessions.toLocaleString()}</Mono>
+            <Mono s={12} c="var(--ink)">{a.cost24h}</Mono>
+            <Mono s={11} c="var(--ink-3)">{a.updated}</Mono>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AuditView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <Eyebrow>v1 · audit</Eyebrow>
+        <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Audit log</h1>
+        <p style={{ marginTop: 8, maxWidth: '58ch', fontSize: 14, color: 'var(--ink-2)' }}>
+          Every mutating API call. Queryable, retained {' '}
+          <code>OPENCLAW_AUDIT_RETENTION_DAYS</code> (default 30). Newest first.
+        </p>
+      </div>
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '240px 160px 200px 200px 1fr', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Timestamp', 'Actor', 'Action', 'Target', 'Outcome'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {AUDIT_ROWS.map((r, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '240px 160px 200px 200px 1fr',
+            gap: 16, padding: '10px 0', borderBottom: '1px solid var(--line)', alignItems: 'center',
+          }}>
+            <Mono s={11} c="var(--ink-2)">{r.ts}</Mono>
+            <Mono s={11} c="var(--ink-2)">{r.actor}</Mono>
+            <Mono s={12} c="var(--ink)">{r.action}</Mono>
+            <Mono s={11} c="var(--ink-2)">{r.target}</Mono>
+            <span style={{ fontSize: 12, color: r.outcome === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>{r.outcome}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EnvironmentsView() {
+  const envs = [
+    { id: 'env_default', name: 'default', packages: '—', net: 'unrestricted', sessions: 12 },
+    { id: 'env_py_stdlib', name: 'py-stdlib', packages: 'pip: requests, httpx, beautifulsoup4', net: 'unrestricted', sessions: 1 },
+    { id: 'env_locked', name: 'locked-anthropic', packages: 'pip: anthropic', net: 'limited · api.anthropic.com', sessions: 0 },
+  ];
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <Eyebrow>v1 · environments</Eyebrow>
+        <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Environments</h1>
+        <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
+          Container shapes: packages (pip / apt / npm) + networking policy. Composed with agents at session time.
+        </p>
+      </div>
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 200px 100px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Name', 'Packages', 'Networking', 'Sessions'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {envs.map(e => (
+          <div key={e.id} style={{
+            display: 'grid', gridTemplateColumns: '220px 1fr 200px 100px',
+            gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)', alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{e.name}</div>
+              <Mono s={11} c="var(--ink-3)">{e.id}</Mono>
+            </div>
+            <Mono s={12} c="var(--ink-2)">{e.packages}</Mono>
+            {e.net === 'unrestricted'
+              ? <Badge tone="neutral">unrestricted</Badge>
+              : <Badge tone="soft">{e.net}</Badge>}
+            <Mono s={12} c="var(--ink)">{e.sessions}</Mono>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlaceholderView({ title, sub }) {
+  return (
+    <div style={{ height: '100%', display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>
+      <div style={{ textAlign: 'center' }}>
+        <Eyebrow>{title}</Eyebrow>
+        <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-3)' }}>{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { OverviewView, AgentsView, AuditView, EnvironmentsView, PlaceholderView });
+
+
+/* ===== tweaks ===== */
+const { useState: useStateTweaks } = React;
+
+function TweaksPanel({ tweaks, setTweaks, onClose }) {
+  const Row = ({ label, sub, children }) => (
+    <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{label}</div>
+          {sub && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{sub}</Mono>}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+
+  const Seg = ({ value, options, onChange }) => (
+    <div style={{ display: 'flex', border: '1px solid var(--line-2)', borderRadius: 6, overflow: 'hidden' }}>
+      {options.map(o => {
+        const active = value === o.v;
+        return (
+          <button key={o.v} onClick={() => onChange(o.v)} style={{
+            all: 'unset', cursor: 'pointer',
+            padding: '5px 10px',
+            fontSize: 11, fontFamily: 'var(--font-mono)',
+            background: active ? 'var(--ink)' : 'var(--card)',
+            color: active ? 'var(--paper)' : 'var(--ink-2)',
+          }}>{o.l}</button>
+        );
+      })}
+    </div>
+  );
+
+  const Swatch = ({ c, active, onClick }) => (
+    <button onClick={onClick} style={{
+      all: 'unset', cursor: 'pointer',
+      width: 22, height: 22, borderRadius: '50%',
+      background: c,
+      boxShadow: active ? `0 0 0 2px var(--paper), 0 0 0 3px var(--ink)` : 'none',
+    }} />
+  );
+
+  return (
+    <div style={{
+      position: 'fixed', right: 16, bottom: 16, zIndex: 100,
+      width: 320,
+      background: 'var(--card)',
+      border: '1px solid var(--ink)',
+      borderRadius: 8,
+      boxShadow: '0 20px 40px rgba(20,20,19,0.10)',
+      fontFamily: 'var(--font-sans)',
+    }}>
+      <div style={{
+        padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8,
+        borderBottom: '1px solid var(--ink)',
+      }}>
+        <Icon n="spark" s={13} />
+        <span style={{ fontSize: 13, fontWeight: 500 }}>Tweaks</span>
+        <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 6 }}>dashboard</Mono>
+        <button onClick={onClose} style={{
+          all: 'unset', cursor: 'pointer', marginLeft: 'auto',
+          color: 'var(--ink-3)', padding: 4,
+        }}>
+          <Icon n="close" s={13} />
+        </button>
+      </div>
+
+      <Row label="Density" sub="13px dev-tool vs 15px broader">
+        <Seg value={tweaks.density} onChange={v => setTweaks({ ...tweaks, density: v })}
+          options={[{ v: 'compact', l: '13' }, { v: 'comfy', l: '15' }]} />
+      </Row>
+
+      <Row label="Session state" sub="cycle through lifecycle">
+        <Seg value={tweaks.sessionState} onChange={v => setTweaks({ ...tweaks, sessionState: v })}
+          options={[
+            { v: 'running', l: 'run' },
+            { v: 'awaiting', l: 'ask' },
+            { v: 'quota', l: 'quota' },
+            { v: 'failed', l: 'fail' },
+          ]} />
+      </Row>
+
+      <Row label="Accent" sub="lobster, or tuned down">
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Swatch c="#FF4D14" active={tweaks.accent === 'lobster'}  onClick={() => setTweaks({ ...tweaks, accent: 'lobster' })} />
+          <Swatch c="#E85A2F" active={tweaks.accent === 'warm'}      onClick={() => setTweaks({ ...tweaks, accent: 'warm' })} />
+          <Swatch c="#141413" active={tweaks.accent === 'ink'}       onClick={() => setTweaks({ ...tweaks, accent: 'ink' })} />
+        </div>
+      </Row>
+
+      <Row label="Editorial frames" sub="hard ink dividers on blocks">
+        <Seg value={tweaks.frames ? 'on' : 'off'} onChange={v => setTweaks({ ...tweaks, frames: v === 'on' })}
+          options={[{ v: 'on', l: 'on' }, { v: 'off', l: 'off' }]} />
+      </Row>
+
+      <Row label="Layout" sub="detail view arrangement">
+        <Seg value={tweaks.layout} onChange={v => setTweaks({ ...tweaks, layout: v })}
+          options={[{ v: 'split', l: 'split' }, { v: 'stack', l: 'stack' }]} />
+      </Row>
+
+      <div style={{ padding: '10px 14px', display: 'flex', gap: 8 }}>
+        <Mono s={10} c="var(--ink-3)" style={{ flex: 1 }}>state saved to localStorage</Mono>
+        <Kbd>T</Kbd>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { TweaksPanel });
+
+
+// ===== app =====
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "compact",
+  "sessionState": "running",
+  "accent": "lobster",
+  "frames": true,
+  "layout": "split"
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  lobster: '#FF4D14',
+  warm:    '#E85A2F',
+  ink:     '#141413',
+};
+
+function App() {
+  const [route, setRoute] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('oc_route')) || { view: 'sessions' }; } catch { return { view: 'sessions' }; }
+  });
+  const [selectedSession, setSelectedSession] = useState(() => localStorage.getItem('oc_sess') || 'sx_a91c8b42');
+  const [filter, setFilter] = useState('all');
+  const [showTweaks, setShowTweaks] = useState(false);
+  const [tweaks, setTweaks] = useState(() => {
+    try {
+      const v = localStorage.getItem('oc_tweaks');
+      return v ? { ...TWEAK_DEFAULTS, ...JSON.parse(v) } : { ...TWEAK_DEFAULTS };
+    } catch { return { ...TWEAK_DEFAULTS }; }
+  });
+
+  useEffect(() => {
+    function onMsg(e) {
+      const t = e?.data?.type;
+      if (t === '__activate_edit_mode') setShowTweaks(true);
+      else if (t === '__deactivate_edit_mode') setShowTweaks(false);
+    }
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  useEffect(() => { localStorage.setItem('oc_route', JSON.stringify(route)); }, [route]);
+  useEffect(() => { localStorage.setItem('oc_sess', selectedSession); }, [selectedSession]);
+  useEffect(() => { localStorage.setItem('oc_tweaks', JSON.stringify(tweaks)); }, [tweaks]);
+
+  useEffect(() => {
+    document.body.classList.toggle('density-compact', tweaks.density === 'compact');
+    document.body.classList.toggle('density-comfy',   tweaks.density === 'comfy');
+    document.body.classList.toggle('frames-off', !tweaks.frames);
+    document.documentElement.style.setProperty('--accent', ACCENTS[tweaks.accent] || ACCENTS.lobster);
+  }, [tweaks]);
+
+  function updateTweaks(next) {
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: next }, '*');
+  }
+
+  const [streamLen, setStreamLen] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setStreamLen(n => {
+        const max = STREAMING_TOKENS.length;
+        if (n >= max) return 12;
+        return Math.min(max, n + 2);
+      });
+    }, 80);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 't' && !e.metaKey && !e.ctrlKey && !e.altKey &&
+          !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        setShowTweaks(s => !s);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const view = route.view;
+  const content = view === 'overview' ? <OverviewView />
+    : view === 'agents' ? <AgentsView />
+    : view === 'environments' ? <EnvironmentsView />
+    : view === 'audit' ? <AuditView />
+    : view === 'vaults' ? <PlaceholderView title="Vaults" sub="Per-end-user credential bundles · not shown in this mockup" />
+    : view === 'metrics' ? <PlaceholderView title="Metrics" sub="Prometheus · /metrics · not shown in this mockup" />
+    : (
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }} data-screen-label="Sessions split">
+        <SessionsList selectedId={selectedSession} onSelect={setSelectedSession} filter={filter} setFilter={setFilter} />
+        <SessionDetail sessionId={selectedSession} sessionState={tweaks.sessionState} streamLen={streamLen} />
+      </div>
+    );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: 'var(--paper)', overflow: 'hidden' }}>
+      <Topbar route={route} setRoute={setRoute} onTweaks={() => setShowTweaks(s => !s)} />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <Sidebar route={route} setRoute={setRoute} />
+        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)' }} data-screen-label={'View ' + view}>
+          {content}
+        </main>
+      </div>
+      {showTweaks && (<TweaksPanel tweaks={tweaks} setTweaks={updateTweaks} onClose={() => setShowTweaks(false)} />)}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
++s.cost.toFixed(3)} meter={{v: s.cost, cap: s.costCap, suffix: '/ 
+const { useState, useEffect, useRef } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "compact",
+  "sessionState": "running",
+  "accent": "lobster",
+  "frames": true,
+  "layout": "split"
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  lobster: '#FF4D14',
+  warm:    '#E85A2F',
+  ink:     '#141413',
+};
+
+function App() {
+  // Route: view = overview | agents | sessions | environments | audit | vaults | metrics
+  const [route, setRoute] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('oc_route')) || { view: 'sessions' }; } catch { return { view: 'sessions' }; }
+  });
+  const [selectedSession, setSelectedSession] = useState(() => localStorage.getItem('oc_sess') || 'sx_a91c8b42');
+  const [filter, setFilter] = useState('all');
+  const [showTweaks, setShowTweaks] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [tweaks, setTweaks] = useState(() => {
+    try {
+      const v = localStorage.getItem('oc_tweaks');
+      return v ? { ...TWEAK_DEFAULTS, ...JSON.parse(v) } : { ...TWEAK_DEFAULTS };
+    } catch { return { ...TWEAK_DEFAULTS }; }
+  });
+
+  // Edit-mode handshake for host toolbar
+  useEffect(() => {
+    function onMsg(e) {
+      const t = e?.data?.type;
+      if (t === '__activate_edit_mode') { setEditMode(true); setShowTweaks(true); }
+      else if (t === '__deactivate_edit_mode') { setEditMode(false); setShowTweaks(false); }
+    }
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  // Persist
+  useEffect(() => { localStorage.setItem('oc_route', JSON.stringify(route)); }, [route]);
+  useEffect(() => { localStorage.setItem('oc_sess', selectedSession); }, [selectedSession]);
+  useEffect(() => { localStorage.setItem('oc_tweaks', JSON.stringify(tweaks)); }, [tweaks]);
+
+  // Apply tweaks to body class + CSS vars
+  useEffect(() => {
+    document.body.classList.toggle('density-compact', tweaks.density === 'compact');
+    document.body.classList.toggle('density-comfy',   tweaks.density === 'comfy');
+    document.body.classList.toggle('frames-off', !tweaks.frames);
+    document.documentElement.style.setProperty('--accent', ACCENTS[tweaks.accent] || ACCENTS.lobster);
+  }, [tweaks]);
+
+  // When edit-mode sends set_keys to host, persist
+  function updateTweaks(next) {
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: next }, '*');
+  }
+
+  // Simulate streaming tokens on the running session
+  const [streamLen, setStreamLen] = useState(0);
+  useEffect(() => {
+    if (tweaks.sessionState !== 'running' && route.view !== 'sessions') return;
+    const id = setInterval(() => {
+      setStreamLen(n => {
+        const max = STREAMING_TOKENS.length;
+        if (n >= max) return 12; // loop
+        return Math.min(max, n + 2);
+      });
+    }, 80);
+    return () => clearInterval(id);
+  }, [tweaks.sessionState, route.view]);
+
+  // T keyboard shortcut to toggle tweaks
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 't' && !e.metaKey && !e.ctrlKey && !e.altKey &&
+          !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        setShowTweaks(s => !s);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const view = route.view;
+
+  const content = view === 'overview' ? <OverviewView />
+    : view === 'agents' ? <AgentsView />
+    : view === 'environments' ? <EnvironmentsView />
+    : view === 'audit' ? <AuditView />
+    : view === 'vaults' ? <PlaceholderView title="Vaults" sub="Per-end-user credential bundles · not shown in this mockup" />
+    : view === 'metrics' ? <PlaceholderView title="Metrics" sub="Prometheus · /metrics · not shown in this mockup" />
+    : (
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}
+        data-screen-label="Sessions split">
+        <SessionsList
+          selectedId={selectedSession}
+          onSelect={setSelectedSession}
+          filter={filter}
+          setFilter={setFilter}
+        />
+        <SessionDetail
+          sessionId={selectedSession}
+          sessionState={tweaks.sessionState}
+          streamLen={streamLen}
+        />
+      </div>
+    );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: 'var(--paper)', overflow: 'hidden' }}>
+      <Topbar route={route} setRoute={setRoute} onTweaks={() => setShowTweaks(s => !s)} />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <Sidebar route={route} setRoute={setRoute} />
+        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)' }}
+          data-screen-label={'View ' + view}>
+          {content}
+        </main>
+      </div>
+      {showTweaks && (
+        <TweaksPanel
+          tweaks={tweaks}
+          setTweaks={updateTweaks}
+          onClose={() => setShowTweaks(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+  </script>
+</body>
+</html>
++s.costCap.toFixed(2)}} hot={effectiveStatus==='quota'} />
+          <Stat label="Container" value={s.container} mono sub={`boot ${(s.bootMs/1000).toFixed(1)}s · ${s.pool}`} />
+        </div>
+      </div>
+
+      {/* Events + Inspector split */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 320px', minHeight: 0 }}>
+        {/* Event stream */}
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--line)' }}>
+          <div style={{
+            padding: '10px 24px', display: 'flex', alignItems: 'center', gap: 12,
+            borderBottom: '1px solid var(--line)', background: 'var(--paper)',
+          }}>
+            <Eyebrow>Events · SSE</Eyebrow>
+            <Mono s={10} c="var(--ink-3)">GET /v1/sessions/{s.id}/events?stream=true</Mono>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+              {showStream && <>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%',
+                  background: 'var(--accent, var(--lobster))',
+                  boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent, var(--lobster)) 22%, transparent)',
+                  alignSelf: 'center',
+                  animation: 'oc-pulse 2s var(--ease) infinite',
+                }} />
+                <Mono s={10} c="var(--ink-3)">tail · 42 tok/s</Mono>
+              </>}
+              {!showStream && <Mono s={10} c="var(--ink-3)">paused</Mono>}
+            </div>
+          </div>
+          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto' }}>
+            {events.map((e, i) => <EventRow key={i} e={e} />)}
+            {showStream && <StreamingRow text={partial} />}
+            {effectiveStatus === 'quota' && (
+              <div style={{ padding: '24px', borderBottom: '1px solid var(--line)' }}>
+                <Badge tone="warn">HTTP 429 · quota_exceeded</Badge>
+                <p style={{ marginTop: 12, fontSize: 13, color: 'var(--ink)', maxWidth: '58ch', lineHeight: 1.55 }}>
+                  Session refused further turns. <code>maxCostUsdPerSession</code> reached: $0.982 of $1.000. Open a new session on the same agent to continue, or bump the cap and retry.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <Button variant="hard" size="sm">Raise cap to $2.00</Button>
+                  <Button variant="secondary" size="sm">Open new session</Button>
+                </div>
+              </div>
+            )}
+            {effectiveStatus === 'failed' && (
+              <div style={{ padding: '24px', borderBottom: '1px solid var(--line)' }}>
+                <Badge tone="err">session.failed</Badge>
+                <p style={{ marginTop: 12, fontSize: 13, color: 'var(--ink)', maxWidth: '58ch', lineHeight: 1.55 }}>
+                  {s.error || 'Container failed to boot.'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Composer */}
+          <div style={{ padding: '14px 24px 18px', borderTop: '1px solid var(--ink)' }}>
+            <div style={{
+              border: '1px solid var(--ink)', background: 'var(--card)',
+              padding: '10px 12px', display: 'flex', alignItems: 'flex-end', gap: 10,
+              opacity: effectiveStatus === 'running' || effectiveStatus === 'awaiting' ? 0.6 : 1,
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, color: 'var(--ink-3)', padding: '4px 2px 8px', minHeight: 24 }}>
+                  {effectiveStatus === 'running' ? 'Session is running — your next message will queue.' :
+                   effectiveStatus === 'awaiting' ? 'Paused on tool approval — resolve above to continue.' :
+                   'Send a message to open a new turn…'}
+                </div>
+                <div style={{ display: 'flex', gap: 4, paddingTop: 6, borderTop: '1px solid var(--line)' }}>
+                  <Mono s={10} c="var(--ink-3)" bg="var(--paper-2)">moonshot/kimi-k2.5</Mono>
+                  <Mono s={10} c="var(--ink-3)" bg="var(--paper-2)">/think medium</Mono>
+                  <span style={{ marginLeft: 'auto' }}><Mono s={10} c="var(--ink-3)">POST /events · <Kbd>⌘↵</Kbd></Mono></span>
+                </div>
+              </div>
+              <button style={{
+                width: 30, height: 30, borderRadius: 6,
+                background: 'var(--ink)', border: 0, color: 'var(--paper)',
+                display: 'grid', placeItems: 'center', cursor: 'pointer',
+              }}>
+                <Icon n="send" s={13} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Inspector */}
+        <SessionInspector s={s} status={effectiveStatus} />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, meter, hot, mono, sub }) {
+  return (
+    <div style={{ minWidth: 110 }}>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{
+        marginTop: 3,
+        fontSize: mono ? 13 : 18,
+        fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)',
+        fontWeight: mono ? 400 : 500,
+        letterSpacing: mono ? 0 : '-0.022em',
+        color: hot ? 'var(--danger)' : 'var(--ink)',
+        lineHeight: 1.1,
+      }}>{value}</div>
+      {meter && <Meter value={meter.v} cap={meter.cap} style={{ marginTop: 6, width: 110 }} />}
+      {meter && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{meter.suffix}</Mono>}
+      {sub && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{sub}</Mono>}
+    </div>
+  );
+}
+
+function SessionInspector({ s, status }) {
+  const [tab, setTab] = useStateDetail('config');
+  return (
+    <aside style={{ display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--paper)' }}>
+      <div style={{
+        display: 'flex', gap: 2, padding: '8px 12px 0',
+        borderBottom: '1px solid var(--line)',
+      }}>
+        {['config', 'tree', 'raw'].map(t => {
+          const active = tab === t;
+          return (
+            <button key={t} onClick={() => setTab(t)} style={{
+              all: 'unset', cursor: 'pointer',
+              padding: '8px 10px 9px',
+              fontSize: 12, fontWeight: 500,
+              color: active ? 'var(--ink)' : 'var(--ink-3)',
+              borderBottom: active ? '2px solid var(--ink)' : '2px solid transparent',
+              textTransform: 'lowercase',
+            }}>
+              {t === 'config' ? 'Config' : t === 'tree' ? 'Subagents' : 'Raw JSON'}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
+        {tab === 'config' && <ConfigTab s={s} />}
+        {tab === 'tree' && <TreeTab />}
+        {tab === 'raw' && <RawTab s={s} />}
+      </div>
+    </aside>
+  );
+}
+
+function ConfigTab({ s }) {
+  return (
+    <>
+      <Eyebrow>Agent</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="id"         v={s.agentId} mono />
+        <KV k="name"       v={s.agent} />
+        <KV k="version"    v="4 · latest" mono />
+        <KV k="model"      v={s.model} mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Tools · permission</Eyebrow>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+        {['web.search', 'web.fetch', 'python'].map(t => (
+          <span key={t} style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11,
+            padding: '2px 7px', border: '1px solid var(--line-2)',
+            background: 'var(--card)', color: 'var(--ink-2)', borderRadius: 3,
+          }}>{t} <span style={{ color: 'var(--ink-4)' }}>· allow</span></span>
+        ))}
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11,
+          padding: '2px 7px', border: '1px solid var(--lobster-soft)',
+          background: 'var(--lobster-wash)', color: 'var(--lobster-press)', borderRadius: 3,
+        }}>file.write · ask</span>
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>MCP servers</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="linear"  v="https://mcp.linear.app/sse" mono />
+        <KV k="notion"  v="https://mcp.notion.so/sse" mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Environment</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="id"          v={s.env} mono />
+        <KV k="networking"  v="unrestricted" />
+        <KV k="pip"         v="requests, httpx" mono />
+      </div>
+
+      <div style={{ height: 14 }} />
+      <Eyebrow>Quota</Eyebrow>
+      <div style={{ marginTop: 6 }}>
+        <KV k="maxCost"   v="$1.00 / session" mono />
+        <KV k="maxTokens" v="50,000 / session" mono />
+        <KV k="maxWall"   v="30 min" mono />
+      </div>
+    </>
+  );
+}
+
+function TreeTab() {
+  const tree = [
+    { depth: 0, id: 'sx_a91c8b42', name: 'research-assistant', status: 'running', tokens: '8.4k', cost: '$0.063' },
+    { depth: 1, id: 'sx_child_01', name: 'web-analyzer',        status: 'running', tokens: '2.1k', cost: '$0.019' },
+    { depth: 2, id: 'sx_child_02', name: 'fact-check',          status: 'ended',   tokens: '0.8k', cost: '$0.004' },
+    { depth: 1, id: 'sx_child_03', name: 'doc-writer',          status: 'idle',    tokens: '0',    cost: '$0.000' },
+  ];
+  return (
+    <>
+      <Eyebrow>Delegation tree · depth 2 / 3</Eyebrow>
+      <div style={{ marginTop: 10 }}>
+        {tree.map((n, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '1fr auto auto',
+            alignItems: 'center', gap: 8,
+            padding: '8px 0', paddingLeft: n.depth * 16,
+            borderBottom: '1px solid var(--line)',
+          }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {n.depth > 0 && <span style={{ color: 'var(--ink-4)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>└─</span>}
+                <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--ink)' }}>{n.name}</span>
+              </div>
+              <Mono s={10} c="var(--ink-3)">{n.id}</Mono>
+            </div>
+            <StatusBadge s={n.status} />
+            <Mono s={10} c="var(--ink-2)">{n.cost}</Mono>
+          </div>
+        ))}
+      </div>
+      <p style={{ marginTop: 14, fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+        Children are first-class sessions. Inspect any of them through the same API — transcripts are never hidden behind opaque tool results.
+      </p>
+    </>
+  );
+}
+
+function RawTab({ s }) {
+  const json = {
+    session_id: s.id,
+    agent_id: s.agentId,
+    status: s.status,
+    model: s.model,
+    tokens_in: 6_140, tokens_out: 2_272,
+    cost_usd: s.cost,
+    turns: s.turns,
+    container: s.container,
+    environment_id: s.env,
+    last_event_id: 'evt_000042',
+  };
+  return (
+    <pre style={{
+      margin: 0, fontSize: 11, lineHeight: 1.55,
+      background: 'var(--paper-2)', border: '1px solid var(--line)',
+      padding: 12, borderRadius: 4, color: 'var(--ink)',
+      whiteSpace: 'pre-wrap',
+    }}>{JSON.stringify(json, null, 2)}</pre>
+  );
+}
+
+function formatWall(ms) {
+  const s = Math.floor(ms/1000);
+  if (s < 60) return s+'s';
+  const m = Math.floor(s/60);
+  if (m < 60) return m+'m '+(s%60)+'s';
+  const h = Math.floor(m/60);
+  return h+'h '+(m%60)+'m';
+}
+
+Object.assign(window, { SessionDetail });
+
+
+/* ===== other_views ===== */
+// Overview / Agents / Audit views + Tweaks panel
+
+function OverviewView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '32px 40px 28px' }}>
+        <Eyebrow>Managed Agents · 4-primitive REST API</Eyebrow>
+        <h1 style={{ marginTop: 10, fontSize: 42, fontWeight: 500, letterSpacing: '-0.035em', lineHeight: 1.05 }}>
+          Autonomous agents, your cloud,<br/><span style={{ color: 'var(--ink-3)' }}>any model.</span>
+        </h1>
+        <p style={{ marginTop: 14, maxWidth: '58ch', fontSize: 15, color: 'var(--ink-2)', lineHeight: 1.55 }}>
+          One Docker container per session. HMAC-durable event queue. Real SSE streaming. Lives on your $4 Hetzner VPS or anywhere Docker runs.
+        </p>
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--ink)', borderBottom: '1px solid var(--ink)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
+          {STATS.map((s, i) => (
+            <div key={i} style={{
+              padding: '18px 20px',
+              borderRight: i < STATS.length - 1 ? '1px solid var(--ink)' : 0,
+            }}>
+              <Eyebrow>{s.label}</Eyebrow>
+              <div style={{ marginTop: 8, fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', lineHeight: 1 }}>{s.value}</div>
+              <Mono s={11} c="var(--ink-3)" style={{ marginTop: 6, display: 'block' }}>{s.sub}</Mono>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px' }}>
+        <div style={{ padding: '28px 40px', borderRight: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', paddingBottom: 10, borderBottom: '1px solid var(--ink)' }}>
+            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 500, letterSpacing: '-0.022em' }}>Recent sessions</h2>
+            <Mono s={11} c="var(--ink-3)">auto-refresh · 5s</Mono>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr 110px 88px 88px', gap: 16, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+            {['Session', 'Agent', 'Status', 'Turns', 'Cost'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+          </div>
+          {SESSIONS.slice(0, 6).map(s => (
+            <div key={s.id} style={{
+              display: 'grid', gridTemplateColumns: '160px 1fr 110px 88px 88px',
+              gap: 16, padding: '12px 0', borderBottom: '1px solid var(--line)',
+              alignItems: 'center',
+            }}>
+              <Mono s={12} c="var(--ink)">{s.id}</Mono>
+              <span style={{ fontSize: 13, color: 'var(--ink)' }}>{s.agent}</span>
+              <StatusBadge s={s.status} />
+              <Mono s={12} c="var(--ink-2)">{s.turns}</Mono>
+              <Mono s={12} c="var(--ink)">${s.cost.toFixed(3)}</Mono>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: '28px 32px' }}>
+          <Eyebrow>Quickstart · curl</Eyebrow>
+          <pre style={{
+            margin: '10px 0 0', fontSize: 11, lineHeight: 1.6,
+            background: 'var(--ink)', color: 'var(--paper)',
+            padding: 14, borderRadius: 6, overflow: 'auto',
+            border: '1px solid var(--ink)',
+          }}>{`# Create agent
+POST /v1/agents
+  model: moonshot/kimi-k2.5
+  instructions: "…"
+
+# Open session
+POST /v1/sessions
+  agentId: ag_7k2fLq
+
+# Stream events
+GET /v1/sessions/:id/events
+  ?stream=true
+  Last-Event-ID: evt_42`}</pre>
+          <div style={{ marginTop: 14, padding: '12px 14px', border: '1px solid var(--line-2)', background: 'var(--card)', borderRadius: 6 }}>
+            <Eyebrow>Or the OpenAI SDK, drop-in</Eyebrow>
+            <pre style={{ margin: '8px 0 0', fontSize: 11, lineHeight: 1.55, color: 'var(--ink)', background: 'transparent' }}>{`client = OpenAI(
+  base_url="…/v1",
+  default_headers={
+    "x-openclaw-agent-id": "ag_7k2fLq",
+  })`}</pre>
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <Eyebrow>Restart-safe</Eyebrow>
+            <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none' }}>
+              {[
+                'Durable event queue (SQLite WAL)',
+                'HMAC subagent tokens persist',
+                'Running containers re-adopted on boot',
+                'Observer-side run completion',
+              ].map(x => (
+                <li key={x} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                  <Icon n="check" s={12} style={{ color: 'var(--ok)', marginTop: 3 }} />
+                  <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{x}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentsView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
+          <div>
+            <Eyebrow>v1 · agents</Eyebrow>
+            <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Agents</h1>
+            <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
+              Reusable configs: model, instructions, tools, MCP servers, permission policy, delegation rules, quotas. Versioned with immutable history.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="secondary" size="md" icon="docs">Spec</Button>
+            <Button variant="hard" size="md" icon="plus">New agent</Button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Name', 'Model · tools · MCP', 'Policy', 'Version', 'Sessions', 'Cost · 24h', 'Updated'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {AGENTS.map(a => (
+          <div key={a.id} style={{
+            display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px',
+            gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)',
+            alignItems: 'center', cursor: 'pointer',
+            transition: 'background 120ms var(--ease)',
+          }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-2)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: '-0.015em' }}>{a.name}</div>
+              <Mono s={11} c="var(--ink-3)">{a.id}</Mono>
+            </div>
+            <div>
+              <Mono s={12} c="var(--ink)">{a.model}</Mono>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                {a.tools.slice(0, 3).map(t => (
+                  <span key={t} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    padding: '1px 6px', border: '1px solid var(--line)',
+                    background: 'var(--card)', color: 'var(--ink-3)', borderRadius: 3,
+                  }}>{t}</span>
+                ))}
+                {a.tools.length > 3 && <Mono s={10} c="var(--ink-4)">+{a.tools.length - 3}</Mono>}
+                {a.mcp.map(m => (
+                  <span key={m} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    padding: '1px 6px', border: '1px solid var(--ink)',
+                    background: 'var(--ink)', color: 'var(--paper)', borderRadius: 3,
+                  }}>mcp · {m}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              {a.policy === 'always_ask' && <Badge tone="soft">always_ask</Badge>}
+              {a.policy === 'always_allow' && <Badge tone="neutral">always_allow</Badge>}
+              {a.policy === 'deny' && <Badge tone="warn">deny</Badge>}
+            </div>
+            <Mono s={12} c="var(--ink-2)">v{a.version} · latest</Mono>
+            <Mono s={12} c="var(--ink)">{a.sessions.toLocaleString()}</Mono>
+            <Mono s={12} c="var(--ink)">{a.cost24h}</Mono>
+            <Mono s={11} c="var(--ink-3)">{a.updated}</Mono>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AuditView() {
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <Eyebrow>v1 · audit</Eyebrow>
+        <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Audit log</h1>
+        <p style={{ marginTop: 8, maxWidth: '58ch', fontSize: 14, color: 'var(--ink-2)' }}>
+          Every mutating API call. Queryable, retained {' '}
+          <code>OPENCLAW_AUDIT_RETENTION_DAYS</code> (default 30). Newest first.
+        </p>
+      </div>
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '240px 160px 200px 200px 1fr', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Timestamp', 'Actor', 'Action', 'Target', 'Outcome'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {AUDIT_ROWS.map((r, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '240px 160px 200px 200px 1fr',
+            gap: 16, padding: '10px 0', borderBottom: '1px solid var(--line)', alignItems: 'center',
+          }}>
+            <Mono s={11} c="var(--ink-2)">{r.ts}</Mono>
+            <Mono s={11} c="var(--ink-2)">{r.actor}</Mono>
+            <Mono s={12} c="var(--ink)">{r.action}</Mono>
+            <Mono s={11} c="var(--ink-2)">{r.target}</Mono>
+            <span style={{ fontSize: 12, color: r.outcome === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>{r.outcome}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EnvironmentsView() {
+  const envs = [
+    { id: 'env_default', name: 'default', packages: '—', net: 'unrestricted', sessions: 12 },
+    { id: 'env_py_stdlib', name: 'py-stdlib', packages: 'pip: requests, httpx, beautifulsoup4', net: 'unrestricted', sessions: 1 },
+    { id: 'env_locked', name: 'locked-anthropic', packages: 'pip: anthropic', net: 'limited · api.anthropic.com', sessions: 0 },
+  ];
+  return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
+      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+        <Eyebrow>v1 · environments</Eyebrow>
+        <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Environments</h1>
+        <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
+          Container shapes: packages (pip / apt / npm) + networking policy. Composed with agents at session time.
+        </p>
+      </div>
+      <div style={{ padding: '0 40px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 200px 100px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Name', 'Packages', 'Networking', 'Sessions'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {envs.map(e => (
+          <div key={e.id} style={{
+            display: 'grid', gridTemplateColumns: '220px 1fr 200px 100px',
+            gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)', alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{e.name}</div>
+              <Mono s={11} c="var(--ink-3)">{e.id}</Mono>
+            </div>
+            <Mono s={12} c="var(--ink-2)">{e.packages}</Mono>
+            {e.net === 'unrestricted'
+              ? <Badge tone="neutral">unrestricted</Badge>
+              : <Badge tone="soft">{e.net}</Badge>}
+            <Mono s={12} c="var(--ink)">{e.sessions}</Mono>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlaceholderView({ title, sub }) {
+  return (
+    <div style={{ height: '100%', display: 'grid', placeItems: 'center', background: 'var(--paper)' }}>
+      <div style={{ textAlign: 'center' }}>
+        <Eyebrow>{title}</Eyebrow>
+        <div style={{ marginTop: 8, fontSize: 13, color: 'var(--ink-3)' }}>{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { OverviewView, AgentsView, AuditView, EnvironmentsView, PlaceholderView });
+
+
+/* ===== tweaks ===== */
+const { useState: useStateTweaks } = React;
+
+function TweaksPanel({ tweaks, setTweaks, onClose }) {
+  const Row = ({ label, sub, children }) => (
+    <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{label}</div>
+          {sub && <Mono s={10} c="var(--ink-3)" style={{ marginTop: 2, display: 'block' }}>{sub}</Mono>}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+
+  const Seg = ({ value, options, onChange }) => (
+    <div style={{ display: 'flex', border: '1px solid var(--line-2)', borderRadius: 6, overflow: 'hidden' }}>
+      {options.map(o => {
+        const active = value === o.v;
+        return (
+          <button key={o.v} onClick={() => onChange(o.v)} style={{
+            all: 'unset', cursor: 'pointer',
+            padding: '5px 10px',
+            fontSize: 11, fontFamily: 'var(--font-mono)',
+            background: active ? 'var(--ink)' : 'var(--card)',
+            color: active ? 'var(--paper)' : 'var(--ink-2)',
+          }}>{o.l}</button>
+        );
+      })}
+    </div>
+  );
+
+  const Swatch = ({ c, active, onClick }) => (
+    <button onClick={onClick} style={{
+      all: 'unset', cursor: 'pointer',
+      width: 22, height: 22, borderRadius: '50%',
+      background: c,
+      boxShadow: active ? `0 0 0 2px var(--paper), 0 0 0 3px var(--ink)` : 'none',
+    }} />
+  );
+
+  return (
+    <div style={{
+      position: 'fixed', right: 16, bottom: 16, zIndex: 100,
+      width: 320,
+      background: 'var(--card)',
+      border: '1px solid var(--ink)',
+      borderRadius: 8,
+      boxShadow: '0 20px 40px rgba(20,20,19,0.10)',
+      fontFamily: 'var(--font-sans)',
+    }}>
+      <div style={{
+        padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8,
+        borderBottom: '1px solid var(--ink)',
+      }}>
+        <Icon n="spark" s={13} />
+        <span style={{ fontSize: 13, fontWeight: 500 }}>Tweaks</span>
+        <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 6 }}>dashboard</Mono>
+        <button onClick={onClose} style={{
+          all: 'unset', cursor: 'pointer', marginLeft: 'auto',
+          color: 'var(--ink-3)', padding: 4,
+        }}>
+          <Icon n="close" s={13} />
+        </button>
+      </div>
+
+      <Row label="Density" sub="13px dev-tool vs 15px broader">
+        <Seg value={tweaks.density} onChange={v => setTweaks({ ...tweaks, density: v })}
+          options={[{ v: 'compact', l: '13' }, { v: 'comfy', l: '15' }]} />
+      </Row>
+
+      <Row label="Session state" sub="cycle through lifecycle">
+        <Seg value={tweaks.sessionState} onChange={v => setTweaks({ ...tweaks, sessionState: v })}
+          options={[
+            { v: 'running', l: 'run' },
+            { v: 'awaiting', l: 'ask' },
+            { v: 'quota', l: 'quota' },
+            { v: 'failed', l: 'fail' },
+          ]} />
+      </Row>
+
+      <Row label="Accent" sub="lobster, or tuned down">
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Swatch c="#FF4D14" active={tweaks.accent === 'lobster'}  onClick={() => setTweaks({ ...tweaks, accent: 'lobster' })} />
+          <Swatch c="#E85A2F" active={tweaks.accent === 'warm'}      onClick={() => setTweaks({ ...tweaks, accent: 'warm' })} />
+          <Swatch c="#141413" active={tweaks.accent === 'ink'}       onClick={() => setTweaks({ ...tweaks, accent: 'ink' })} />
+        </div>
+      </Row>
+
+      <Row label="Editorial frames" sub="hard ink dividers on blocks">
+        <Seg value={tweaks.frames ? 'on' : 'off'} onChange={v => setTweaks({ ...tweaks, frames: v === 'on' })}
+          options={[{ v: 'on', l: 'on' }, { v: 'off', l: 'off' }]} />
+      </Row>
+
+      <Row label="Layout" sub="detail view arrangement">
+        <Seg value={tweaks.layout} onChange={v => setTweaks({ ...tweaks, layout: v })}
+          options={[{ v: 'split', l: 'split' }, { v: 'stack', l: 'stack' }]} />
+      </Row>
+
+      <div style={{ padding: '10px 14px', display: 'flex', gap: 8 }}>
+        <Mono s={10} c="var(--ink-3)" style={{ flex: 1 }}>state saved to localStorage</Mono>
+        <Kbd>T</Kbd>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { TweaksPanel });
+
+
+// ===== app =====
+
+const { useState, useEffect, useRef } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "compact",
+  "sessionState": "running",
+  "accent": "lobster",
+  "frames": true,
+  "layout": "split"
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  lobster: '#FF4D14',
+  warm:    '#E85A2F',
+  ink:     '#141413',
+};
+
+function App() {
+  // Route: view = overview | agents | sessions | environments | audit | vaults | metrics
+  const [route, setRoute] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('oc_route')) || { view: 'sessions' }; } catch { return { view: 'sessions' }; }
+  });
+  const [selectedSession, setSelectedSession] = useState(() => localStorage.getItem('oc_sess') || 'sx_a91c8b42');
+  const [filter, setFilter] = useState('all');
+  const [showTweaks, setShowTweaks] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [tweaks, setTweaks] = useState(() => {
+    try {
+      const v = localStorage.getItem('oc_tweaks');
+      return v ? { ...TWEAK_DEFAULTS, ...JSON.parse(v) } : { ...TWEAK_DEFAULTS };
+    } catch { return { ...TWEAK_DEFAULTS }; }
+  });
+
+  // Edit-mode handshake for host toolbar
+  useEffect(() => {
+    function onMsg(e) {
+      const t = e?.data?.type;
+      if (t === '__activate_edit_mode') { setEditMode(true); setShowTweaks(true); }
+      else if (t === '__deactivate_edit_mode') { setEditMode(false); setShowTweaks(false); }
+    }
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  // Persist
+  useEffect(() => { localStorage.setItem('oc_route', JSON.stringify(route)); }, [route]);
+  useEffect(() => { localStorage.setItem('oc_sess', selectedSession); }, [selectedSession]);
+  useEffect(() => { localStorage.setItem('oc_tweaks', JSON.stringify(tweaks)); }, [tweaks]);
+
+  // Apply tweaks to body class + CSS vars
+  useEffect(() => {
+    document.body.classList.toggle('density-compact', tweaks.density === 'compact');
+    document.body.classList.toggle('density-comfy',   tweaks.density === 'comfy');
+    document.body.classList.toggle('frames-off', !tweaks.frames);
+    document.documentElement.style.setProperty('--accent', ACCENTS[tweaks.accent] || ACCENTS.lobster);
+  }, [tweaks]);
+
+  // When edit-mode sends set_keys to host, persist
+  function updateTweaks(next) {
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: next }, '*');
+  }
+
+  // Simulate streaming tokens on the running session
+  const [streamLen, setStreamLen] = useState(0);
+  useEffect(() => {
+    if (tweaks.sessionState !== 'running' && route.view !== 'sessions') return;
+    const id = setInterval(() => {
+      setStreamLen(n => {
+        const max = STREAMING_TOKENS.length;
+        if (n >= max) return 12; // loop
+        return Math.min(max, n + 2);
+      });
+    }, 80);
+    return () => clearInterval(id);
+  }, [tweaks.sessionState, route.view]);
+
+  // T keyboard shortcut to toggle tweaks
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 't' && !e.metaKey && !e.ctrlKey && !e.altKey &&
+          !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+        setShowTweaks(s => !s);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const view = route.view;
+
+  const content = view === 'overview' ? <OverviewView />
+    : view === 'agents' ? <AgentsView />
+    : view === 'environments' ? <EnvironmentsView />
+    : view === 'audit' ? <AuditView />
+    : view === 'vaults' ? <PlaceholderView title="Vaults" sub="Per-end-user credential bundles · not shown in this mockup" />
+    : view === 'metrics' ? <PlaceholderView title="Metrics" sub="Prometheus · /metrics · not shown in this mockup" />
+    : (
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}
+        data-screen-label="Sessions split">
+        <SessionsList
+          selectedId={selectedSession}
+          onSelect={setSelectedSession}
+          filter={filter}
+          setFilter={setFilter}
+        />
+        <SessionDetail
+          sessionId={selectedSession}
+          sessionState={tweaks.sessionState}
+          streamLen={streamLen}
+        />
+      </div>
+    );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: 'var(--paper)', overflow: 'hidden' }}>
+      <Topbar route={route} setRoute={setRoute} onTweaks={() => setShowTweaks(s => !s)} />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <Sidebar route={route} setRoute={setRoute} />
+        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)' }}
+          data-screen-label={'View ' + view}>
+          {content}
+        </main>
+      </div>
+      {showTweaks && (
+        <TweaksPanel
+          tweaks={tweaks}
+          setTweaks={updateTweaks}
+          onClose={() => setShowTweaks(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+  </script>
+</body>
+</html>

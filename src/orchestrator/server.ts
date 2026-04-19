@@ -25,6 +25,7 @@ import type {
   VaultStore,
 } from "../store/types.js";
 import { portalHtml } from "./portal.js";
+import { portalV2Html } from "./portal-v2.js";
 import { AgentRouter, RouterError } from "./router.js";
 import {
   AddCredentialRequestSchema,
@@ -301,6 +302,12 @@ export function buildApp(deps: ServerDeps): Hono {
   // Browsers (Accept: text/html) get the single-page console at the same
   // URL instead. No client-side routing — the portal lives entirely in
   // portal.ts and talks to the same /v1/* HTTP endpoints the SDKs use.
+  // New "paper canvas" portal design, served alongside the existing
+  // dark-theme console. Live at GET /v2 for evaluation while the
+  // real data integration lands. See src/orchestrator/portal-v2.ts
+  // and docs/designs/portal-v2/ for the handoff.
+  app.get("/v2", (c) => c.html(portalV2Html()));
+
   app.get("/", (c) => {
     const accept = c.req.header("accept") ?? "";
     if (accept.includes("text/html")) {

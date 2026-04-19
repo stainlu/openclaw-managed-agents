@@ -1,0 +1,272 @@
+/* ============================================================
+   OpenClaw Design System — Tokens + Semantic Classes
+   Modern, editorial, Are.na-adjacent: monochrome paper, sans only,
+   lobster orange used with extreme restraint.
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* ---------- Canvas & surfaces ---------- */
+  --paper: #f5f4f0;          /* warm off-white canvas (Are.na-adjacent) */
+  --paper-2: #eceae4;        /* hover on paper */
+  --paper-3: #e3e0d8;        /* pressed */
+  --card: #ffffff;           /* card fill */
+  --scrim: rgba(20, 20, 19, 0.32);
+  --chrome: rgba(245, 244, 240, 0.78);
+
+  /* ---------- Ink ---------- */
+  --ink: #141413;            /* primary text */
+  --ink-2: #4a4843;          /* secondary */
+  --ink-3: #817d74;          /* tertiary / labels */
+  --ink-4: #b5b0a5;          /* disabled */
+  --ink-inv: #f5f4f0;        /* on dark */
+
+  /* ---------- Lines ---------- */
+  --line: #e3e0d8;
+  --line-2: #c9c4b7;
+  --line-3: #141413;         /* hard line for editorial frames */
+
+  /* ---------- Lobster — the single accent, used RARELY ---------- */
+  --lobster: #ff4d14;
+  --lobster-hover: #e64411;
+  --lobster-press: #c23709;
+  --lobster-soft: #ffe5da;
+  --lobster-wash: #fff3ed;
+  --lobster-ring: rgba(255, 77, 20, 0.32);
+
+  /* ---------- Semantic ---------- */
+  --ok: #2f7a4e;
+  --warn: #a67318;
+  --danger: #c23709;
+  --info: #3a5fa8;
+
+  /* ---------- Typography ---------- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.6875rem;   /* 11 */
+  --text-sm: 0.8125rem;   /* 13 */
+  --text-base: 0.9375rem; /* 15 */
+  --text-md: 1.0625rem;   /* 17 */
+  --text-lg: 1.375rem;    /* 22 */
+  --text-xl: 1.875rem;    /* 30 */
+  --text-2xl: 2.625rem;   /* 42 */
+  --text-3xl: 4rem;       /* 64 */
+  --text-4xl: 6rem;       /* 96 */
+
+  --lh-tight: 1.05;
+  --lh-snug: 1.25;
+  --lh-normal: 1.5;
+
+  --track-display: -0.035em;
+  --track-body: -0.011em;
+  --track-caps: 0.02em;
+
+  /* ---------- Spacing ---------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-24: 96px;
+  --s-32: 128px;
+
+  /* ---------- Radii — deliberately small ---------- */
+  --r-xs: 2px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-full: 9999px;
+
+  /* ---------- Shadows — almost never ---------- */
+  --shadow-1: 0 1px 0 rgba(20, 20, 19, 0.04);
+  --shadow-2: 0 4px 16px rgba(20, 20, 19, 0.06);
+  --shadow-3: 0 20px 40px rgba(20, 20, 19, 0.10);
+
+  /* ---------- Motion ---------- */
+  --d-instant: 120ms;
+  --d-fast: 200ms;
+  --d-med: 360ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --focus-ring: 0 0 0 2px var(--paper), 0 0 0 4px var(--lobster-ring);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--track-body);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* ============================================================
+   Editorial type scale — ALL sans, Inter tight tracking,
+   weights used sparingly (400/500 are the system; 600 is rare)
+   ============================================================ */
+
+.display-xl, h1.display {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-4xl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.045em;
+  color: var(--ink);
+  margin: 0;
+}
+
+.display-lg {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-3xl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h1, .h1 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-2xl);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-display);
+  color: var(--ink);
+  margin: 0;
+}
+
+h2, .h2 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-xl);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h3, .h3 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-lg);
+  line-height: var(--lh-snug);
+  letter-spacing: -0.022em;
+  color: var(--ink);
+  margin: 0;
+}
+
+h4, .h4 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--text-md);
+  line-height: var(--lh-snug);
+  letter-spacing: -0.018em;
+  color: var(--ink);
+  margin: 0;
+}
+
+p, .body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  color: var(--ink-2);
+  margin: 0;
+}
+
+.body-lg {
+  font-size: var(--text-base);
+  line-height: 1.55;
+}
+
+.lede {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-md);
+  line-height: 1.5;
+  letter-spacing: -0.015em;
+  color: var(--ink-2);
+}
+
+.eyebrow, .label {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: var(--text-xs);
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.caption {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+
+code, .code, kbd {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--paper-2);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  color: var(--ink);
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-4);
+  overflow-x: auto;
+  margin: 0;
+}
+
+pre code { background: transparent; padding: 0; }
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  transition: text-decoration-color var(--d-instant) var(--ease), color var(--d-instant) var(--ease);
+}
+a:hover { text-decoration-color: var(--lobster); color: var(--lobster-press); }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: var(--s-6) 0; }
+
+::selection { background: var(--lobster-soft); color: var(--ink); }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
