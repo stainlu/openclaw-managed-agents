@@ -1321,6 +1321,30 @@ function buildEventRows(events) {
       rows.push({ kind: "system", e, summary: t + ": " + asText(e.content) });
     }
   }
+  // Second pass: attach each row's offset from session-start and
+  // duration-until-next-row. These power the "Ns · 0:MM:SS" timing
+  // pill that the render functions drop into the meta area.
+  //
+  //   - offsetMs = row.ts - firstRow.ts        (0 for the first row)
+  //   - durationMs = nextRow.ts - row.ts       (time spent BEFORE the
+  //                                             next observable step;
+  //                                             for tool rows we already
+  //                                             have tool_use→tool_result
+  //                                             duration, which we
+  //                                             prefer since it measures
+  //                                             the tool itself, not the
+  //                                             gap to the next agent step)
+  //   - last row's duration: null (in-flight or final)
+  const firstTs = rows.length > 0 ? (rows[0].e?.created_at ?? 0) : 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const ts = r.e?.created_at;
+    if (typeof ts !== "number") continue;
+    r.offsetMs = Math.max(0, ts - firstTs);
+    if (r.kind === "tool" && typeof r.duration === "number") continue; // preserve tool's own duration
+    const nextTs = rows[i + 1]?.e?.created_at;
+    if (typeof nextTs === "number") r.durationMs = Math.max(0, nextTs - ts);
+  }
   return rows;
 }
 
@@ -1374,6 +1398,8 @@ function renderSimpleRow(r, rowId, cssCls, chip, opts = {}) {
   const meta = [];
   if (r.tokensIn || r.tokensOut) meta.push(\`\${r.tokensIn || 0}in/\${r.tokensOut || 0}out\`);
   if (r.cost) meta.push(fmtCost(r.cost));
+  const timing = fmtStepTiming(r.durationMs, r.offsetMs);
+  if (timing) meta.push(timing);
   const pendingTag = r.e?._pending
     ? (r.e._pending === "failed"
         ? '<span class="ev-meta" style="color: var(--danger);">failed to send</span>'
@@ -1396,7 +1422,11 @@ function renderSimpleRow(r, rowId, cssCls, chip, opts = {}) {
 function renderToolRow(r, rowId, fresh = "") {
   const pending = !r.toolResult && r.startedAt;
   const argsJson = r.toolArgs ? JSON.stringify(r.toolArgs, null, 2) : null;
-  const durationTxt = r.duration != null ? fmtDuration(r.duration) : (pending ? "…" : "");
+  // For tool rows we prefer the REAL tool duration (tool_use →
+  // tool_result delta) over the generic between-rows delta. Offset
+  // still comes from the second pass in buildEventRows.
+  const toolDuration = r.duration != null ? r.duration : r.durationMs;
+  const timing = fmtStepTiming(toolDuration, r.offsetMs);
   const errCls = r.isError ? " error" : "";
   const category = toolCategory(r.toolName);
   const label = toolLabel(r.toolName);
@@ -1406,7 +1436,7 @@ function renderToolRow(r, rowId, fresh = "") {
         <span class="chevron"></span>
         <span class="chip role-tool cat-\${category}\${errCls}">\${escapeHtml(label)}</span>
         <span class="ev-summary">\${escapeHtml(r.summary || "")}</span>
-        \${durationTxt ? \`<span class="ev-meta">\${pending ? '<span class="spinner"></span>' : ""}\${durationTxt}</span>\` : ""}
+        \${timing || pending ? \`<span class="ev-meta">\${pending ? '<span class="spinner"></span>' : ""}\${timing || "running…"}</span>\` : ""}
       </div>
       <div class="ev-body hidden">
         \${argsJson ? \`<div class="ev-section-label">Arguments</div><div class="ev-content code">\${escapeHtml(argsJson)}</div>\` : ""}
@@ -1414,6 +1444,32 @@ function renderToolRow(r, rowId, fresh = "") {
       </div>
     </div>
   \`;
+}
+
+/**
+ * Format an offset-from-session-start timestamp as m:ss (or h:mm:ss).
+ * Matches CMA's compact "0:05" / "1:32" style. For the first row the
+ * offset is always 0:00. */
+function fmtOffset(ms) {
+  if (ms == null || ms < 0) return "";
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad2 = (n) => (n < 10 ? "0" + n : String(n));
+  return h > 0 ? \`\${h}:\${pad2(m)}:\${pad2(s)}\` : \`\${m}:\${pad2(s)}\`;
+}
+
+/**
+ * Render "Ns · 0:SS" — duration of this step on the left, offset from
+ * session-start on the right. Either side is optional; skipped cleanly
+ * when the value isn't available (e.g., the last row of a running
+ * session has no duration yet). */
+function fmtStepTiming(durationMs, offsetMs) {
+  const parts = [];
+  if (typeof durationMs === "number") parts.push(fmtDuration(durationMs));
+  if (typeof offsetMs === "number") parts.push(fmtOffset(offsetMs));
+  return parts.join(" · ");
 }
 
 function fmtDuration(ms) {
