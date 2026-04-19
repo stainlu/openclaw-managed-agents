@@ -360,6 +360,23 @@ export const portalHtml = (opts: { authRequired: boolean; version: string }): st
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+  /* Simple-row layout: for user / agent / thinking / error events. A
+     tight header with chip + meta on one line, then the full content
+     below wrapping naturally. No overflow ellipsis, no expand/collapse
+     — simple rows ARE the content, so there's nothing to hide. */
+  .event .ev-simple-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px 2px;
+  }
+  .event .ev-simple-content {
+    padding: 2px 12px 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 
   .composer {
     border-top: 1px solid var(--border);
@@ -595,6 +612,15 @@ const S = {
   activeTab: "trace",   // "trace" | "logs" | "files"
   filesPath: "",         // current directory in the files tab
   filesContent: null,    // { path, text } when a file is open for preview
+  // Optimistic in-flight user messages, keyed by sessionId. Each
+  // entry is { content, tempId, status: "sending" | "failed" }.
+  // Injected into the trace view so the user sees their input
+  // immediately — matters because when a turn fails BEFORE the
+  // container can persist the user.message (e.g., credential refresh
+  // failure), the message would otherwise vanish without a trace.
+  // Cleared when the server-side events catch up (real user.message
+  // arrives) OR the session has been idle for a poll cycle.
+  pendingBySession: {},
 };
 
 // ---------- fetch helpers ----------
@@ -769,6 +795,35 @@ function renderDetail(session, events) {
   // matched by tool_call_id. Orphan tool_use (result pending) shows a
   // spinner. Session-level metadata events are hidden by default.
   const rows = buildEventRows(events);
+  // Splice in optimistic user messages that haven't landed in the
+  // server event stream yet (the container hasn't persisted them).
+  // Clear entries whose content already appears as a user.message
+  // event — server caught up; pending tracking served its purpose.
+  const pendingList = (S.pendingBySession[session.session_id] ?? []).slice();
+  const realUserMessages = new Set(
+    events.filter(e => e.type === "user.message").map(e => {
+      const c = e.content;
+      return typeof c === "string" ? c : "";
+    }),
+  );
+  S.pendingBySession[session.session_id] = pendingList.filter(
+    p => p.status === "failed" || !realUserMessages.has(p.content),
+  );
+  // If the session flipped to failed and any pending is still
+  // "sending", the spawn failed before the container could record
+  // the message. Mark it so the spinner goes away and the red
+  // "failed to send" tag appears.
+  if (session.status === "failed") {
+    for (const p of S.pendingBySession[session.session_id]) {
+      if (p.status === "sending") p.status = "failed";
+    }
+  }
+  for (const p of S.pendingBySession[session.session_id]) {
+    rows.push({
+      kind: "user",
+      e: { content: p.content, _pending: p.status },
+    });
+  }
   const totalDuration = events.length
     ? (events[events.length - 1].created_at - events[0].created_at)
     : 0;
@@ -1172,23 +1227,37 @@ function renderRow(r, idx) {
   return \`<div class="event system" id="\${rowId}"><div class="ev-body"><span class="chip">\${escapeHtml(r.summary)}</span></div></div>\`;
 }
 
+/**
+ * Simple rows (user / agent / thinking / error) render as one natural
+ * block: a small chip header with meta, then the full content beneath
+ * that wraps normally. No preview-then-body split — that was fine for
+ * tool rows (where the body is a big JSON blob worth collapsing) but
+ * wrong for conversational text, because short messages ended up
+ * shown twice (preview == full) and long messages got truncated to
+ * one line with an ellipsis.
+ *
+ * Tool rows still use the expand/collapse ev-header/ev-body pattern
+ * via renderToolRow — see there.
+ */
 function renderSimpleRow(r, rowId, cssCls, chip, opts = {}) {
   const content = asText(r.e.content);
-  const short = content.length > 160;
   const meta = [];
   if (r.tokensIn || r.tokensOut) meta.push(\`\${r.tokensIn || 0}in/\${r.tokensOut || 0}out\`);
   if (r.cost) meta.push(fmtCost(r.cost));
+  const pendingTag = r.e?._pending
+    ? (r.e._pending === "failed"
+        ? '<span class="ev-meta" style="color: var(--danger);">failed to send</span>'
+        : '<span class="ev-meta"><span class="spinner"></span>sending…</span>')
+    : "";
+  const contentStyle = opts.italic ? ' style="font-style: italic; color: var(--text-muted);"' : "";
   return \`
     <div class="event \${cssCls}" id="\${rowId}">
-      <div class="ev-header">
-        <span class="chevron \${short ? "" : "open"}">▸</span>
+      <div class="ev-simple-header">
         <span class="chip role-\${chip}">\${chip}</span>
-        <span class="ev-summary"\${opts.italic ? ' style="font-style: italic; color: var(--text-muted);"' : ""}>\${escapeHtml(content.slice(0, 160))}\${short ? "…" : ""}</span>
         \${meta.length ? \`<span class="ev-meta">\${meta.join(" · ")}</span>\` : ""}
+        \${pendingTag}
       </div>
-      <div class="ev-body \${short ? "hidden" : ""}">
-        <div class="ev-content"\${opts.italic ? ' style="font-style: italic; color: var(--text-muted);"' : ""}>\${escapeHtml(content)}</div>
-      </div>
+      <div class="ev-simple-content"\${contentStyle}>\${escapeHtml(content)}</div>
     </div>
   \`;
 }
@@ -1238,16 +1307,32 @@ async function sendMessage() {
   const content = ta.value.trim();
   if (!content || !S.selectedSessionId) return;
   ta.value = "";
+  const sessionId = S.selectedSessionId;
+  // Optimistic insert: show the message immediately with a "sending…"
+  // tag so the user has a visible record of their input BEFORE the
+  // container has a chance to persist it to Pi's JSONL. If the spawn
+  // fails (e.g., credential refresh failure), we mark the entry
+  // "failed to send" — the message stays visible and the error
+  // banner explains why.
+  const tempId = "pending_" + Math.random().toString(36).slice(2, 10);
+  const pending = { content, tempId, status: "sending", postedAt: Date.now() };
+  if (!S.pendingBySession[sessionId]) S.pendingBySession[sessionId] = [];
+  S.pendingBySession[sessionId].push(pending);
+  refreshDetail();
   try {
-    await api(\`/v1/sessions/\${S.selectedSessionId}/events\`, {
+    await api(\`/v1/sessions/\${sessionId}/events\`, {
       method: "POST",
       body: JSON.stringify({ type: "user.message", content }),
     });
-    refreshDetail();
+    // Success path: don't clear the pending entry here — let the
+    // next refresh cycle clear it once the real user.message shows
+    // up in the server event stream. Prevents a flash of empty
+    // detail pane.
   } catch (err) {
+    pending.status = "failed";
     toast("Send failed: " + err.message, true);
-    ta.value = content;
   }
+  refreshDetail();
 }
 
 async function cancelSession() {
