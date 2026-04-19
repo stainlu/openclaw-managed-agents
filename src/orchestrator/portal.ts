@@ -435,6 +435,56 @@ export const portalHtml = (opts: { authRequired: boolean; version: string }): st
   }
   .toast.error { border-left-color: var(--danger); }
 
+  .error-banner {
+    margin: 0;
+    padding: 12px 16px;
+    background: #2a1416;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid var(--danger);
+    flex-shrink: 0;
+  }
+  .error-banner .eb-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffb3b3;
+    margin-bottom: 4px;
+  }
+  .error-banner .eb-body {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .error-banner .eb-body code {
+    background: rgba(0,0,0,0.3);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  .error-banner .eb-raw-toggle {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+    text-decoration: underline;
+  }
+  .error-banner .eb-raw {
+    margin-top: 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(0,0,0,0.3);
+    padding: 8px 10px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .error-banner .eb-raw.hidden { display: none; }
+
   code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
   .muted { color: var(--text-muted); }
   .spinner {
@@ -731,18 +781,23 @@ function renderDetail(session, events) {
       ? \`<div class="logs-view" id="logs-view"><div class="muted">Loading…</div></div>\`
       : \`<div class="files-view" id="files-view"><div class="muted">Loading…</div></div>\`;
 
+  const errBanner = session.status === "failed" && session.error
+    ? renderErrorBanner(session.error)
+    : "";
+
   pane.innerHTML = \`
     <div class="detail">
       <div class="detail-meta">
         <span class="label">Session</span><span class="value">\${session.session_id}</span>
         <span class="label">Agent</span><span class="value">\${session.agent_id}</span>
-        <span class="label">Status</span><span class="value \${statusCls}">\${isRunning ? '<span class="spinner"></span>' : ""}\${session.status}\${session.error ? " — " + escapeHtml(session.error) : ""}</span>
+        <span class="label">Status</span><span class="value \${statusCls}">\${isRunning ? '<span class="spinner"></span>' : ""}\${session.status}</span>
         <span class="label">Duration</span><span class="value">\${totalDuration ? fmtDuration(totalDuration) : "—"}</span>
         <span class="label">Tokens</span><span class="value">\${session.tokens?.input || 0} in / \${session.tokens?.output || 0} out</span>
         <span class="label">Cost</span><span class="value">\${fmtCost(session.cost_usd || 0)}</span>
         <span class="label">Tool calls</span><span class="value">\${toolCount}</span>
         <span class="label">Last event</span><span class="value">\${fmtMs(session.last_event_at)}</span>
       </div>
+      \${errBanner}
       <div class="tabbar">
         <button class="tab \${tab === "trace" ? "active" : ""}" data-tab="trace">Trace</button>
         <button class="tab \${tab === "logs" ? "active" : ""}" data-tab="logs">Container logs</button>
@@ -767,6 +822,17 @@ function renderDetail(session, events) {
   const compactBtn = document.getElementById("btn-compact");
   if (compactBtn) compactBtn.onclick = compactSession;
 
+  // Raw-error toggle inside the failure banner.
+  const rawToggle = pane.querySelector(".eb-raw-toggle");
+  if (rawToggle) {
+    rawToggle.addEventListener("click", () => {
+      const raw = pane.querySelector(".eb-raw");
+      if (!raw) return;
+      const isHidden = raw.classList.toggle("hidden");
+      rawToggle.textContent = isHidden ? "Show raw error" : "Hide raw error";
+    });
+  }
+
   if (tab === "trace") {
     wireTraceInteractions(pane, isRunning);
   } else if (tab === "logs") {
@@ -774,6 +840,54 @@ function renderDetail(session, events) {
   } else if (tab === "files") {
     refreshFiles();
   }
+}
+
+/**
+ * Pattern-match known session error shapes into a friendly banner.
+ * Preserves the raw error behind a toggle so developers debugging the
+ * exact cause still have the original string. The matching is
+ * deliberately shallow — matches the substrings the orchestrator
+ * throws from RouterError constructors. If none match, fall back to
+ * a generic "run failed" banner with the raw error visible.
+ */
+function renderErrorBanner(rawError) {
+  const raw = String(rawError);
+  let title = "Run failed";
+  let body = "The run failed before the agent could produce a reply. Check the raw error below or open the Container logs tab for upstream details.";
+  let autoShowRaw = true;
+
+  if (/mcp_oauth credential .* refresh failed/i.test(raw)) {
+    title = "OAuth credential couldn't refresh";
+    const credMatch = raw.match(/credential (crd_[a-z0-9]+)/i);
+    const credId = credMatch ? credMatch[1] : "the bound credential";
+    body = \`The vault credential <code>\${escapeHtml(credId)}</code> is past its access-token expiry and the token endpoint refused the refresh (wrong client_id / wrong refresh_token / revoked app / network error). The developer's app needs to re-run OAuth for this end-user and rotate the credential: <br><br><code>DELETE /v1/vaults/:vaultId/credentials/\${escapeHtml(credId)}</code> then <code>POST /v1/vaults/:vaultId/credentials</code> with fresh <code>accessToken</code> + <code>refreshToken</code>.\`;
+    autoShowRaw = false;
+  } else if (/quota_exceeded/i.test(raw)) {
+    title = "Quota exceeded";
+    body = "This session hit the budget limit declared on its agent (cost, tokens, or wall duration). New events on this session will keep returning 429 until you raise the quota via <code>PATCH /v1/agents/:id</code> or create a new session.";
+    autoShowRaw = false;
+  } else if (/upstream model call failed|Incorrect API key|401/i.test(raw)) {
+    title = "Upstream model call failed";
+    body = "The provider rejected the request — usually a bad / expired API key in the orchestrator's env, or a rate-limit at the provider. Check <code>docker logs openclaw-orchestrator</code> and the provider's dashboard.";
+    autoShowRaw = false;
+  } else if (/container .* did not become ready|TypeError: fetch failed/i.test(raw)) {
+    title = "Container failed to start";
+    body = "The agent container booted but never answered <code>/readyz</code> within the timeout. Usually means the container crashed during init — open the Container logs tab to see the entrypoint output.";
+    autoShowRaw = false;
+  } else if (/credential_expired/i.test(raw)) {
+    title = "Credential expired";
+    body = "A credential bound to this session is no longer valid. Rotate it in the vault.";
+    autoShowRaw = false;
+  }
+
+  return \`
+    <div class="error-banner">
+      <div class="eb-title">\${escapeHtml(title)}</div>
+      <div class="eb-body">\${body}</div>
+      <button class="eb-raw-toggle">\${autoShowRaw ? "Hide raw error" : "Show raw error"}</button>
+      <div class="eb-raw \${autoShowRaw ? "" : "hidden"}">\${escapeHtml(raw)}</div>
+    </div>
+  \`;
 }
 
 function renderTraceTab(rows, isRunning) {
