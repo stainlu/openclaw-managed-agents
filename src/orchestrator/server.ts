@@ -374,7 +374,7 @@ export function buildApp(deps: ServerDeps): Hono {
   app.get("/", (c) => {
     const accept = c.req.header("accept") ?? "";
     if (accept.includes("text/html")) {
-      return c.html(portalHtml({ authRequired: Boolean(deps.apiToken), version: deps.version }));
+      return c.redirect("/v2");
     }
     return c.json({
       name: "OpenClaw Managed Agents",

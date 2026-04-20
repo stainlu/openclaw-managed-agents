@@ -566,14 +566,34 @@ function HardRule({ color = 'var(--ink)', margin = '0' }) {
 Object.assign(window, { Button, Badge, Mono, Eyebrow, Kbd, HardRule });
 
 
-/* ===== data ===== */
-// Live data pump — replaces the mock arrays the design was built on.
-// Views continue to reference AGENTS / SESSIONS / EVENTS / AUDIT_ROWS /
-// STATS / ENVIRONMENTS as module-level constants; the pumps mutate
-// them in place from /v1/* fetches and trigger a re-render of the
-// whole tree through LIVE_BUS. Keeps every view untouched while
-// swapping the entire data layer.
+/* ===== auth gate ===== */
+// When the orchestrator has OPENCLAW_API_TOKEN set, all API calls
+// require Authorization: Bearer <token>. The portal stores the token
+// in localStorage and wraps fetch to inject it automatically. On 401,
+// the token is cleared and the auth prompt re-shown.
+const AUTH = {
+  token: localStorage.getItem('openclaw_api_token') || '',
+  required: false,
+  set(t) { this.token = t; localStorage.setItem('openclaw_api_token', t); },
+  clear() { this.token = ''; localStorage.removeItem('openclaw_api_token'); },
+};
+const _origFetch = window.fetch.bind(window);
+window.fetch = function(url, opts) {
+  if (AUTH.token && typeof url === 'string' && (url.startsWith('/v1/') || url.startsWith('/metrics'))) {
+    opts = opts || {};
+    opts.headers = { ...(opts.headers || {}), Authorization: 'Bearer ' + AUTH.token };
+  }
+  return _origFetch(url, opts).then(res => {
+    if (res.status === 401 && typeof url === 'string' && url.startsWith('/v1/')) {
+      AUTH.clear();
+      AUTH.required = true;
+      LIVE_BUS.notify();
+    }
+    return res;
+  });
+};
 
+/* ===== data ===== */
 const LIVE_BUS = (() => {
   const listeners = new Set();
   let version = 0;
@@ -921,7 +941,8 @@ function openEventStream(sid) {
     LIVE_EVENT_STREAM = null;
   }
   if (!sid) return;
-  const url = '/v1/sessions/' + encodeURIComponent(sid) + '/events?stream=true';
+  let url = '/v1/sessions/' + encodeURIComponent(sid) + '/events?stream=true';
+  if (AUTH.token) url += '&token=' + encodeURIComponent(AUTH.token);
   let es;
   try { es = new EventSource(url); } catch { pumpEventsPoll(); return; }
   LIVE_EVENT_STREAM = es;
@@ -1142,6 +1163,16 @@ Object.assign(window, {
   pumpEnvironments, pumpMetrics, pumpHealth, pumpVaults,
   liveSelectSession, openEventStream,
 });
+
+// Boot-time auth probe: if the API returns 401, show the auth gate
+// before starting any data pumps. Uses _origFetch (not the wrapped
+// one) because we don't want the 401 handler to fire during the probe.
+_origFetch('/v1/agents').then(res => {
+  if (res.status === 401) {
+    AUTH.required = true;
+    LIVE_BUS.notify();
+  }
+}).catch(() => {});
 
 pumpAgents();
 pumpSessions().then(() => pumpAgents());
@@ -4163,6 +4194,48 @@ const ACCENTS = {
   ink:     '#141413',
 };
 
+function AuthGate() {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const [checking, setChecking] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    setChecking(true);
+    setError('');
+    AUTH.set(token);
+    try {
+      const res = await fetch('/v1/agents');
+      if (res.status === 401) { AUTH.clear(); setError('Invalid token'); setChecking(false); return; }
+      if (!res.ok) { setError('Server error: ' + res.status); setChecking(false); return; }
+      AUTH.required = false;
+      LIVE_BUS.notify();
+    } catch (err) {
+      setError('Connection failed');
+    }
+    setChecking(false);
+  }
+  return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--paper)',fontFamily:'var(--sans)'}}>
+      <form onSubmit={submit} style={{background:'var(--card)',border:'1px solid var(--line)',borderRadius:12,padding:'40px 36px',maxWidth:380,width:'100%',textAlign:'center'}}>
+        <div style={{fontSize:18,fontWeight:600,color:'var(--ink)',marginBottom:4}}>OpenClaw Managed Agents</div>
+        <div style={{fontSize:13,color:'var(--ink-3)',marginBottom:24}}>Enter your API token to access the dashboard</div>
+        <input
+          type="password"
+          value={token}
+          onChange={e => setToken(e.target.value)}
+          placeholder="OPENCLAW_API_TOKEN"
+          autoFocus
+          style={{width:'100%',padding:'10px 12px',fontSize:14,fontFamily:'var(--mono)',border:'1px solid var(--line)',borderRadius:6,marginBottom:12,background:'var(--paper)',color:'var(--ink)',boxSizing:'border-box'}}
+        />
+        {error && <div style={{color:'var(--danger)',fontSize:12,marginBottom:8}}>{error}</div>}
+        <button type="submit" disabled={checking || !token} style={{width:'100%',padding:'10px 0',fontSize:14,fontWeight:500,background:'var(--ink)',color:'var(--ink-inv)',border:'none',borderRadius:6,cursor:'pointer',opacity:checking?0.6:1}}>
+          {checking ? 'Checking...' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
   const [route, setRoute] = useState(() => {
     try { return JSON.parse(localStorage.getItem('oc_route')) || { view: 'sessions' }; } catch { return { view: 'sessions' }; }
@@ -4177,13 +4250,13 @@ function App() {
     } catch { return { ...TWEAK_DEFAULTS }; }
   });
 
-  // Live-data subscription. Every LIVE_BUS.notify() from a pump
-  // triggers a re-render; views pull fresh data from the globals.
   const [, setLiveTick] = useState(0);
   useEffect(() => {
     const unsub = LIVE_BUS.subscribe((v) => setLiveTick(v));
     return () => { unsub(); };
   }, []);
+
+  if (AUTH.required && !AUTH.token) return <AuthGate />;
 
   // Auto-select the first session once the list loads if nothing
   // is pinned from localStorage.

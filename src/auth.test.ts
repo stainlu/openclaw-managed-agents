@@ -112,11 +112,12 @@ describe("createAuthMiddleware — auth enabled", () => {
 
   it("does NOT bypass the self-documenting root", async () => {
     // GET / is NOT in the bypass list — an unauthenticated reader of the
-    // endpoint map is trivial reconnaissance.
+    // Root is bypassed so the landing page / portal redirect loads
+    // without auth. The auth gate inside the portal handles the token prompt.
     const app = new Hono();
     app.use("*", createAuthMiddleware({ token: TOKEN }));
     app.get("/", (c) => c.json({ endpoints: { agents: "POST /v1/agents" } }));
     const r = await req(app, "/");
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(200);
   });
 });

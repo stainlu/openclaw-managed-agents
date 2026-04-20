@@ -32,8 +32,9 @@ export type AuthConfig = {
   token: string | undefined;
 };
 
-/** Routes that bypass the bearer-token check. */
-const BYPASS_PATHS = new Set(["/healthz", "/metrics"]);
+/** Routes that bypass the bearer-token check. Portal HTML must load
+ *  without auth so the built-in auth gate can prompt for the token. */
+const BYPASS_PATHS = new Set(["/healthz", "/metrics", "/v2", "/"]);
 
 export function createAuthMiddleware(cfg: AuthConfig): MiddlewareHandler {
   const expected = cfg.token?.trim();
@@ -52,8 +53,12 @@ export function createAuthMiddleware(cfg: AuthConfig): MiddlewareHandler {
       return;
     }
 
+    // EventSource (SSE) cannot send custom headers. Accept the token
+    // as a `?token=` query parameter as a fallback for SSE endpoints.
+    // Header takes priority when both are present.
     const header = c.req.header("authorization") ?? c.req.header("Authorization");
-    if (!header) {
+    const queryToken = c.req.query("token");
+    if (!header && !queryToken) {
       return c.json(
         {
           error: "unauthorized",
@@ -63,20 +68,22 @@ export function createAuthMiddleware(cfg: AuthConfig): MiddlewareHandler {
       );
     }
 
-    // Accept both "Bearer <token>" and "bearer <token>". Anything else
-    // is treated as malformed.
-    const match = header.match(/^bearer\s+(.+)$/i);
-    if (!match) {
-      return c.json(
-        {
-          error: "unauthorized",
-          message: "Authorization header must use Bearer scheme",
-        },
-        401,
-      );
+    let provided = "";
+    if (header) {
+      const match = header.match(/^bearer\s+(.+)$/i);
+      if (!match) {
+        return c.json(
+          {
+            error: "unauthorized",
+            message: "Authorization header must use Bearer scheme",
+          },
+          401,
+        );
+      }
+      provided = match[1]?.trim() ?? "";
+    } else if (queryToken) {
+      provided = queryToken.trim();
     }
-
-    const provided = match[1]?.trim() ?? "";
     if (!provided) {
       return c.json({ error: "unauthorized", message: "empty bearer token" }, 401);
     }

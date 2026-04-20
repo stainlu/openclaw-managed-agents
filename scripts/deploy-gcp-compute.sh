@@ -245,7 +245,9 @@ mkdir -p data/sessions data/state
 # OPENCLAW_MAX_WARM_CONTAINERS=3 opts this cloud VM into the warm pool.
 # Library default is 0 so local dev never spawns idle-but-expensive
 # openclaw containers; cloud deploys explicitly opt in here.
-printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' > .env
+GENERATED_TOKEN=\$(openssl rand -hex 32)
+printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\nOPENCLAW_API_TOKEN=%s\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' "\${GENERATED_TOKEN}" > .env
+echo "OPENCLAW_API_TOKEN=\${GENERATED_TOKEN}" > /root/.openclaw-api-token
 
 # --- Pull pre-built multi-arch images from GHCR and bring up the stack.
 # Skipping --build cuts deploy time from ~12 min (build-from-source) to
@@ -253,6 +255,9 @@ printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\n' '${P
 # Lightsail's burstable EBS, so first-turn cold spawn is comparable to
 # Hetzner's ~78 s rather than Lightsail's ~294 s. ---
 docker compose pull
+# The egress-proxy sidecar is spawned dynamically (not a compose
+# service), so docker compose pull doesn't fetch it.
+docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest
 docker compose up -d
 echo "startup-script bootstrap complete" > /var/log/openclaw-ready.log
 USERDATA

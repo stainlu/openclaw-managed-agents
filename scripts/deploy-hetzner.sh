@@ -210,13 +210,21 @@ write_files:
       # NB: printf (not a nested heredoc) — the outer cloud-init heredoc
       # already preserves leading whitespace, which would corrupt every
       # key in the inner heredoc (" KEY=…" ≠ "KEY=…" for dotenv parsers).
-      printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' > .env
+      # Generate a random API token for this deployment. openssl is
+      # available after the packages step above.
+      GENERATED_TOKEN=\$(openssl rand -hex 32)
+      printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\nOPENCLAW_API_TOKEN=%s\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' "\${GENERATED_TOKEN}" > .env
+      echo "OPENCLAW_API_TOKEN=\${GENERATED_TOKEN}" > /root/.openclaw-api-token
 
       # --- Pull pre-built images from GHCR (published by .github/workflows/
       # publish-images.yaml on every push to main) and bring up the stack.
       # Skipping --build cuts deploy time from ~4 min to ~1-2 min on Hetzner
       # CAX11 and from ~12 min to ~3 min on Lightsail medium_3_0. ---
       docker compose pull
+      # The egress-proxy sidecar is spawned dynamically (not a compose
+      # service), so `docker compose pull` doesn't fetch it. Pull it
+      # explicitly so networking:limited sessions don't fail on first use.
+      docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest
       docker compose up -d
 
       # --- Health-check loop (up to 10 min) ---
@@ -287,6 +295,12 @@ if [[ "${SUCCESS}" -eq 1 ]]; then
     log "Deploy complete"
     printf "    Orchestrator:      %s\n" "${ORCH_URL}"
     printf "    Portal:            %s/v2\n" "${ORCH_URL}"
+    # Retrieve the generated API token from the instance
+    API_TOKEN_LINE="$(ssh -q -o StrictHostKeyChecking=no -o ConnectTimeout=5 "root@${SERVER_IPV4}" 'cat /root/.openclaw-api-token 2>/dev/null' 2>/dev/null || echo "")"
+    if [[ -n "${API_TOKEN_LINE}" ]]; then
+        printf "    API token:         %s\n" "${API_TOKEN_LINE}"
+        printf "                       (saved on instance at /root/.openclaw-api-token)\n"
+    fi
     printf "    Monthly cost:      ~€4.35 gross / €3.99 net (€0.007/hr) — cax11 ARM, EU\n"
     printf "    Destroy + reset:   ./scripts/deploy-hetzner.sh --destroy && ./scripts/deploy-hetzner.sh\n"
     printf "    Break-glass SSH:   ssh root@%s   (not for routine ops — use the HTTP API)\n" "${SERVER_IPV4}"
