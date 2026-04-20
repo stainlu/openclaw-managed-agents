@@ -1177,20 +1177,22 @@ export class AgentRouter {
     modelOverride?: string,
     thinkingLevelOverride?: string,
   ): Promise<void> {
-    // Per-step timing ledger. Lets us see exactly where wall-clock
-    // time goes between "POST /events received" and "chat.completions
-    // starts". Cheap to keep permanently — the log line only fires
-    // once per turn.
     const t0 = Date.now();
     const tick = (label: string, from: number) => ({ [label + "_ms"]: Date.now() - from });
     let cursor = t0;
     const currentSession = this.sessions.get(sessionId);
-    // Refresh OAuth credentials before spawn — same rationale as the
-    // streamEvent path above: buildSpawnOptions reads the freshly
-    // rotated access tokens via injectVaultCredentials.
     await this.refreshExpiringOAuthCredentials(agent, currentSession?.vaultId ?? null);
     const timings: Record<string, number> = { ...tick("oauth_refresh", cursor) };
     cursor = Date.now();
+
+    // Check credential freshness: if the session's vault credentials
+    // were rotated since the container was last claimed, the container's
+    // env vars carry stale tokens. Evict so the next acquire rebuilds
+    // with fresh env. Only applies to sessions with vault bindings.
+    if (currentSession?.vaultId) {
+      this.evictIfCredentialsStale(sessionId, currentSession.vaultId);
+    }
+
     const spawnOptions = this.buildSpawnOptions(
       sessionId,
       agent,
@@ -1199,102 +1201,57 @@ export class AgentRouter {
     Object.assign(timings, tick("build_spawn_options", cursor));
     cursor = Date.now();
 
-    // Pool-backed: the first event for a session spawns a fresh container,
-    // waits for /readyz, and runs the WS handshake; subsequent events
-    // reuse the live container and live WS client. NO finally { stop } —
-    // teardown is the pool's responsibility.
-    const container: Container = await this.pool.acquireForSession({
-      sessionId,
-      spawnOptions,
-      agentId: agent.agentId,
-      networking: currentSession ? this.resolveNetworking(currentSession) : undefined,
-      bypassWarmPool: Boolean(currentSession?.vaultId),
-    });
-    Object.assign(timings, tick("pool_acquire", cursor));
-    cursor = Date.now();
-
-    // Subscribe to approval broadcasts when the agent has always_ask.
-    // The WS client was opened during acquireForSession; we attach a
-    // listener for `plugin.approval.requested` so the SSE handler can
-    // surface approval requests to the client.
-    if (agent.permissionPolicy.type === "always_ask") {
-      const wsClient = this.pool.getWsClient(sessionId);
-      if (wsClient) {
-        wsClient.onEvent("plugin.approval.requested", (payload) => {
-          const p = payload as Record<string, unknown> | undefined;
-          const approvalId = String(p?.id ?? "");
-          const toolName = String(p?.toolName ?? p?.title ?? "");
-          const description = String(p?.description ?? "");
-          if (!approvalId) return;
-          const list = this.pendingApprovals.get(sessionId) ?? [];
-          list.push({ approvalId, sessionId, toolName, description, arrivedAt: Date.now() });
-          this.pendingApprovals.set(sessionId, list);
-          log.info(
-            { session_id: sessionId, tool_name: toolName, approval_id: approvalId },
-            "tool approval requested",
-          );
-        });
-      }
-    }
-
-    // Model + thinking-level patch via WS BEFORE the chat completions
-    // call. The WS handshake completed during acquire so a client must be
-    // present here; if it's missing, treat as an infrastructure failure
-    // and evict.
-    //
-    // thinkingLevel: effective level is (per-event override) ?? (agent
-    // default). We always re-patch when the effective level !== "off" —
-    // this makes the runtime idempotent in the face of warm-pool
-    // container reuse (a container claimed from a different agent could
-    // carry the prior agent's level otherwise).
-    //
-    // model: session-scoped under Pi's setModel; only patched when the
-    // per-event override is explicit, to avoid redundant per-turn patches
-    // on the same agent.
-    const effectiveThinking = thinkingLevelOverride ?? agent.thinkingLevel;
-    const needsPatch = Boolean(modelOverride) || effectiveThinking !== "off";
-    if (needsPatch) {
-      const wsClient = this.pool.getWsClient(sessionId);
-      if (!wsClient) {
-        await this.pool.evictSession(sessionId).catch(() => {
-          /* best-effort */
-        });
-        throw new RouterError(
-          "no_active_container",
-          `session ${sessionId} has no WS client for patch`,
-        );
-      }
-      const canonicalKey = `agent:main:${sessionId}`;
-      const patch: Record<string, string> = {};
-      if (modelOverride) patch.model = modelOverride;
-      if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
-      try {
-        await wsClient.patch(canonicalKey, patch);
-      } catch (err) {
-        await this.pool.evictSession(sessionId).catch(() => {
-          /* best-effort */
-        });
-        throw wrapWsError(err, "patch_failed");
-      }
-    }
-    Object.assign(timings, tick("ws_patch", cursor));
+    // Phase 1: Acquire container + WS patch. This phase is retryable
+    // because Pi has NOT received the user message yet — all failures
+    // here are infrastructure (spawn, /readyz, WS handshake). Pi writes
+    // user.message to JSONL immediately on HTTP receipt, so once the
+    // POST reaches the container, we must NOT retry (would duplicate
+    // the user message in the session log).
+    const container = await this.acquireWithRetry(
+      sessionId, agent, spawnOptions, currentSession,
+      modelOverride, thinkingLevelOverride, timings,
+    );
+    Object.assign(timings, tick("acquire_total", cursor));
     cursor = Date.now();
     log.info(
       { session_id: sessionId, total_pre_llm_ms: cursor - t0, ...timings },
       "turn pre-LLM timings (receipt → chat.completions dispatch)",
     );
 
-    // Run the completion. On failure, do NOT evict here — the failure
-    // handler decides whether to evict based on whether the session was
-    // also cancelled in flight. Time the whole invocation so /metrics
-    // exposes session_run_duration_seconds as a histogram.
+    // Phase 2: Invoke chat completions. NOT retryable as a whole — Pi
+    // writes user.message on receipt. But connect-level failures
+    // (ECONNREFUSED = container died before Pi saw the request) are safe
+    // to retry because no JSONL entry was written.
     const runEnd = sessionRunDurationSeconds.startTimer();
-    const completion = await this.invokeChatCompletions({
-      baseUrl: container.baseUrl,
-      token: container.token,
-      content,
-      sessionKey: sessionId,
-    });
+    let completion: { output: string; tokensIn: number; tokensOut: number };
+    try {
+      completion = await this.invokeChatCompletions({
+        baseUrl: container.baseUrl,
+        token: container.token,
+        content,
+        sessionKey: sessionId,
+      });
+    } catch (err) {
+      if (isConnectError(err)) {
+        log.warn(
+          { session_id: sessionId, err },
+          "connect-level failure on chat.completions — evicting and retrying once",
+        );
+        await this.pool.evictSession(sessionId).catch(() => {});
+        const retryContainer = await this.acquireWithRetry(
+          sessionId, agent, spawnOptions, currentSession,
+          modelOverride, thinkingLevelOverride, timings,
+        );
+        completion = await this.invokeChatCompletions({
+          baseUrl: retryContainer.baseUrl,
+          token: retryContainer.token,
+          content,
+          sessionKey: sessionId,
+        });
+      } else {
+        throw err;
+      }
+    }
     runEnd();
     log.info(
       { session_id: sessionId, chat_completions_ms: Date.now() - cursor },
@@ -1513,6 +1470,114 @@ export class AgentRouter {
     this.sessions.endRunFailure(sessionId, msg);
   }
 
+  /**
+   * Acquire a container and apply WS patch, with retry on infrastructure
+   * failures. Retries are safe here because Pi has NOT received the HTTP
+   * request yet — no user.message has been written to the JSONL.
+   */
+  private async acquireWithRetry(
+    sessionId: string,
+    agent: AgentConfig,
+    spawnOptions: SpawnOptions,
+    currentSession: Session | undefined,
+    modelOverride: string | undefined,
+    thinkingLevelOverride: string | undefined,
+    timings: Record<string, number>,
+  ): Promise<Container> {
+    const MAX_INFRA_RETRIES = 2;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < MAX_INFRA_RETRIES; attempt++) {
+      try {
+        const container = await this.pool.acquireForSession({
+          sessionId,
+          spawnOptions,
+          agentId: agent.agentId,
+          networking: currentSession ? this.resolveNetworking(currentSession) : undefined,
+          bypassWarmPool: Boolean(currentSession?.vaultId),
+        });
+
+        if (agent.permissionPolicy.type === "always_ask") {
+          const wsClient = this.pool.getWsClient(sessionId);
+          if (wsClient) {
+            wsClient.onEvent("plugin.approval.requested", (payload) => {
+              const p = payload as Record<string, unknown> | undefined;
+              const approvalId = String(p?.id ?? "");
+              const toolName = String(p?.toolName ?? p?.title ?? "");
+              const description = String(p?.description ?? "");
+              if (!approvalId) return;
+              const list = this.pendingApprovals.get(sessionId) ?? [];
+              list.push({ approvalId, sessionId, toolName, description, arrivedAt: Date.now() });
+              this.pendingApprovals.set(sessionId, list);
+              log.info(
+                { session_id: sessionId, tool_name: toolName, approval_id: approvalId },
+                "tool approval requested",
+              );
+            });
+          }
+        }
+
+        const effectiveThinking = thinkingLevelOverride ?? agent.thinkingLevel;
+        const needsPatch = Boolean(modelOverride) || effectiveThinking !== "off";
+        if (needsPatch) {
+          const wsClient = this.pool.getWsClient(sessionId);
+          if (!wsClient) {
+            throw new RouterError(
+              "no_active_container",
+              `session ${sessionId} has no WS client for patch`,
+            );
+          }
+          const canonicalKey = `agent:main:${sessionId}`;
+          const patch: Record<string, string> = {};
+          if (modelOverride) patch.model = modelOverride;
+          if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
+          await wsClient.patch(canonicalKey, patch);
+        }
+
+        if (attempt > 0) {
+          log.info(
+            { session_id: sessionId, attempt },
+            "container acquire succeeded on retry",
+          );
+        }
+        return container;
+      } catch (err) {
+        lastError = err;
+        await this.pool.evictSession(sessionId).catch(() => {});
+        if (attempt < MAX_INFRA_RETRIES - 1) {
+          log.warn(
+            { session_id: sessionId, attempt, err },
+            "container acquire failed — retrying after backoff",
+          );
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Evict the active container if the session's vault credentials have
+   * been updated since the container was claimed. Docker env vars are
+   * immutable post-create, so a rotated OAuth token requires a fresh
+   * container with the new token in its env.
+   */
+  private evictIfCredentialsStale(sessionId: string, vaultId: string): void {
+    const entry = this.pool.getActiveEntry(sessionId);
+    if (!entry) return;
+    const creds = this.vaults.listCredentials(vaultId);
+    const containerClaimedAt = entry.spawnedAt;
+    const hasStale = creds.some((c) => c.updatedAt > containerClaimedAt);
+    if (hasStale) {
+      log.info(
+        { session_id: sessionId, vault_id: vaultId },
+        "vault credentials rotated since container claim — evicting for fresh env",
+      );
+      void this.pool.evictSession(sessionId).catch(() => {});
+    }
+  }
+
   private async invokeChatCompletions(args: {
     baseUrl: string;
     token: string;
@@ -1633,6 +1698,23 @@ export class RouterError extends Error {
     super(message);
     this.name = "RouterError";
   }
+}
+
+/**
+ * Classify whether a fetch error is a connect-level failure (the TCP
+ * connection never established or was reset before any HTTP response
+ * headers arrived). These are safe to retry because Pi never received
+ * the request — no user.message was written to the JSONL.
+ */
+function isConnectError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const cause = (err as { cause?: { code?: string } }).cause;
+  if (cause?.code === "ECONNREFUSED") return true;
+  if (cause?.code === "ECONNRESET") return true;
+  if (cause?.code === "ENOTFOUND") return true;
+  if (cause?.code === "ETIMEDOUT") return true;
+  if (err.message.includes("fetch failed") && cause) return true;
+  return false;
 }
 
 function wrapWsError(err: unknown, fallbackCode: RouterErrorCode): RouterError {

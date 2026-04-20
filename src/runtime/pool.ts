@@ -737,6 +737,13 @@ export class SessionContainerPool {
     return this.active.get(sessionId)?.container.id;
   }
 
+  /** Expose read-only metadata about an active container for staleness checks. */
+  getActiveEntry(sessionId: string): { spawnedAt: number; lastUsedAt: number } | undefined {
+    const entry = this.active.get(sessionId);
+    if (!entry) return undefined;
+    return { spawnedAt: entry.spawnedAt, lastUsedAt: entry.lastUsedAt };
+  }
+
   /** Touch the lastUsedAt timestamp for a session so the sweeper doesn't reap it. */
   touchSession(sessionId: string): void {
     const entry = this.active.get(sessionId);

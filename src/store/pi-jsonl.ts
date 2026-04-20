@@ -211,7 +211,7 @@ export class PiJsonlEventReader {
       afterEventId?: string;
     } = {},
   ): AsyncGenerator<Event> {
-    const pollMs = opts.pollIntervalMs ?? 250;
+    const pollMs = opts.pollIntervalMs ?? 100;
     const idleTimeoutMs = opts.idleTimeoutMs ?? 30_000;
     const seen = new Set<string>();
 
