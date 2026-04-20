@@ -779,6 +779,7 @@ let LIVE_EVENT_STREAM = null; // EventSource or null
 let LIVE_EVENT_ANCHOR = null;
 
 async function pumpAgents() {
+  if (AUTH.required && !AUTH.token) return;
   try {
     const res = await fetch('/v1/agents');
     if (!res.ok) return;
@@ -804,6 +805,7 @@ async function pumpAgents() {
 }
 
 async function pumpSessions() {
+  if (AUTH.required && !AUTH.token) return;
   try {
     const res = await fetch('/v1/sessions');
     if (!res.ok) return;
@@ -876,6 +878,7 @@ async function pumpSessions() {
 
 // Plain-poll fallback for when SSE isn't available / fails.
 async function pumpEventsPoll() {
+  if (AUTH.required && !AUTH.token) return;
   if (!LIVE_SELECTED_SESSION || LIVE_EVENT_STREAM) return;
   try {
     const sid = LIVE_SELECTED_SESSION;
@@ -986,6 +989,7 @@ function openEventStream(sid) {
 }
 
 async function pumpEnvironments() {
+  if (AUTH.required && !AUTH.token) return;
   try {
     const res = await fetch('/v1/environments');
     if (!res.ok) return;
@@ -1028,6 +1032,7 @@ async function pumpEnvironments() {
 }
 
 async function pumpAudit() {
+  if (AUTH.required && !AUTH.token) return;
   try {
     const res = await fetch('/v1/audit?limit=50');
     if (!res.ok) return;
@@ -1062,6 +1067,7 @@ async function pumpHealth() {
 }
 
 async function pumpVaults() {
+  if (AUTH.required && !AUTH.token) return;
   try {
     const res = await fetch('/v1/vaults');
     if (!res.ok) return;
@@ -4256,8 +4262,6 @@ function App() {
     return () => { unsub(); };
   }, []);
 
-  if (AUTH.required && !AUTH.token) return <AuthGate />;
-
   // Auto-select the first session once the list loads if nothing
   // is pinned from localStorage.
   useEffect(() => {
@@ -4356,6 +4360,8 @@ function App() {
           : <SessionDetail sessionId={selectedSession} sessionState={tweaks.sessionState} streamLen={streamLen} />}
       </div>
     );
+
+  if (AUTH.required && !AUTH.token) return <AuthGate />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: 'var(--paper)', overflow: 'hidden' }}>
