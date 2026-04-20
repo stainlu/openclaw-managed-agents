@@ -2768,7 +2768,306 @@ function PlaceholderView({ title, sub }) {
   );
 }
 
-Object.assign(window, { OverviewView, AgentsView, AuditView, EnvironmentsView, PlaceholderView });
+// Vaults page. Split pane, same topology as Sessions: list left, detail
+// right. Shows only fields the backend actually returns — the design's
+// KMS / key-derivation cards aren't backed by real API fields so they
+// are omitted rather than faked. Encryption + OAuth-refresh facts are
+// system-level truths we actually implement, so those stay.
+function VaultsView() {
+  const [selectedId, setSelectedId] = React.useState(null);
+  const [creds, setCreds] = React.useState([]);
+  const [credsLoading, setCredsLoading] = React.useState(false);
+  const [credsError, setCredsError] = React.useState(null);
+
+  // Default selection: first vault in the list once data lands.
+  React.useEffect(() => {
+    if (!selectedId && VAULTS.length > 0) setSelectedId(VAULTS[0].vault_id);
+  }, [VAULTS.length, selectedId]);
+
+  // Fetch credentials when the selected vault changes. We re-poll every
+  // 15s so status (fresh/expiring) tracks the actual refresh pipeline.
+  React.useEffect(() => {
+    if (!selectedId) { setCreds([]); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        setCredsLoading(true); setCredsError(null);
+        const res = await fetch('/v1/vaults/' + encodeURIComponent(selectedId) + '/credentials');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const body = await res.json();
+        if (!cancelled) setCreds(body.credentials || []);
+      } catch (err) {
+        if (!cancelled) { setCreds([]); setCredsError(String(err.message || err)); }
+      } finally {
+        if (!cancelled) setCredsLoading(false);
+      }
+    }
+    load();
+    const h = setInterval(load, 15_000);
+    return () => { cancelled = true; clearInterval(h); };
+  }, [selectedId]);
+
+  const selected = VAULTS.find((v) => v.vault_id === selectedId) || null;
+
+  return (
+    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      {/* Left: vault list */}
+      <div style={{
+        width: 340, borderRight: '1px solid var(--ink)',
+        display: 'flex', flexDirection: 'column', minHeight: 0,
+      }}>
+        <div style={{ padding: '20px 20px 14px', borderBottom: '1px solid var(--ink)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <Eyebrow>v1 · vaults</Eyebrow>
+            <Mono s={11} c="var(--ink-3)">{VAULTS.length} bundles</Mono>
+          </div>
+          <h2 style={{ marginTop: 6, fontSize: 22, fontWeight: 500, letterSpacing: '-0.028em' }}>Vaults</h2>
+          <p style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-3)' }}>
+            Per-end-user credential bundles. Types: <Mono s={11} c="var(--ink-2)">mcp_oauth</Mono> + <Mono s={11} c="var(--ink-2)">static_bearer</Mono>. OAuth tokens refresh in-kernel 60 s before expiry.
+          </p>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {VAULTS.length === 0 && (
+            <div style={{ padding: '40px 20px', fontSize: 12, color: 'var(--ink-3)' }}>
+              No vaults yet. <Mono s={11} c="var(--ink-2)">POST /v1/vaults</Mono> to create one.
+            </div>
+          )}
+          {VAULTS.map((v) => {
+            const active = v.vault_id === selectedId;
+            return (
+              <div key={v.vault_id}
+                onClick={() => setSelectedId(v.vault_id)}
+                style={{
+                  padding: '14px 20px',
+                  borderBottom: '1px solid var(--line)',
+                  background: active ? 'var(--paper-2)' : 'transparent',
+                  borderLeft: active ? '2px solid var(--ink)' : '2px solid transparent',
+                  cursor: 'pointer',
+                }}
+              >
+                <Mono s={12} c="var(--ink)" style={{ fontWeight: 500 }}>{v.vault_id}</Mono>
+                {v.name && (
+                  <div style={{ marginTop: 3, fontSize: 12, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {v.name}
+                  </div>
+                )}
+                <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <Mono s={10} c="var(--ink-3)">
+                    {v.updated_at ? fmtAgo(v.updated_at) : '—'}
+                  </Mono>
+                  <Mono s={10} c="var(--ink-3)" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {v.user_id || '—'}
+                  </Mono>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {/* Right: vault detail */}
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+        {!selected && (
+          <div style={{ height: '100%', display: 'grid', placeItems: 'center' }}>
+            <Mono s={12} c="var(--ink-3)">Select a vault</Mono>
+          </div>
+        )}
+        {selected && <VaultDetail v={selected} creds={creds} credsLoading={credsLoading} credsError={credsError} />}
+      </div>
+    </div>
+  );
+}
+
+function VaultDetail({ v, creds, credsLoading, credsError }) {
+  const fresh = creds.filter((c) => {
+    if (c.type !== 'mcp_oauth') return true; // bearer never expires
+    if (!c.expires_at) return true;
+    return c.expires_at * 1000 > Date.now();
+  }).length;
+  const freshPct = creds.length > 0 ? Math.round((fresh / creds.length) * 100) : null;
+  const ctx = useApp();
+
+  async function onDeleteVault() {
+    if (!confirm('Delete ' + v.vault_id + '? This also deletes all its credentials.')) return;
+    try {
+      const res = await fetch('/v1/vaults/' + encodeURIComponent(v.vault_id), { method: 'DELETE' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      // pumpVaults will refresh on next tick; manually trigger for snappy UX.
+      if (typeof pumpVaults === 'function') pumpVaults();
+    } catch (err) {
+      ctx.pushToast && ctx.pushToast({ method: 'DELETE', path: '/v1/vaults', label: String(err.message || err), status: 0, ms: 0 });
+    }
+  }
+
+  async function onDeleteCred(credId) {
+    if (!confirm('Delete credential ' + credId + '?')) return;
+    try {
+      const res = await fetch('/v1/vaults/' + encodeURIComponent(v.vault_id) + '/credentials/' + encodeURIComponent(credId), { method: 'DELETE' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      // Credential pump runs on the selected-vault effect interval (15 s);
+      // nothing to do here — the next tick shows the fresh list.
+    } catch (err) {
+      ctx.pushToast && ctx.pushToast({ method: 'DELETE', path: '/v1/vaults', label: String(err.message || err), status: 0, ms: 0 });
+    }
+  }
+
+  return (
+    <div style={{ padding: '24px 32px 40px' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 24 }}>
+        <div style={{ minWidth: 0 }}>
+          <Mono s={11} c="var(--ink-3)">GET /v1/vaults/{v.vault_id}</Mono>
+          <div style={{ marginTop: 6, display: 'flex', alignItems: 'baseline', gap: 10 }}>
+            <Mono s={22} c="var(--ink)" style={{ fontWeight: 500 }}>{v.vault_id}</Mono>
+          </div>
+          {v.name && (
+            <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink-2)' }}>{v.name}</div>
+          )}
+          <div style={{ marginTop: 10, display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 11, color: 'var(--ink-3)' }}>
+            <div><Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>owner</Mono>&nbsp;&nbsp;<Mono s={11} c="var(--ink-2)">{v.user_id || '—'}</Mono></div>
+            <div><Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>created</Mono>&nbsp;&nbsp;<Mono s={11} c="var(--ink-2)">{v.created_at ? new Date(v.created_at).toISOString().slice(0, 10) : '—'}</Mono></div>
+            <div><Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>updated</Mono>&nbsp;&nbsp;<Mono s={11} c="var(--ink-2)">{v.updated_at ? fmtAgo(v.updated_at) : '—'}</Mono></div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <Button variant="ghost" size="sm" icon="close" onClick={onDeleteVault}>Delete vault</Button>
+        </div>
+      </div>
+
+      {/* Fact cards — only what's real. Encryption is a binary ("is
+          OPENCLAW_VAULT_KEY set on this orchestrator?"), but /healthz
+          doesn't surface that today, so we document the crypto choice
+          instead of faking the key id. OAuth refresh is in-kernel — the
+          orchestrator itself refreshes tokens 60 s before expiry, not a
+          separate worker. */}
+      <div style={{ marginTop: 24, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+        <div style={{ padding: '14px 16px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--card)' }}>
+          <Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>Encryption</Mono>
+          <div style={{ marginTop: 8, fontSize: 15, fontWeight: 500 }}>AES-256-GCM</div>
+          <Mono s={11} c="var(--ink-3)" style={{ marginTop: 4, display: 'block' }}>per-cred random nonce</Mono>
+        </div>
+        <div style={{ padding: '14px 16px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--card)' }}>
+          <Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>OAuth refresh</Mono>
+          <div style={{ marginTop: 8, fontSize: 15, fontWeight: 500 }}>in-kernel</div>
+          <Mono s={11} c="var(--ink-3)" style={{ marginTop: 4, display: 'block' }}>60 s pre-expiry · auto</Mono>
+        </div>
+        <div style={{ padding: '14px 16px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--card)' }}>
+          <Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>Credentials</Mono>
+          <div style={{ marginTop: 8, fontSize: 26, fontWeight: 500 }}>{creds.length}</div>
+          <Mono s={11} c="var(--ink-3)" style={{ marginTop: 4, display: 'block' }}>
+            {credsLoading && creds.length === 0 ? 'loading…' : (creds.length === 0 ? '—' : 'bundle total')}
+          </Mono>
+        </div>
+        <div style={{ padding: '14px 16px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--card)' }}>
+          <Mono s={10} c="var(--ink-4)" style={{ textTransform: 'uppercase', letterSpacing: '0.08em' }}>Fresh</Mono>
+          <div style={{ marginTop: 8, fontSize: 26, fontWeight: 500 }}>{freshPct != null ? freshPct + '%' : '—'}</div>
+          <Mono s={11} c="var(--ink-3)" style={{ marginTop: 4, display: 'block' }}>
+            {creds.length > 0 ? fresh + ' / ' + creds.length : 'no creds'}
+          </Mono>
+        </div>
+      </div>
+
+      {/* Credentials table */}
+      <div style={{ marginTop: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <Eyebrow>credentials · {creds.length} <Mono s={10} c="var(--ink-4)" style={{ marginLeft: 10 }}>GET /v1/vaults/{v.vault_id}/credentials</Mono></Eyebrow>
+        </div>
+        {credsError && (
+          <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--lobster)', background: 'var(--card)', fontSize: 12, color: 'var(--lobster)' }}>
+            {credsError}
+          </div>
+        )}
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 140px 2fr 100px 100px 100px 40px', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+          {['Credential', 'Type', 'Scopes · match', 'Expires', 'Refreshed', 'Status', ''].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
+        </div>
+        {creds.length === 0 && !credsLoading && (
+          <div style={{ padding: '24px 0', fontSize: 12, color: 'var(--ink-3)' }}>
+            No credentials. <Mono s={11} c="var(--ink-2)">POST /v1/vaults/{v.vault_id}/credentials</Mono> to add.
+          </div>
+        )}
+        {creds.map((c) => {
+          const nowMs = Date.now();
+          const expMs = c.expires_at ? c.expires_at * 1000 : null;
+          const isExpired = expMs != null && expMs < nowMs;
+          const expiringSoon = expMs != null && !isExpired && (expMs - nowMs) < 15 * 60 * 1000;
+          const status = c.type === 'static_bearer'
+            ? 'fresh'
+            : isExpired ? 'expired' : expiringSoon ? 'expiring' : 'fresh';
+          return (
+            <div key={c.credential_id} style={{
+              display: 'grid', gridTemplateColumns: '1fr 140px 2fr 100px 100px 100px 40px',
+              gap: 12, padding: '14px 0', borderBottom: '1px solid var(--line)',
+              alignItems: 'center',
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{c.name}</div>
+                <Mono s={10} c="var(--ink-3)">{c.credential_id}</Mono>
+              </div>
+              <Mono s={11} c="var(--ink-2)">{c.type}</Mono>
+              <div style={{ fontSize: 11, color: 'var(--ink-2)' }}>
+                {c.type === 'mcp_oauth' && Array.isArray(c.scopes) && c.scopes.length > 0
+                  ? c.scopes.map(s => (
+                      <span key={s} style={{
+                        display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 10,
+                        padding: '1px 6px', marginRight: 4, marginBottom: 2,
+                        border: '1px solid var(--line)', borderRadius: 3, background: 'var(--card)',
+                        color: 'var(--ink-3)',
+                      }}>{s}</span>
+                    ))
+                  : <Mono s={11} c="var(--ink-3)">{c.match_url || '—'}</Mono>}
+              </div>
+              <Mono s={11} c={isExpired ? 'var(--lobster)' : 'var(--ink-2)'}>
+                {c.type === 'static_bearer' ? 'non-expiring' : (expMs != null ? fmtExpiry(expMs) : '—')}
+              </Mono>
+              <Mono s={11} c="var(--ink-2)">{c.updated_at ? fmtAgo(c.updated_at) : '—'}</Mono>
+              <Badge tone={status === 'expired' ? 'warn' : status === 'expiring' ? 'soft' : 'ok'}>{status}</Badge>
+              <button
+                onClick={() => onDeleteCred(c.credential_id)}
+                aria-label="Delete credential"
+                style={{
+                  all: 'unset', cursor: 'pointer', display: 'grid', placeItems: 'center',
+                  width: 24, height: 24, borderRadius: 4, color: 'var(--ink-3)',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--lobster)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--ink-3)'; }}
+              >
+                <Icon n="close" s={12} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Relative time helpers reused across Sessions + Vaults. Kept as
+// top-level functions (not component methods) so they stay pure.
+function fmtAgo(tsMs) {
+  if (!tsMs) return '—';
+  const sec = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+  if (sec < 60) return sec + 's ago';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.floor(h / 24);
+  return d + 'd ago';
+}
+function fmtExpiry(tsMs) {
+  if (!tsMs) return '—';
+  const delta = tsMs - Date.now();
+  if (delta < 0) return 'expired';
+  const sec = Math.floor(delta / 1000);
+  if (sec < 60) return 'in ' + sec + 's';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return 'in ' + m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return 'in ' + h + 'h';
+  const d = Math.floor(h / 24);
+  return 'in ' + d + 'd';
+}
+
+Object.assign(window, { OverviewView, AgentsView, AuditView, EnvironmentsView, VaultsView, VaultDetail, PlaceholderView, fmtAgo, fmtExpiry });
 
 
 /* ===== tweaks ===== */
@@ -3879,7 +4178,7 @@ function App() {
     : view === 'agents' ? <AgentsView />
     : view === 'environments' ? <EnvironmentsView />
     : view === 'audit' ? <AuditView />
-    : view === 'vaults' ? <PlaceholderView title="Vaults" sub="Per-end-user credential bundles · not shown in this mockup" />
+    : view === 'vaults' ? <VaultsView />
     : view === 'metrics' ? <PlaceholderView title="Metrics" sub="Prometheus · /metrics · not shown in this mockup" />
     : (
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }} data-screen-label="Sessions split">
