@@ -222,11 +222,10 @@ write_files:
       # only sensible on a dedicated VM with idle capacity.
       # 3 was picked for CAX11 (4 vCPU, 8 GiB) as a balance — each
       # warm holds ~500 MiB steady-state and won't peg all cores.
-      cat > .env <<ENVFILE
-      ${PROVIDER_KEY_NAME}=${PROVIDER_KEY_VALUE}
-      OPENCLAW_TEST_MODEL=${DEFAULT_TEST_MODEL}
-      OPENCLAW_MAX_WARM_CONTAINERS=3
-      ENVFILE
+      # NB: printf (not a nested heredoc) — the outer cloud-init heredoc
+      # already preserves leading whitespace, which would corrupt every
+      # key in the inner heredoc (" KEY=…" ≠ "KEY=…" for dotenv parsers).
+      printf '%s=%s\\nOPENCLAW_TEST_MODEL=%s\\nOPENCLAW_MAX_WARM_CONTAINERS=3\\n' '${PROVIDER_KEY_NAME}' '${PROVIDER_KEY_VALUE}' '${DEFAULT_TEST_MODEL}' > .env
 
       # --- Pull pre-built images from GHCR (published by .github/workflows/
       # publish-images.yaml on every push to main) and bring up the stack.
