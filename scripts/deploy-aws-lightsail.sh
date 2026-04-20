@@ -161,11 +161,13 @@ printf "    Blueprint:         %s\n" "${BLUEPRINT_ID}"
 #   - SSH key is written directly to /home/ubuntu/.ssh/authorized_keys (Ubuntu
 #     blueprint's default user is `ubuntu`, not `root`) instead of via the
 #     cloud-config `ssh_authorized_keys:` directive.
-#   - ssh.socket drop-in is written with `cat > file <<'HERE'` using a QUOTED
-#     heredoc delimiter to prevent any variable expansion inside the config.
 #   - Package install + Docker install are imperative `apt-get install` lines.
 #   - The .env file is written via `printf` (not a nested heredoc) to avoid
 #     any heredoc-inside-heredoc terminator matching bugs.
+#   - No ssh.socket overrides, no port 222, no fail2ban tweaks. SSH is a
+#     break-glass hatch only; routine operator UX is the HTTP API on 8080
+#     and the portal at /v2. Same philosophy as deploy-hetzner.sh post-
+#     cleanup.
 
 log "Rendering user-data (pure shell for Lightsail)"
 
@@ -188,14 +190,11 @@ printf '%s\\n' '${SSH_PUBKEY_CONTENT}' >> /home/ubuntu/.ssh/authorized_keys
 chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
 chmod 0600 /home/ubuntu/.ssh/authorized_keys
 
-# --- DO NOT touch sshd on Lightsail. The Lightsail Ubuntu image runs sshd as
-# ssh.service (not socket-activated), and overriding ssh.socket.d/override.conf
-# causes the unit to conflict with ssh.service and breaks BOTH sshd AND the
-# Lightsail browser-based SSH console (UPSTREAM_ERROR 515). The port-222 ISP
-# workaround from deploy-hetzner.sh does not help on Lightsail anyway: most
-# ISPs that block port 22 to cloud IPs also block alternate high ports.
-# Rely on the Lightsail browser-based SSH console for any interactive debug,
-# and the deploy script /healthz poll for correctness validation.
+# --- Don't touch sshd. Stock Ubuntu defaults are fine because nobody is
+# supposed to SSH under normal operation — the HTTP API + portal are the
+# routine UX, SSH is only for the rare incident where the VM itself is
+# wedged. Lightsail also provides a browser-based SSH console for that
+# case that bypasses any client-side networking issues.
 
 # --- Install baseline packages ---
 export DEBIAN_FRONTEND=noninteractive
@@ -274,18 +273,19 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Open port 8080 (orchestrator) and port 222 (SSH fallback)
+# Open port 8080 (orchestrator)
 # ------------------------------------------------------------------------------
 #
-# put-instance-public-ports REPLACES the entire port list, so we must include
-# port 22 (default SSH) alongside our additions.
+# put-instance-public-ports REPLACES the entire port list, so we include
+# port 22 (default SSH, break-glass only) alongside 8080. Routine operator
+# interaction is via the HTTP API on 8080; SSH is not part of the managed
+# UX and should only be used when the VM itself is wedged.
 
-log "Opening ports 22, 222, 8080"
+log "Opening ports 22 (break-glass SSH), ${ORCH_PORT} (orchestrator)"
 ls_cli put-instance-public-ports \
     --instance-name "${INSTANCE_NAME}" \
     --port-infos \
         'fromPort=22,toPort=22,protocol=tcp' \
-        'fromPort=222,toPort=222,protocol=tcp' \
         "fromPort=${ORCH_PORT},toPort=${ORCH_PORT},protocol=tcp" >/dev/null
 
 # ------------------------------------------------------------------------------

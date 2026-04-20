@@ -68,35 +68,6 @@ die() { err "$*"; exit 1; }
 # `hcloud context create` so the script is reproducible.
 hc() { hcloud "$@"; }
 
-# fail2ban whitelist. Ubuntu 24.04's stock image enables fail2ban on the
-# sshd jail — any IP that triggers "connection closed pre-auth" a few
-# times gets DROP-ruled for ~10 min, escalating on retry. Local proxies
-# like ClashX (global mode) can legitimately cause that pattern by
-# racing TCP handshakes through a tunnel exit, so an operator who runs
-# through such a proxy gets locked out of their own VM.
-#
-# OPENCLAW_TRUSTED_SSH_IPS is a comma-separated list of IPs/CIDRs that
-# the deploy bakes into /etc/fail2ban/jail.local's `ignoreip` — never
-# ban these. Auto-discover the current machine's public IP if unset,
-# so `./scripts/deploy-hetzner.sh` from a ClashX-proxied laptop just
-# works. Override with the literal IP(s) you want to trust; set to the
-# empty string to explicitly opt out of any auto-whitelist.
-#
-# IMPORTANT: this block MUST come after `log()` is defined above — a
-# previous version of this file inlined it near the top, which
-# silently fell through to macOS's `log` binary (prints a help page
-# and exits 0), masking any real error in the subsequent destroy/
-# provision path. Lesson: don't forward-reference shell functions.
-if [[ -z "${OPENCLAW_TRUSTED_SSH_IPS+x}" ]]; then
-    _auto_ip=$(curl -sSf --max-time 4 https://api.ipify.org 2>/dev/null || true)
-    if [[ -n "${_auto_ip}" ]]; then
-        OPENCLAW_TRUSTED_SSH_IPS="${_auto_ip}"
-        log "Auto-detected public IP ${OPENCLAW_TRUSTED_SSH_IPS} → fail2ban whitelist"
-    else
-        OPENCLAW_TRUSTED_SSH_IPS=""
-    fi
-fi
-
 # ------------------------------------------------------------------------------
 # Teardown path
 # ------------------------------------------------------------------------------
@@ -198,77 +169,21 @@ packages:
   - lsb-release
 
 write_files:
-  - path: /etc/systemd/system/ssh.socket.d/override.conf
-    permissions: '0644'
-    content: |
-      # Listen on both port 22 (standard) and port 222 (workaround).
-      # Ubuntu 24.04 uses systemd socket activation for sshd (ssh.socket),
-      # so adding a Port directive to /etc/ssh/sshd_config.d is NOT enough:
-      # the socket unit owns the bind. This drop-in resets ListenStream and
-      # sets both ports explicitly. The bootstrap script below runs a
-      # daemon-reload plus a restart of ssh.socket to apply.
-      #
-      # Some ISPs and corporate networks block outbound SSH to port 22 on
-      # cloud provider IP ranges (notably Hetzner); opening 222 as an
-      # alternate is a reliable safety net. Remove this file on a deployed
-      # server if you do not need the extra port.
-      [Socket]
-      # BindIPv6Only=both is load-bearing. Without it, systemd's
-      # `ListenStream=<port>` shortcut creates an IPv6-only socket
-      # (IPV6_V6ONLY=1 at the socket level, overriding the system
-      # sysctl net.ipv6.bindv6only=0). `ss -tlnp` then shows only
-      # `[::]:22` and the IPv4 kernel path returns RST → clients
-      # connecting to the VM's public IPv4 see "Connection refused".
-      # Symptom encountered on Hetzner CAX11 (ARM, Ubuntu 24.04.3)
-      # on 2026-04-20; the fix is to restore dual-stack explicitly.
-      BindIPv6Only=both
-      ListenStream=
-      ListenStream=22
-      ListenStream=222
   - path: /opt/openclaw-bootstrap.sh
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
       set -euxo pipefail
 
-      # --- Restart ssh.socket so it picks up the Port 222 ListenStream override ---
-      # Ubuntu 24.04 uses socket activation for sshd. After the drop-in in
-      # /etc/systemd/system/ssh.socket.d/override.conf is in place, we need
-      # a daemon-reload + restart of the socket unit to apply the new ports.
-      systemctl daemon-reload
-      systemctl restart ssh.socket || systemctl restart ssh || true
-
-      # --- Whitelist operator IPs in fail2ban ---
-      # Proxies like ClashX in global mode can cause sshd to log a few
-      # "connection closed pre-auth" lines per connect as TCP races
-      # through the tunnel exit. Stock Ubuntu's fail2ban defaults (5
-      # retries, 10m bantime that escalates on repeat) will silently
-      # DROP the operator IP for half a day. Whitelisting the operator's
-      # known public IP in /etc/fail2ban/jail.local's [DEFAULT] ignoreip
-      # means those races never ban. List is injected from the
-      # OPENCLAW_TRUSTED_SSH_IPS env var at deploy time.
-      mkdir -p /etc/fail2ban
-      cat > /etc/fail2ban/jail.local <<'F2BEOF'
-      [DEFAULT]
-      # 127.0.0.1/8 and ::1 are always safe; the generated line below
-      # appends operator IPs supplied at deploy time. ignoreip accepts
-      # space-separated IPs and CIDRs.
-      ignoreip = 127.0.0.1/8 ::1 __TRUSTED_IPS__
-      F2BEOF
-      # Back-fill the placeholder with the runtime list. Empty list →
-      # placeholder becomes "" so the DEFAULT ignoreip is just the
-      # loopback entries (existing behavior preserved).
-      sed -i "s|__TRUSTED_IPS__|${OPENCLAW_TRUSTED_SSH_IPS}|" /etc/fail2ban/jail.local
-      # Unindent the heredoc-preserved leading spaces so fail2ban parses
-      # the INI correctly. The outer cloud-init heredoc indents every
-      # line of this script by 6 spaces; we need the .local file flush-
-      # left or fail2ban silently ignores it.
-      sed -i 's/^      //' /etc/fail2ban/jail.local
-      # Ensure fail2ban is running + picks up the new config. apt pulled
-      # it in via the default metapackages; reload is a no-op if the
-      # service never started.
-      systemctl enable fail2ban || true
-      systemctl restart fail2ban || true
+      # Deploy is intentionally minimal: install Docker, clone the repo,
+      # write .env, bring the stack up. SSH exists only as a break-glass
+      # escape hatch — all routine operator interaction happens via the
+      # HTTP API on :8080 and the portal at /v2. If this VM breaks, the
+      # correct response is `./scripts/deploy-hetzner.sh --destroy &&
+      # ./scripts/deploy-hetzner.sh` (cattle, not pets), not SSH in to
+      # fix it. No ssh.socket overrides, no port 222 kludge, no fail2ban
+      # tweaks — stock Ubuntu defaults are fine because nobody is
+      # supposed to be SSHing under normal operation.
 
       # --- Install Docker via the official Docker repo ---
       install -m 0755 -d /etc/apt/keyrings
@@ -371,13 +286,12 @@ done
 if [[ "${SUCCESS}" -eq 1 ]]; then
     log "Deploy complete"
     printf "    Orchestrator:      %s\n" "${ORCH_URL}"
+    printf "    Portal:            %s/v2\n" "${ORCH_URL}"
     printf "    Monthly cost:      ~€4.35 gross / €3.99 net (€0.007/hr) — cax11 ARM, EU\n"
-    printf "    Destroy with:      ./scripts/deploy-hetzner.sh --destroy\n"
-    printf "    SSH (port 22):     ssh root@%s\n" "${SERVER_IPV4}"
-    printf "    SSH (port 222):    ssh -p 222 root@%s   # use this if your ISP blocks port 22 to cloud IPs\n" "${SERVER_IPV4}"
-    printf "    Tail bootstrap:    ssh root@%s 'tail -f /var/log/openclaw-bootstrap.log'\n" "${SERVER_IPV4}"
+    printf "    Destroy + reset:   ./scripts/deploy-hetzner.sh --destroy && ./scripts/deploy-hetzner.sh\n"
+    printf "    Break-glass SSH:   ssh root@%s   (not for routine ops — use the HTTP API)\n" "${SERVER_IPV4}"
 else
     err "Orchestrator did not become reachable at ${ORCH_URL}/healthz after 10 minutes."
-    err "Debug: ssh root@${SERVER_IPV4} 'tail -f /var/log/openclaw-bootstrap.log'"
+    err "Break-glass: ssh root@${SERVER_IPV4} 'tail -f /var/log/openclaw-bootstrap.log'"
     exit 1
 fi

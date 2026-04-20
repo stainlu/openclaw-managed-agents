@@ -116,7 +116,7 @@ Expected output (timings on a fresh run, `us-east-1`, `medium_3_0`):
     Tail bootstrap:    ssh ubuntu@54.196.x.x 'sudo tail -f /var/log/openclaw-bootstrap.log'
 ```
 
-> The script opens port 222 in the Lightsail firewall as a historical carry-over from the Hetzner path, but **sshd is not configured to listen on 222 under the Lightsail Ubuntu image** (the `ssh.socket` drop-in that would enable it conflicts with Lightsail's `ssh.service` and breaks both sshd and the browser SSH console — `UPSTREAM_ERROR 515`). Use port 22 for SSH, or the Lightsail browser-based SSH console for debugging.
+> SSH is break-glass only: routine operator UX is the HTTP API on port 8080 and the portal at `/v2`. If port 22 is unreachable from your network, Lightsail ships a browser-based SSH console under **AWS Console → Lightsail → your instance → Connect using SSH** that tunnels over HTTPS.
 
 ## Validating the deploy
 
@@ -242,7 +242,7 @@ while ! curl -sf "http://${IP}:8080/healthz" >/dev/null; do sleep 5; done
 echo "Orchestrator ready on http://${IP}:8080"
 ```
 
-The `scripts/deploy-aws-lightsail.sh` wrapper adds preflight checks, SSH fallback on port 222, idempotent re-runs, and a `--destroy` flag — but the core flow is the six steps above.
+The `scripts/deploy-aws-lightsail.sh` wrapper adds preflight checks, idempotent re-runs, and a `--destroy` flag — but the core flow is the six steps above.
 
 ## What's next — more backends
 
@@ -273,4 +273,4 @@ Each new backend is a ~300-line sibling of this script. No orchestrator core cha
 - **`aws sts get-caller-identity` fails with "Unable to locate credentials"**: your credentials aren't configured. Run `aws configure` and enter your access key pair, or export the env vars directly.
 - **`aws lightsail create-instances` fails with "User is not authorized"**: your IAM principal doesn't have Lightsail permissions. Attach the `AmazonLightsailFullAccess` managed policy in the IAM console, or use the fine-grained list from the prereqs section.
 - **Instance reaches "running" state but `/healthz` never responds**: cloud-init is still running. SSH in (`ssh ubuntu@<ip>`) and inspect `sudo tail -f /var/log/openclaw-bootstrap.log`. Most commonly this is an image-build failure (check `cd /opt/openclaw && docker compose logs`).
-- **SSH to port 22 fails with "Connection closed by remote host"**: some ISPs and corporate networks block outbound SSH to port 22 on cloud provider IP ranges. Use the **Lightsail browser-based SSH console** (in the AWS console → Lightsail → your instance → "Connect using SSH" button) — it tunnels over HTTPS and bypasses network-level restrictions. The deploy script does open firewall port 222, but the Lightsail Ubuntu image's `ssh.service` is not configured to listen there (the Hetzner-style `ssh.socket` drop-in conflicts with Lightsail's unit and triggers `UPSTREAM_ERROR 515`). AWS Systems Manager Session Manager is an alternative, but requires attaching an IAM role to the instance — not set up by the quick deploy.
+- **SSH to port 22 fails**: remember SSH is break-glass only — if you're just running routine operations, the HTTP API on port 8080 is all you need. If you genuinely need a shell, use the **Lightsail browser-based SSH console** (in the AWS console → Lightsail → your instance → "Connect using SSH" button) — it tunnels over HTTPS and bypasses any client-side networking restrictions.
