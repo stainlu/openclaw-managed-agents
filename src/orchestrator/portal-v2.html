@@ -731,7 +731,7 @@ function asDesignEvent(e, anchorTs) {
   const mm = Math.floor(totalS / 60);
   const ss = totalS - mm * 60;
   const t = '+' + String(mm).padStart(2, '0') + ':' + ss.toFixed(3).padStart(6, '0');
-  const base = { t, type: e.type };
+  const base = { id: e.event_id || '', t, type: e.type };
   const contentStr = typeof e.content === 'string' ? e.content : JSON.stringify(e.content ?? '');
   if (e.type === 'user.message') return { ...base, actor: 'user', text: contentStr };
   if (e.type === 'agent.message') return { ...base, actor: 'agent', text: contentStr };
@@ -951,6 +951,7 @@ function openEventStream(sid) {
   LIVE_EVENT_STREAM = es;
   LIVE_EVENT_ANCHOR = null;
   EVENTS.length = 0;
+  STREAMING_TOKENS = '';
   LIVE_BUS.notify();
 
   // Named-event handler. Every frame the server sends has a specific
@@ -965,6 +966,7 @@ function openEventStream(sid) {
     try { data = JSON.parse(msg.data); } catch { return; }
     if (!data || typeof data !== 'object') return;
     if (!data.type) data.type = msg.type;
+    if (!data.event_id && msg.lastEventId) data.event_id = msg.lastEventId;
     if (typeof data.created_at !== 'number') {
       // session.status_* frames use `ts`, not `created_at`.
       data.created_at = typeof data.ts === 'number' ? data.ts : Date.now();
@@ -1170,23 +1172,27 @@ Object.assign(window, {
   liveSelectSession, openEventStream,
 });
 
-// Boot-time auth probe: if the API returns 401, show the auth gate
-// before starting any data pumps. Uses _origFetch (not the wrapped
-// one) because we don't want the 401 handler to fire during the probe.
-_origFetch('/v1/agents').then(res => {
-  if (res.status === 401) {
-    AUTH.required = true;
-    LIVE_BUS.notify();
-  }
-}).catch(() => {});
-
-pumpAgents();
-pumpSessions().then(() => pumpAgents());
-pumpEnvironments();
-pumpAudit();
-pumpMetrics();
-pumpHealth();
-pumpVaults();
+// Boot-time auth probe: if the API returns 401, set AUTH.required
+// BEFORE the first pump fires so the pumps' early-return guard
+// prevents 401 spam in the console.
+(async () => {
+  try {
+    const res = await _origFetch('/v1/agents');
+    if (res.status === 401) {
+      AUTH.required = true;
+      LIVE_BUS.notify();
+    }
+  } catch {}
+  // Pumps start AFTER the probe — they'll bail immediately if auth
+  // is required and no token is stored.
+  pumpAgents();
+  pumpSessions().then(() => pumpAgents());
+  pumpEnvironments();
+  pumpAudit();
+  pumpMetrics();
+  pumpHealth();
+  pumpVaults();
+})();
 setInterval(() => { pumpAgents(); }, 10_000);
 setInterval(() => { pumpSessions(); }, 4_000);
 // Polling fallback runs only when there's no active SSE stream;
@@ -1624,8 +1630,8 @@ function NewSessionPanel({ onCreate, onCancel }) {
       if (message.trim() && newSid && typeof ctx?.sendMessage === 'function') {
         await ctx.sendMessage(newSid, message.trim());
       }
-      // Kick the sessions pump so the new row shows up immediately.
-      if (typeof pumpSessions === 'function') pumpSessions();
+      // Await the sessions pump so the new row exists before we select it.
+      if (typeof pumpSessions === 'function') await pumpSessions();
       setCreating(false);
       onCreate?.(newSid);
     } catch (err) {
@@ -2291,7 +2297,7 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
             </div>
           </div>
           <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto' }}>
-            {events.map((e, i) => <EventRow key={i} e={e} session={s} />)}
+            {events.map((e, i) => <EventRow key={e.id || e.t + ':' + i} e={e} session={s} />)}
             {showStream && <StreamingRow text={partial} />}
             <SentMessagesFeed sid={s.id} />
             <CancelledBanner />
@@ -4340,17 +4346,15 @@ function App() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }} data-screen-label="Sessions split">
         <SessionsList selectedId={selectedSession} onSelect={(id) => {
           setSelectedSession(id);
-          // Every real session id triggers the SSE subscription; the
-          // __new sentinel does not (it's a panel, not a session).
-          if (id && id !== '__new' && typeof liveSelectSession === 'function') {
-            liveSelectSession(id);
-          }
+          // useEffect on selectedSession handles liveSelectSession —
+          // don't call it here or it fires twice (once from setState,
+          // once from the effect).
         }} filter={filter} setFilter={setFilter} />
         {selectedSession === '__new'
           ? <NewSessionPanel
               onCreate={(newSid) => {
                 setSelectedSession(newSid);
-                if (newSid && typeof liveSelectSession === 'function') liveSelectSession(newSid);
+                // useEffect handles liveSelectSession via selectedSession change.
               }}
               onCancel={() => {
                 const fallback = SESSIONS.find((s) => s.id !== '__new')?.id || null;
