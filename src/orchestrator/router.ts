@@ -1237,40 +1237,17 @@ export class AgentRouter {
       "turn pre-LLM timings (receipt → chat.completions dispatch)",
     );
 
-    // Phase 2: Invoke chat completions. NOT retryable as a whole — Pi
-    // writes user.message on receipt. But connect-level failures
-    // (ECONNREFUSED = container died before Pi saw the request) are safe
-    // to retry because no JSONL entry was written.
+    // Phase 2: Invoke chat completions. NOT retryable — Pi writes
+    // user.message to JSONL immediately on HTTP receipt. Even connect-
+    // level errors (ECONNRESET) can occur after the server received
+    // the request body, so retrying would duplicate the user message.
     const runEnd = sessionRunDurationSeconds.startTimer();
-    let completion: { output: string; tokensIn: number; tokensOut: number };
-    try {
-      completion = await this.invokeChatCompletions({
-        baseUrl: container.baseUrl,
-        token: container.token,
-        content,
-        sessionKey: sessionId,
-      });
-    } catch (err) {
-      if (isConnectError(err)) {
-        log.warn(
-          { session_id: sessionId, err },
-          "connect-level failure on chat.completions — evicting and retrying once",
-        );
-        await this.pool.evictSession(sessionId).catch(() => {});
-        const retryContainer = await this.acquireWithRetry(
-          sessionId, agent, spawnOptions, currentSession,
-          modelOverride, thinkingLevelOverride, timings,
-        );
-        completion = await this.invokeChatCompletions({
-          baseUrl: retryContainer.baseUrl,
-          token: retryContainer.token,
-          content,
-          sessionKey: sessionId,
-        });
-      } else {
-        throw err;
-      }
-    }
+    const completion = await this.invokeChatCompletions({
+      baseUrl: container.baseUrl,
+      token: container.token,
+      content,
+      sessionKey: sessionId,
+    });
     runEnd();
     log.info(
       { session_id: sessionId, chat_completions_ms: Date.now() - cursor },
