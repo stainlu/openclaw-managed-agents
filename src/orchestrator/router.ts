@@ -446,7 +446,6 @@ export class AgentRouter {
         bypassWarmPool: Boolean(running.vaultId),
       });
 
-      // Same patch rules as executeInBackground — see the note there.
       const effectiveThinking = args.thinkingLevel ?? agent.thinkingLevel;
       if (args.model || effectiveThinking !== "off") {
         const wsClient = this.pool.getWsClient(args.sessionId);
@@ -461,8 +460,11 @@ export class AgentRouter {
         if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
         try {
           await wsClient.patch(`agent:main:${args.sessionId}`, patch);
-        } catch (err) {
-          throw wrapWsError(err, "patch_failed");
+        } catch (patchErr) {
+          log.warn(
+            { session_id: args.sessionId, err: patchErr },
+            "WS patch failed (session may not exist yet) — proceeding without patch",
+          );
         }
       }
 
@@ -1526,7 +1528,19 @@ export class AgentRouter {
           const patch: Record<string, string> = {};
           if (modelOverride) patch.model = modelOverride;
           if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
-          await wsClient.patch(canonicalKey, patch);
+          try {
+            await wsClient.patch(canonicalKey, patch);
+          } catch (patchErr) {
+            // The session key may not exist yet in Pi on the first turn
+            // (Pi creates it on the first chat.completions POST). Log and
+            // proceed — the first POST will create the session, and the
+            // thinking level will apply on subsequent turns. Better than
+            // failing the entire turn over a patch timeout.
+            log.warn(
+              { session_id: sessionId, err: patchErr },
+              "WS patch failed (session may not exist yet) — proceeding without patch",
+            );
+          }
         }
 
         if (attempt > 0) {
