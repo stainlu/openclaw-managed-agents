@@ -752,7 +752,7 @@ function asDesignEvent(e, anchorTs) {
     return { ...base, actor: e.tool_name || 'tool', toolUseId: e.tool_call_id, summary, isError: !!e.is_error };
   }
   if (e.type === 'agent.tool_confirmation_request') {
-    return { ...base, actor: 'orchestrator', toolUseId: e.tool_call_id, policy: 'always_ask', prompt: contentStr };
+    return { ...base, actor: 'orchestrator', toolUseId: e.approval_id || e.tool_call_id, policy: 'always_ask', prompt: contentStr };
   }
   if (e.type.startsWith('session.')) return { ...base, actor: 'orchestrator' };
   return { ...base, actor: 'system', text: contentStr };
