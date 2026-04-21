@@ -77,6 +77,7 @@ type SessionRow = {
   tokens_in: number;
   tokens_out: number;
   cost_usd: number;
+  turns: number;
   error: string | null;
   created_at: number;
   last_event_at: number | null;
@@ -137,6 +138,7 @@ function rowToSession(r: SessionRow): Session {
     status: r.status as SessionStatus,
     ephemeral: r.ephemeral === 1,
     remainingSubagentDepth: r.remaining_subagent_depth,
+    turns: r.turns ?? 0,
     tokensIn: r.tokens_in,
     tokensOut: r.tokens_out,
     costUsd: r.cost_usd,
@@ -217,6 +219,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   status TEXT NOT NULL CHECK (status IN ('idle', 'running', 'failed')),
   ephemeral INTEGER NOT NULL DEFAULT 0,
   remaining_subagent_depth INTEGER NOT NULL DEFAULT 0,
+  turns INTEGER NOT NULL DEFAULT 0,
   tokens_in INTEGER NOT NULL DEFAULT 0,
   tokens_out INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
@@ -608,6 +611,7 @@ class SqliteSessionStore implements SessionStore {
   private readonly endFailureStmt: Database.Statement;
   private readonly endCancelledStmt: Database.Statement;
   private readonly addUsageStmt: Database.Statement;
+  private readonly bumpTurnsStmt: Database.Statement;
   private readonly failRunningStmt: Database.Statement;
 
   constructor(private readonly db: Database.Database) {
@@ -658,6 +662,11 @@ class SqliteSessionStore implements SessionStore {
            last_event_at = @now
        WHERE session_id = @session_id`,
     );
+    this.bumpTurnsStmt = db.prepare(
+      `UPDATE sessions
+       SET turns = turns + 1, last_event_at = @now
+       WHERE session_id = @session_id`,
+    );
     this.failRunningStmt = db.prepare(
       `UPDATE sessions
        SET status = 'failed', error = @reason, last_event_at = @now
@@ -695,6 +704,7 @@ class SqliteSessionStore implements SessionStore {
       status: "idle",
       ephemeral,
       remainingSubagentDepth,
+      turns: 0,
       tokensIn: 0,
       tokensOut: 0,
       costUsd: 0,
@@ -763,6 +773,15 @@ class SqliteSessionStore implements SessionStore {
       ti: usage.tokensIn,
       to: usage.tokensOut,
       cost: usage.costUsd,
+      now: Date.now(),
+    });
+    if (info.changes === 0) return undefined;
+    return this.get(sessionId);
+  }
+
+  bumpTurns(sessionId: string): Session | undefined {
+    const info = this.bumpTurnsStmt.run({
+      session_id: sessionId,
       now: Date.now(),
     });
     if (info.changes === 0) return undefined;
@@ -1490,9 +1509,12 @@ export class SqliteStore implements Store {
       );
     }
     if (!sessionsCols.some((c) => c.name === "vault_id")) {
-      // Vault binding. Pre-migration rows default to NULL (no vault),
-      // which is the existing behavior — no credentials injected.
       this.db.exec("ALTER TABLE sessions ADD COLUMN vault_id TEXT");
+    }
+    if (!sessionsCols.some((c) => c.name === "turns")) {
+      this.db.exec(
+        "ALTER TABLE sessions ADD COLUMN turns INTEGER NOT NULL DEFAULT 0",
+      );
     }
     // mcp_oauth columns on vault_credentials. Pre-migration rows are
     // all static_bearer with these NULL, which matches their type.

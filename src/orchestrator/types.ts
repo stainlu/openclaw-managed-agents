@@ -299,6 +299,8 @@ export type Session = {
    * with the correct remaining depth.
    */
   remainingSubagentDepth: number;
+  /** Number of user.message events dispatched to this session. */
+  turns: number;
   /** Rolling sum of agent.message event tokens since the session was created. */
   tokensIn: number;
   tokensOut: number;

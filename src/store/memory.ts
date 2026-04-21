@@ -181,6 +181,7 @@ class InMemorySessionStore implements SessionStore {
       status: "idle",
       ephemeral: args.ephemeral ?? false,
       remainingSubagentDepth: args.remainingSubagentDepth ?? 0,
+      turns: 0,
       tokensIn: 0,
       tokensOut: 0,
       costUsd: 0,
@@ -249,6 +250,14 @@ class InMemorySessionStore implements SessionStore {
     s.tokensIn += usage.tokensIn;
     s.tokensOut += usage.tokensOut;
     s.costUsd += usage.costUsd;
+    s.lastEventAt = Date.now();
+    return s;
+  }
+
+  bumpTurns(sessionId: string): Session | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    s.turns += 1;
     s.lastEventAt = Date.now();
     return s;
   }

@@ -290,6 +290,7 @@ export interface SessionStore {
    * untouched so the caller can call beginRun for the next iteration.
    */
   addUsage(sessionId: string, usage: RunUsage): Session | undefined;
+  bumpTurns(sessionId: string): Session | undefined;
   /**
    * Transition every session currently in "running" state to "failed" with
    * the given error. Intended for post-restart rehydration: any run that was

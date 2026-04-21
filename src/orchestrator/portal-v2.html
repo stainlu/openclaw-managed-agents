@@ -777,6 +777,7 @@ let STREAMING_TOKENS = '';
 let LIVE_SELECTED_SESSION = null;
 let LIVE_EVENT_STREAM = null; // EventSource or null
 let LIVE_EVENT_ANCHOR = null;
+let SEEN_EVENT_IDS = new Set();
 
 async function pumpAgents() {
   if (AUTH.required && !AUTH.token) return;
@@ -871,6 +872,7 @@ async function pumpSessions() {
         LIVE_EVENT_STREAM = null;
       }
       EVENTS.length = 0;
+      SEEN_EVENT_IDS = new Set();
     }
     LIVE_BUS.notify();
   } catch {}
@@ -891,18 +893,28 @@ async function pumpEventsPoll() {
     if (res.status === 404) {
       LIVE_SELECTED_SESSION = null;
       EVENTS.length = 0;
+      SEEN_EVENT_IDS = new Set();
       LIVE_BUS.notify();
       return;
     }
     if (!res.ok) return;
     const body = await res.json();
     const list = body.events || [];
-    if (list.length === 0) { EVENTS.length = 0; LIVE_BUS.notify(); return; }
+    // Empty list = no events yet OR transient JSONL read failure.
+    // Keep existing events (stale is better than empty). Only an
+    // explicit 404 (session deleted, handled above) clears them.
+    if (list.length === 0) return;
     const anchor = list[0].created_at;
     LIVE_EVENT_ANCHOR = anchor;
     const next = list.map((e) => asDesignEvent(e, anchor));
+    // Replace with the full server snapshot — the HTTP endpoint
+    // always returns the complete ordered event list.
     EVENTS.length = 0;
-    for (const e of next) EVENTS.push(e);
+    SEEN_EVENT_IDS = new Set();
+    for (const e of next) {
+      if (e.id) SEEN_EVENT_IDS.add(e.id);
+      EVENTS.push(e);
+    }
     LIVE_BUS.notify();
   } catch {}
 }
@@ -949,17 +961,12 @@ function openEventStream(sid) {
   let es;
   try { es = new EventSource(url); } catch { pumpEventsPoll(); return; }
   LIVE_EVENT_STREAM = es;
-  LIVE_EVENT_ANCHOR = null;
-  EVENTS.length = 0;
+  // Do NOT clear EVENTS here — SSE catch-up will replay all events,
+  // and dedup via SEEN_EVENT_IDS prevents duplicates. Clearing causes
+  // the "events disappear" bug when Cloudflare drops the connection
+  // and the stream reopens.
   STREAMING_TOKENS = '';
-  LIVE_BUS.notify();
 
-  // Named-event handler. Every frame the server sends has a specific
-  // `event: <type>` header, so we subscribe per-type. `msg.type` is the
-  // DOM event name, which equals the original Event.type string; we
-  // copy it onto the payload because session.status_* frames carry
-  // {session_id, status, ts} with no explicit `type` field, and
-  // asDesignEvent switches on `type`.
   const handler = (msg) => {
     if (sid !== LIVE_SELECTED_SESSION) return;
     let data;
@@ -968,9 +975,11 @@ function openEventStream(sid) {
     if (!data.type) data.type = msg.type;
     if (!data.event_id && msg.lastEventId) data.event_id = msg.lastEventId;
     if (typeof data.created_at !== 'number') {
-      // session.status_* frames use `ts`, not `created_at`.
       data.created_at = typeof data.ts === 'number' ? data.ts : Date.now();
     }
+    const eid = data.event_id || '';
+    if (eid && SEEN_EVENT_IDS.has(eid)) return;
+    if (eid) SEEN_EVENT_IDS.add(eid);
     if (LIVE_EVENT_ANCHOR == null) LIVE_EVENT_ANCHOR = data.created_at;
     EVENTS.push(asDesignEvent(data, LIVE_EVENT_ANCHOR));
     LIVE_BUS.notify();
@@ -978,15 +987,15 @@ function openEventStream(sid) {
   for (const t of SSE_EVENT_TYPES) es.addEventListener(t, handler);
 
   es.onerror = () => {
-    // SSE fires onerror both on transient connection drops AND on
-    // terminal 404s (session was deleted). EventSource doesn't expose
-    // the HTTP status, so we probe once via pumpEventsPoll — which
-    // now clears LIVE_SELECTED_SESSION on 404 and bails on transient
-    // errors without hammering. Keeps the UI responsive on a brief
-    // network blip without spamming the dead endpoint on deletion.
-    try { es.close(); } catch {}
-    if (LIVE_EVENT_STREAM === es) LIVE_EVENT_STREAM = null;
-    pumpEventsPoll();
+    // EventSource fires onerror on both transient drops (Cloudflare
+    // closing idle connections) and terminal errors (session deleted).
+    // readyState CONNECTING = browser is auto-reconnecting with
+    // Last-Event-ID — let it. Only fall back to polling when the
+    // connection is CLOSED (terminal).
+    if (es.readyState === EventSource.CLOSED) {
+      if (LIVE_EVENT_STREAM === es) LIVE_EVENT_STREAM = null;
+      pumpEventsPoll();
+    }
   };
 }
 
@@ -1162,6 +1171,8 @@ function liveSelectSession(id) {
   if (LIVE_SELECTED_SESSION === id) return;
   LIVE_SELECTED_SESSION = id;
   EVENTS.length = 0;
+  SEEN_EVENT_IDS = new Set();
+  LIVE_EVENT_ANCHOR = null;
   LIVE_BUS.notify();
   openEventStream(id);
 }

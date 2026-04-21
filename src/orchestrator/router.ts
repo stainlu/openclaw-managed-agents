@@ -355,18 +355,18 @@ export class AgentRouter {
     this.assertQuota(session, agent);
 
     if (session.status === "running") {
-      // Queue path: the current background task will pop this on completion.
       this.queue.enqueue(args.sessionId, {
         content: args.content,
         model: args.model,
         thinkingLevel: args.thinkingLevel,
         enqueuedAt: Date.now(),
       });
+      this.sessions.bumpTurns(args.sessionId);
       return { session, queued: true };
     }
 
-    // Idle path: start a new run.
     const runningSession = this.sessions.beginRun(args.sessionId) ?? session;
+    this.sessions.bumpTurns(args.sessionId);
     addContext({ sessionId: args.sessionId, agentId: agent.agentId });
 
     // Capture the current context (request-id + session/agent) so that the
@@ -426,6 +426,7 @@ export class AgentRouter {
     this.assertQuota(session, agent);
 
     const running = this.sessions.beginRun(args.sessionId) ?? session;
+    this.sessions.bumpTurns(args.sessionId);
     addContext({ sessionId: args.sessionId, agentId: agent.agentId });
 
     try {
