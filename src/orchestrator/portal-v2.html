@@ -2881,9 +2881,12 @@ function EnvironmentsView() {
     <div style={{ height: '100%', overflowY: 'auto' }}>
       <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
         <Eyebrow>v1 · environments</Eyebrow>
-        <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Environments</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Environments</h1>
+          <NewEnvironmentButton />
+        </div>
         <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
-          Container shapes: packages (pip / apt / npm) + networking policy. Composed with agents at session time.
+          Container shapes: packages (pip / apt / npm / cargo / gem / go) + networking policy. Composed with agents at session time.
         </p>
       </div>
       <div className="oc-table-scroll" style={{ padding: '0 40px' }}>
@@ -2975,7 +2978,10 @@ function VaultsView() {
             <Eyebrow>v1 · vaults</Eyebrow>
             <Mono s={11} c="var(--ink-3)">{VAULTS.length} bundles</Mono>
           </div>
-          <h2 style={{ marginTop: 6, fontSize: 22, fontWeight: 500, letterSpacing: '-0.028em' }}>Vaults</h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h2 style={{ marginTop: 6, fontSize: 22, fontWeight: 500, letterSpacing: '-0.028em' }}>Vaults</h2>
+            <NewVaultButton />
+          </div>
           <p style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-3)' }}>
             Per-end-user credential bundles. Types: <Mono s={11} c="var(--ink-2)">mcp_oauth</Mono> + <Mono s={11} c="var(--ink-2)">static_bearer</Mono>. OAuth tokens refresh in-kernel 60 s before expiry.
           </p>
@@ -3348,6 +3354,8 @@ function AppProvider({ children }) {
   const [cancelState, setCancelState] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createEnvOpen, setCreateEnvOpen] = useState(false);
+  const [createVaultOpen, setCreateVaultOpen] = useState(false);
   // agents is a LIVE view — just re-read the global AGENTS each
   // render. pushToast triggers re-renders; the pump's LIVE_BUS
   // subscription inside App() triggers the rest.
@@ -3634,6 +3642,77 @@ function AppProvider({ children }) {
     return { ok: true, agentId: data.agent_id };
   }
 
+  async function createEnvironment(cfg) {
+    const startedAt = Date.now();
+    const tid = pushToast({
+      method: 'POST', path: '/v1/environments',
+      label: cfg.name || 'environment', status: null, ms: null, pending: true,
+    });
+    const body = { name: cfg.name };
+    if (cfg.description) body.description = cfg.description;
+    if (cfg.networking === 'limited' && cfg.allowedHosts) {
+      body.networking = {
+        type: 'limited',
+        allowedHosts: cfg.allowedHosts.split(',').map(h => h.trim()).filter(Boolean),
+        allowMcpServers: !!cfg.allowMcpServers,
+        allowPackageManagers: !!cfg.allowPackageManagers,
+      };
+    } else {
+      body.networking = { type: 'unrestricted' };
+    }
+    const pkgs = {};
+    if (cfg.pip) pkgs.pip = cfg.pip.split(',').map(s => s.trim()).filter(Boolean);
+    if (cfg.npm) pkgs.npm = cfg.npm.split(',').map(s => s.trim()).filter(Boolean);
+    if (cfg.apt) pkgs.apt = cfg.apt.split(',').map(s => s.trim()).filter(Boolean);
+    if (Object.keys(pkgs).length > 0) body.packages = pkgs;
+    try {
+      const res = await fetch('/v1/environments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const ms = Date.now() - startedAt;
+      const data = await res.json();
+      setToasts(ts => ts.map(x => x.id === tid ? { ...x, status: res.status, ms, pending: false,
+        label: res.ok ? `${data.name || 'env'}` : (data.message || data.error || `HTTP ${res.status}`),
+      } : x));
+      if (!res.ok) return { ok: false, error: data.message || data.error || `HTTP ${res.status}` };
+      if (typeof pumpEnvironments === 'function') pumpEnvironments();
+      setCreateEnvOpen(false);
+      return { ok: true };
+    } catch (err) {
+      const ms = Date.now() - startedAt;
+      setToasts(ts => ts.map(x => x.id === tid ? { ...x, status: 0, ms, pending: false, label: err.message } : x));
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async function createVault(cfg) {
+    const startedAt = Date.now();
+    const tid = pushToast({
+      method: 'POST', path: '/v1/vaults',
+      label: cfg.name || 'vault', status: null, ms: null, pending: true,
+    });
+    try {
+      const res = await fetch('/v1/vaults', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: cfg.userId, name: cfg.name }),
+      });
+      const ms = Date.now() - startedAt;
+      const data = await res.json();
+      setToasts(ts => ts.map(x => x.id === tid ? { ...x, status: res.status, ms, pending: false,
+        label: res.ok ? `${data.name || 'vault'}` : (data.message || data.error || `HTTP ${res.status}`),
+      } : x));
+      if (!res.ok) return { ok: false, error: data.message || data.error || `HTTP ${res.status}` };
+      if (typeof pumpVaults === 'function') pumpVaults();
+      setCreateVaultOpen(false);
+      return { ok: true };
+    } catch (err) {
+      const ms = Date.now() - startedAt;
+      setToasts(ts => ts.map(x => x.id === tid ? { ...x, status: 0, ms, pending: false, label: err.message } : x));
+      return { ok: false, error: err.message };
+    }
+  }
+
   useEffect(() => {
     _onUserMessageEvent = (sid, _data) => {
       setSentMessages(m => m.filter(x => x.sid !== sid || x.status === 'failed'));
@@ -3648,6 +3727,8 @@ function AppProvider({ children }) {
     cancelState, cancelSession, restartSession,
     toasts, pushToast, dismissToast,
     createOpen, setCreateOpen,
+    createEnvOpen, setCreateEnvOpen, createEnvironment,
+    createVaultOpen, setCreateVaultOpen, createVault,
     agents, createAgent,
   };
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
@@ -4222,7 +4303,289 @@ function NewAgentButton() {
   return <Button variant="hard" size="md" icon="plus" onClick={() => ctx?.setCreateOpen(true)}>New agent</Button>;
 }
 
-Object.assign(window, { AppCtx, useApp, AppProvider, Toaster, CreateAgentModal, Composer, SentMessagesFeed, CancelledBanner, ApprovalRow, SessionHeaderActions, NewAgentButton });
+function NewEnvironmentButton() {
+  const ctx = useApp();
+  return <Button variant="hard" size="sm" icon="plus" onClick={() => ctx?.setCreateEnvOpen(true)}>New environment</Button>;
+}
+
+function NewVaultButton() {
+  const ctx = useApp();
+  return <Button variant="hard" size="sm" icon="plus" onClick={() => ctx?.setCreateVaultOpen(true)}>New vault</Button>;
+}
+
+function CreateEnvironmentModal() {
+  const ctx = useApp();
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [networking, setNetworking] = useState('unrestricted');
+  const [allowedHosts, setAllowedHosts] = useState('');
+  const [allowMcpServers, setAllowMcpServers] = useState(false);
+  const [allowPackageManagers, setAllowPackageManagers] = useState(false);
+  const [pip, setPip] = useState('');
+  const [npm, setNpm] = useState('');
+  const [apt, setApt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (!ctx?.createEnvOpen) return null;
+
+  const valid = name.trim().length >= 1 && (networking === 'unrestricted' || allowedHosts.trim().length > 0);
+
+  async function submit() {
+    if (!valid || submitting) return;
+    setSubmitting(true); setError(null);
+    const outcome = await ctx.createEnvironment({
+      name: name.trim(), description: description.trim(), networking,
+      allowedHosts, allowMcpServers, allowPackageManagers, pip, npm, apt,
+    });
+    setSubmitting(false);
+    if (outcome?.ok) {
+      setName(''); setDescription(''); setNetworking('unrestricted');
+      setAllowedHosts(''); setAllowMcpServers(false); setAllowPackageManagers(false);
+      setPip(''); setNpm(''); setApt(''); setError(null);
+    } else { setError(outcome?.error || 'request failed'); }
+  }
+
+  const inputStyle = {
+    marginTop: 6, width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--line-2)', borderRadius: 6,
+    padding: '9px 11px', fontSize: 14, fontFamily: 'var(--font-sans)',
+    background: 'var(--card)', color: 'var(--ink)', outline: 'none',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 300,
+      background: 'rgba(20,20,19,0.28)',
+      display: 'grid', placeItems: 'center', padding: 24,
+      animation: 'oc-fade-in 160ms var(--ease)',
+    }}
+      onClick={() => !submitting && ctx.setCreateEnvOpen(false)}
+    >
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 'min(560px, 100%)', maxHeight: '88vh', overflow: 'auto',
+        background: 'var(--card)', border: '1px solid var(--ink)',
+        borderRadius: 8, boxShadow: '0 20px 40px rgba(20,20,19,0.10)',
+      }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--ink)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            POST · /v1/environments
+          </span>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 500, letterSpacing: '-0.018em' }}>New environment</h3>
+          <button onClick={() => !submitting && ctx.setCreateEnvOpen(false)} style={{
+            all: 'unset', cursor: 'pointer', marginLeft: 'auto', color: 'var(--ink-3)', padding: 4, fontSize: 16,
+          }} aria-label="Close">×</button>
+        </div>
+
+        <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="py-stdlib" autoFocus style={inputStyle}
+              onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+              onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Description</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Python data-science stack with full internet access" style={inputStyle}
+              onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+              onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Networking</label>
+            <div style={{ display: 'flex', gap: 0, marginTop: 6, border: '1px solid var(--line-2)', borderRadius: 6, overflow: 'hidden', width: 'fit-content' }}>
+              {[
+                { v: 'unrestricted', l: 'unrestricted', d: 'Full internet access' },
+                { v: 'limited',      l: 'limited',      d: 'Restricted to allowedHosts' },
+              ].map(p => (
+                <button key={p.v} onClick={() => setNetworking(p.v)} title={p.d} style={{
+                  all: 'unset', cursor: 'pointer',
+                  padding: '6px 13px', fontSize: 12, fontFamily: 'var(--font-mono)',
+                  background: networking === p.v ? 'var(--ink)' : 'var(--card)',
+                  color: networking === p.v ? 'var(--paper)' : 'var(--ink-2)',
+                  borderRight: '1px solid var(--line-2)',
+                }}>{p.l}</button>
+              ))}
+            </div>
+            {networking === 'limited' && (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div>
+                  <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Allowed hosts (comma-separated)</label>
+                  <input value={allowedHosts} onChange={e => setAllowedHosts(e.target.value)} placeholder="api.openai.com, *.googleapis.com" style={inputStyle}
+                    onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+                    onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 16 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-2)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={allowMcpServers} onChange={e => setAllowMcpServers(e.target.checked)} />
+                    Allow MCP servers
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-2)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={allowPackageManagers} onChange={e => setAllowPackageManagers(e.target.checked)} />
+                    Allow package managers
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Packages (comma-separated)</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 6 }}>
+              <div>
+                <Mono s={10} c="var(--ink-3)">pip</Mono>
+                <input value={pip} onChange={e => setPip(e.target.value)} placeholder="requests, httpx" style={{ ...inputStyle, fontSize: 12 }}
+                  onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+                  onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+                />
+              </div>
+              <div>
+                <Mono s={10} c="var(--ink-3)">npm</Mono>
+                <input value={npm} onChange={e => setNpm(e.target.value)} placeholder="eslint, prettier" style={{ ...inputStyle, fontSize: 12 }}
+                  onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+                  onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+                />
+              </div>
+              <div>
+                <Mono s={10} c="var(--ink-3)">apt</Mono>
+                <input value={apt} onChange={e => setApt(e.target.value)} placeholder="curl, git" style={{ ...inputStyle, fontSize: 12 }}
+                  onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+                  onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ margin: '0 20px', padding: '10px 12px', border: '1px solid var(--danger)', background: 'color-mix(in srgb, var(--danger) 8%, var(--card))', borderRadius: 6, marginBottom: 14 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>POST failed</div>
+            <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink)', wordBreak: 'break-word' }}>{error}</div>
+          </div>
+        )}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--ink)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => ctx.setCreateEnvOpen(false)} disabled={submitting} style={{
+            all: 'unset', cursor: submitting ? 'not-allowed' : 'pointer',
+            padding: '7px 13px', fontSize: 13, border: '1px solid var(--line-2)', borderRadius: 6, color: 'var(--ink-2)',
+          }}>Cancel</button>
+          <button onClick={submit} disabled={!valid || submitting} style={{
+            all: 'unset', cursor: (!valid || submitting) ? 'not-allowed' : 'pointer',
+            padding: '7px 13px', fontSize: 13, fontWeight: 500,
+            background: valid ? 'var(--ink)' : 'var(--paper-3)',
+            color: valid ? 'var(--paper)' : 'var(--ink-4)', borderRadius: 6,
+          }}>{submitting ? 'Creating...' : 'Create environment'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateVaultModal() {
+  const ctx = useApp();
+  const [name, setName] = useState('');
+  const [userId, setUserId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (!ctx?.createVaultOpen) return null;
+
+  const valid = userId.trim().length >= 1;
+
+  async function submit() {
+    if (!valid || submitting) return;
+    setSubmitting(true); setError(null);
+    const outcome = await ctx.createVault({ name: name.trim(), userId: userId.trim() });
+    setSubmitting(false);
+    if (outcome?.ok) {
+      setName(''); setUserId(''); setError(null);
+    } else { setError(outcome?.error || 'request failed'); }
+  }
+
+  const inputStyle = {
+    marginTop: 6, width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--line-2)', borderRadius: 6,
+    padding: '9px 11px', fontSize: 14, fontFamily: 'var(--font-sans)',
+    background: 'var(--card)', color: 'var(--ink)', outline: 'none',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 300,
+      background: 'rgba(20,20,19,0.28)',
+      display: 'grid', placeItems: 'center', padding: 24,
+      animation: 'oc-fade-in 160ms var(--ease)',
+    }}
+      onClick={() => !submitting && ctx.setCreateVaultOpen(false)}
+    >
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 'min(480px, 100%)', maxHeight: '88vh', overflow: 'auto',
+        background: 'var(--card)', border: '1px solid var(--ink)',
+        borderRadius: 8, boxShadow: '0 20px 40px rgba(20,20,19,0.10)',
+      }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--ink)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            POST · /v1/vaults
+          </span>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 500, letterSpacing: '-0.018em' }}>New vault</h3>
+          <button onClick={() => !submitting && ctx.setCreateVaultOpen(false)} style={{
+            all: 'unset', cursor: 'pointer', marginLeft: 'auto', color: 'var(--ink-3)', padding: 4, fontSize: 16,
+          }} aria-label="Close">×</button>
+        </div>
+
+        <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>User ID</label>
+            <input value={userId} onChange={e => setUserId(e.target.value)} placeholder="eu_linh.p@acme.io" autoFocus style={inputStyle}
+              onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+              onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+            />
+            <span style={{ marginTop: 4, display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>
+              End-user identifier. One vault per user.
+            </span>
+          </div>
+
+          <div>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="linh · notion + slack" style={inputStyle}
+              onFocus={e => e.target.style.borderColor = 'var(--ink)'}
+              onBlur={e => e.target.style.borderColor = 'var(--line-2)'}
+            />
+            <span style={{ marginTop: 4, display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>
+              Display name. Credentials added after creation via POST /v1/vaults/:id/credentials.
+            </span>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ margin: '0 20px', padding: '10px 12px', border: '1px solid var(--danger)', background: 'color-mix(in srgb, var(--danger) 8%, var(--card))', borderRadius: 6, marginBottom: 14 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>POST failed</div>
+            <div style={{ marginTop: 4, fontSize: 13, color: 'var(--ink)', wordBreak: 'break-word' }}>{error}</div>
+          </div>
+        )}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--ink)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => ctx.setCreateVaultOpen(false)} disabled={submitting} style={{
+            all: 'unset', cursor: submitting ? 'not-allowed' : 'pointer',
+            padding: '7px 13px', fontSize: 13, border: '1px solid var(--line-2)', borderRadius: 6, color: 'var(--ink-2)',
+          }}>Cancel</button>
+          <button onClick={submit} disabled={!valid || submitting} style={{
+            all: 'unset', cursor: (!valid || submitting) ? 'not-allowed' : 'pointer',
+            padding: '7px 13px', fontSize: 13, fontWeight: 500,
+            background: valid ? 'var(--ink)' : 'var(--paper-3)',
+            color: valid ? 'var(--paper)' : 'var(--ink-4)', borderRadius: 6,
+          }}>{submitting ? 'Creating...' : 'Create vault'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { AppCtx, useApp, AppProvider, Toaster, CreateAgentModal, CreateEnvironmentModal, CreateVaultModal, Composer, SentMessagesFeed, CancelledBanner, ApprovalRow, SessionHeaderActions, NewAgentButton, NewEnvironmentButton, NewVaultButton });
 
 
 // ===== app =====
@@ -4429,6 +4792,8 @@ root.render(
     <App />
     <Toaster />
     <CreateAgentModal />
+    <CreateEnvironmentModal />
+    <CreateVaultModal />
   </AppProvider>
 );
 </script>
