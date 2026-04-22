@@ -786,6 +786,7 @@ let LIVE_SELECTED_SESSION = null;
 let LIVE_EVENT_STREAM = null; // EventSource or null
 let LIVE_EVENT_ANCHOR = null;
 let SEEN_EVENT_IDS = new Set();
+let _onUserMessageEvent = null;
 
 async function pumpAgents() {
   if (AUTH.required && !AUTH.token) return;
@@ -923,6 +924,9 @@ async function pumpEventsPoll() {
       if (e.id) SEEN_EVENT_IDS.add(e.id);
       EVENTS.push(e);
     }
+    if (_onUserMessageEvent && list.some(e => e.type === 'user.message')) {
+      _onUserMessageEvent(LIVE_SELECTED_SESSION, null);
+    }
     LIVE_BUS.notify();
   } catch {}
 }
@@ -997,6 +1001,7 @@ function openEventStream(sid) {
     }
     if (LIVE_EVENT_ANCHOR == null) LIVE_EVENT_ANCHOR = data.created_at;
     EVENTS.push(asDesignEvent(data, LIVE_EVENT_ANCHOR));
+    if (data.type === 'user.message' && _onUserMessageEvent) _onUserMessageEvent(sid, data);
     LIVE_BUS.notify();
   };
   for (const t of SSE_EVENT_TYPES) es.addEventListener(t, handler);
@@ -2327,8 +2332,8 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
           </div>
           <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto' }}>
             {events.map((e, i) => <EventRow key={e.id || e.t + ':' + i} e={e} session={s} />)}
-            {showStream && <StreamingRow />}
             <SentMessagesFeed sid={s.id} />
+            {showStream && <StreamingRow />}
             <CancelledBanner />
             {effectiveStatus === 'quota' && (
               <div style={{ padding: '24px', borderBottom: '1px solid var(--line)' }}>
@@ -3401,16 +3406,13 @@ function AppProvider({ children }) {
         status: res.status, ms, pending: false,
         label: ok ? x.label : failLabel,
       } : x));
-      // On success: the real user.message event will land in EVENTS via
-      // the SSE stream (or the poll fallback). Drop the "sending" entry
-      // after a brief grace — the event stream will render the real
-      // bubble. On failure: keep the failed entry on screen so the user
-      // can see what broke; they can dismiss it by reloading or sending
-      // again.
+      // On success: the real user.message event will arrive via SSE (or
+      // poll fallback) and _onUserMessageEvent will clear this entry.
+      // 30s safety fallback prevents zombie bubbles if the event is lost.
       if (ok) {
         setTimeout(() => {
           setSentMessages(m => m.filter(x => x.id !== id));
-        }, 1500);
+        }, 30_000);
       }
     } catch (err) {
       const ms = Date.now() - startedAt;
@@ -3632,6 +3634,13 @@ function AppProvider({ children }) {
     return { ok: true, agentId: data.agent_id };
   }
 
+  useEffect(() => {
+    _onUserMessageEvent = (sid, _data) => {
+      setSentMessages(m => m.filter(x => x.sid !== sid || x.status === 'failed'));
+    };
+    return () => { _onUserMessageEvent = null; };
+  }, []);
+
   const value = {
     sentMessages, sendMessage,
     approval, resolveApproval,
@@ -3704,7 +3713,7 @@ function Toaster() {
 function CreateAgentModal() {
   const ctx = useApp();
   const [name, setName] = useState('');
-  const [model, setModel] = useState('moonshot/kimi-k2.5');
+  const [model, setModel] = useState('moonshot/kimi-k2.6');
   const [instructions, setInstructions] = useState('');
   // Default selection picks the two most-used openclaw built-ins for a
   // fresh agent template: `read` (file read) + `web_search`. Users can
@@ -3829,7 +3838,7 @@ function CreateAgentModal() {
                   model per session via POST /v1/sessions/:id/events { model }
                   without re-creating the agent. */}
               {[
-                'moonshot/kimi-k2.5',
+                'moonshot/kimi-k2.6',
                 'anthropic/claude-sonnet-4-6',
                 'openai/gpt-4.1',
                 'deepseek/deepseek-chat',
