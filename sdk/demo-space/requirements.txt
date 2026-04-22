@@ -1,0 +1,1 @@
+openclaw-managed-agents @ git+https://github.com/stainlu/openclaw-managed-agents.git@main#subdirectory=sdk/python
