@@ -625,20 +625,14 @@ Covering `router.ts` and `pool.ts` in unit tests is harder because both take con
 
 ## Sandbox model
 
-The isolation boundary is **per-agent, not per-session**. Each agent gets its own Docker container with process, network, and resource isolation. But all sessions for the same agent share a single `/workspace` bind mount at `<hostStateRoot>/<agentId>/`.
+The isolation boundary is **per-session**. Each session gets its own Docker container AND its own workspace directory at `<hostStateRoot>/<agentId>/sessions/<sessionId>/`, bind-mounted as `/workspace` inside the container. Sessions on the same agent are fully isolated — they cannot read or write each other's files.
 
 **What's isolated:**
-- **Between agents:** full Docker-level isolation. Different containers, different bind mounts, different networks (when using `networking: limited`). Agent A cannot access Agent B's filesystem, processes, or network.
+- **Between agents:** full Docker-level isolation. Different containers, different bind mounts, different networks (when using `networking: limited`).
+- **Between sessions on the same agent:** separate workspace directories. Session A and Session B on the same agent have independent `/workspace` mounts. Concurrent sessions on the same agent run in parallel (different Pi workspace locks).
 - **From the host:** containers run as non-root (`openclaw` user, UID from `Dockerfile.runtime`). No ports published to host. Reachable only by container name over `openclaw-net`.
 
-**What's shared:**
-- **Between sessions on the same agent:** the workspace. Session A and Session B on the same agent read/write the same `/workspace`. Pi's `SessionManager` takes an exclusive SQLite lock on the workspace directory, so only one container per agent runs at a time — concurrent sessions on the same agent are serialized, not parallel.
-
-This is inherited from Pi's single-user design. Pi organizes all sessions under one agent directory (`<agentId>/agents/main/sessions/`). The workspace mount is per-agent because Pi assumes one user per agent workspace. Our orchestrator creates multi-user semantics for different agents but not for multiple sessions of the same agent.
-
-**Why this is acceptable today:** our deployment model is one orchestrator per tenant (strategy §"Deployment model"). All sessions within one orchestrator belong to the same trust domain — same customer, same API key. Session A reading Session B's files is not a security boundary violation.
-
-**When it won't be enough:** if a future deployment needs multi-user isolation within one orchestrator (different end-users on the same agent, different trust levels), per-session workspace isolation is required. This would mean separate bind mounts per session and a shim layer to bridge Pi's single-directory assumption. Tracked as a future architecture item.
+**Warm pool and workspace rename:** warm containers are pre-spawned with a temporary workspace at `<hostStateRoot>/<agentId>/sessions/__warm_<key>__/`. When a session claims a warm container, the orchestrator renames the host directory to `<hostStateRoot>/<agentId>/sessions/<sessionId>/`. The bind mount follows the inode — the container continues to see `/workspace` without interruption.
 
 ## Swapping providers
 

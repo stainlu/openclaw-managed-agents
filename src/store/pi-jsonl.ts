@@ -78,7 +78,7 @@ export class PiJsonlEventReader {
   listBySession(agentId: string, sessionId: string): Event[] {
     const piSessionId = this.resolvePiSessionId(agentId, sessionId);
     if (!piSessionId) return [];
-    const filePath = this.jsonlPath(agentId, piSessionId);
+    const filePath = this.jsonlPath(agentId, sessionId, piSessionId);
     let raw: string;
     try {
       raw = readFileSync(filePath, "utf8");
@@ -142,7 +142,7 @@ export class PiJsonlEventReader {
     const piSessionId = this.resolvePiSessionId(agentId, sessionId);
     if (!piSessionId) return undefined;
     try {
-      const s = statSync(this.jsonlPath(agentId, piSessionId));
+      const s = statSync(this.jsonlPath(agentId, sessionId, piSessionId));
       return { bytes: s.size };
     } catch {
       return undefined;
@@ -154,7 +154,7 @@ export class PiJsonlEventReader {
     if (!piSessionId) return;
 
     try {
-      unlinkSync(this.jsonlPath(agentId, piSessionId));
+      unlinkSync(this.jsonlPath(agentId, sessionId, piSessionId));
     } catch {
       // Already gone — fine.
     }
@@ -162,7 +162,7 @@ export class PiJsonlEventReader {
     // Remove the sessions.json entry so a future session with the same id
     // doesn't resolve back to the now-missing file.
     const key = canonicalKey(sessionId);
-    const sessionsJsonPath = this.sessionsJsonPath(agentId);
+    const sessionsJsonPath = this.sessionsJsonPath(agentId, sessionId);
     try {
       const raw = readFileSync(sessionsJsonPath, "utf8");
       const parsed = JSON.parse(raw) as SessionsJson;
@@ -268,7 +268,7 @@ export class PiJsonlEventReader {
   }
 
   private resolvePiSessionId(agentId: string, sessionId: string): string | undefined {
-    const sessionsJsonPath = this.sessionsJsonPath(agentId);
+    const sessionsJsonPath = this.sessionsJsonPath(agentId, sessionId);
     let raw: string;
     try {
       raw = readFileSync(sessionsJsonPath, "utf8");
@@ -288,16 +288,16 @@ export class PiJsonlEventReader {
     return undefined;
   }
 
-  private sessionsDir(agentId: string): string {
-    return join(this.stateRoot, agentId, "agents", "main", "sessions");
+  private sessionsDir(agentId: string, sessionId: string): string {
+    return join(this.stateRoot, agentId, "sessions", sessionId, "agents", "main", "sessions");
   }
 
-  private sessionsJsonPath(agentId: string): string {
-    return join(this.sessionsDir(agentId), "sessions.json");
+  private sessionsJsonPath(agentId: string, sessionId: string): string {
+    return join(this.sessionsDir(agentId, sessionId), "sessions.json");
   }
 
-  private jsonlPath(agentId: string, piSessionId: string): string {
-    return join(this.sessionsDir(agentId), `${piSessionId}.jsonl`);
+  private jsonlPath(agentId: string, sessionId: string, piSessionId: string): string {
+    return join(this.sessionsDir(agentId, sessionId), `${piSessionId}.jsonl`);
   }
 }
 

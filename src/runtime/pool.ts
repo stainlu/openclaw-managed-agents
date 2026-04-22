@@ -118,6 +118,14 @@ export type PoolConfig = {
    */
   onContainerReleased?: (sessionId: string) => void;
   /**
+   * Invoked when a warm container is claimed by a session. The pool
+   * passes the warm mount's host path and the session ID so the caller
+   * can rename the workspace directory from its warm-key location to
+   * the session's permanent location. The bind mount follows the inode
+   * — the container doesn't notice.
+   */
+  renameWorkspaceOnClaim?: (warmHostPath: string, sessionId: string) => void;
+  /**
    * Config for `networking: limited` sessions. When this is unset,
    * limited networking is effectively disabled (schema still accepts
    * it but spawn will throw). In practice, index.ts always wires this
@@ -325,14 +333,11 @@ export class SessionContainerPool {
     }
 
     // If any warm spawn is inflight for this agent, wait for it BEFORE
-    // we proceed — whether we'd claim it or do our own fresh spawn. The
-    // agent's workspace bind mount is shared across all containers for
-    // that agent (including the warm/__warm__ and our per-session ones),
-    // and both entrypoints write the same /workspace/openclaw.json. Two
-    // writers racing produces a corrupt concatenated file that trips
-    // apply-provider-config's JSON.parse. The pendingByAgent map makes
-    // warmForAgent idempotent, so this wait is cheap: it resolves
-    // instantly if there's no inflight spawn.
+    // we proceed — whether we'd claim it or do our own fresh spawn.
+    // Each session gets its own workspace dir, but a warm spawn and a
+    // fresh spawn for the same agent could race on directory creation.
+    // The pendingByAgent map makes warmForAgent idempotent, so this
+    // wait is cheap: it resolves instantly if there's no inflight spawn.
     if (args.agentId) {
       const inflight = this.pendingByAgent.get(args.agentId);
       if (inflight) {
@@ -358,6 +363,10 @@ export class SessionContainerPool {
       if (warmEntry) {
         this.warm.delete(args.agentId);
         poolWarmContainers.set(this.warm.size);
+        const warmHostPath = warmEntry.spawnOptions.mounts[0]?.hostPath;
+        if (warmHostPath && this.cfg.renameWorkspaceOnClaim) {
+          this.cfg.renameWorkspaceOnClaim(warmHostPath, args.sessionId);
+        }
         const now = Date.now();
         this.active.set(args.sessionId, {
           sessionId: args.sessionId,

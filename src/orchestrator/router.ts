@@ -288,7 +288,8 @@ export class AgentRouter {
     if (agent.callableAgents.length > 0 || agent.maxSubagentDepth > 0) {
       return;
     }
-    const spawnOptions = this.buildSpawnOptions("__warm__", agent, {
+    const warmKey = `__warm_${crypto.randomUUID().slice(0, 8)}__`;
+    const spawnOptions = this.buildSpawnOptions(warmKey, agent, {
       remainingSubagentDepth: 0,
       environmentId: null,
     } as Session);
@@ -675,13 +676,14 @@ export class AgentRouter {
    */
   async listFiles(
     agentId: string,
+    sessionId: string,
     relPath = "",
   ): Promise<Array<{ name: string; path: string; type: "file" | "dir"; size: number; mtime: number }>> {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
     }
-    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, relPath);
+    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, sessionId, relPath);
     const { readdir, stat } = await import("node:fs/promises");
     let entries: import("node:fs").Dirent[];
     try {
@@ -719,12 +721,12 @@ export class AgentRouter {
    * with the first N bytes — callers that need full content should GET
    * with the `?raw=true` query that reads up to 50 MiB. Binary-safe.
    */
-  async readFile(agentId: string, relPath: string, maxBytes = 10 * 1024 * 1024): Promise<Buffer> {
+  async readFile(agentId: string, sessionId: string, relPath: string, maxBytes = 10 * 1024 * 1024): Promise<Buffer> {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
     }
-    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, relPath);
+    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, sessionId, relPath);
     const { readFile, stat } = await import("node:fs/promises");
     try {
       const st = await stat(fullPath);
@@ -751,12 +753,12 @@ export class AgentRouter {
    * is shared with whatever the agent is doing, so coordinate externally
    * if you're writing into an active workspace.
    */
-  async writeFile(agentId: string, relPath: string, content: Buffer): Promise<{ size: number; path: string }> {
+  async writeFile(agentId: string, sessionId: string, relPath: string, content: Buffer): Promise<{ size: number; path: string }> {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
     }
-    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, relPath);
+    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, sessionId, relPath);
     if (!relNormalized) {
       throw new RouterError("invalid_path", `refusing to write to workspace root`);
     }
@@ -768,12 +770,12 @@ export class AgentRouter {
   }
 
   /** Delete a file (not a directory) from an agent's workspace. */
-  async deleteFile(agentId: string, relPath: string): Promise<void> {
+  async deleteFile(agentId: string, sessionId: string, relPath: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new RouterError("agent_not_found", `agent ${agentId} does not exist`);
     }
-    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, relPath);
+    const { fullPath, relNormalized } = this.resolveWorkspacePath(agentId, sessionId, relPath);
     if (!relNormalized) {
       throw new RouterError("invalid_path", `refusing to delete workspace root`);
     }
@@ -794,6 +796,7 @@ export class AgentRouter {
 
   private resolveWorkspacePath(
     agentId: string,
+    sessionId: string,
     relPath: string,
   ): { fullPath: string; relNormalized: string } {
     // Normalize + enforce confinement in one place so every file API entry
@@ -813,8 +816,7 @@ export class AgentRouter {
     }
     const relNormalized = cleaned.join("/");
     const workspaceRoot = this.events.stateRoot;
-    // join() ONLY on the in-process mount to get the concrete FS path.
-    const agentRoot = `${workspaceRoot}/${agentId}`;
+    const agentRoot = `${workspaceRoot}/${agentId}/sessions/${sessionId}`;
     const fullPath = relNormalized ? `${agentRoot}/${relNormalized}` : agentRoot;
     // Final belt-and-suspenders check — a realpath() resolve would follow
     // symlinks and verify confinement, but that requires the path to
@@ -1097,11 +1099,11 @@ export class AgentRouter {
     session: Session,
   ): SpawnOptions {
     const hostMount: Mount = {
-      hostPath: `${this.cfg.hostStateRoot}/${agent.agentId}`,
+      hostPath: `${this.cfg.hostStateRoot}/${agent.agentId}/sessions/${sessionId}`,
       containerPath: "/workspace",
     };
 
-    const inProcessWorkspace = join(this.events.stateRoot, agent.agentId);
+    const inProcessWorkspace = join(this.events.stateRoot, agent.agentId, "sessions", sessionId);
     mkdirSync(inProcessWorkspace, { recursive: true, mode: 0o755 });
     try {
       chownSync(inProcessWorkspace, AGENT_CONTAINER_UID, AGENT_CONTAINER_UID);

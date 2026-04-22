@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, readFileSync, renameSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getLogger, rootLogger } from "./log.js";
 import {
@@ -299,6 +299,19 @@ async function main(): Promise<void> {
     },
     onContainerReleased: (sessionId) => {
       store.sessionContainers.delete(sessionId);
+    },
+    renameWorkspaceOnClaim: (warmHostPath, sessionId) => {
+      const session = store.sessions.get(sessionId);
+      if (!session) return;
+      const targetPath = join(stateRoot, session.agentId, "sessions", sessionId);
+      if (warmHostPath === targetPath) return;
+      try {
+        mkdirSync(dirname(targetPath), { recursive: true });
+        renameSync(warmHostPath, targetPath);
+      } catch (err) {
+        log.warn({ err, session_id: sessionId, from: warmHostPath, to: targetPath },
+          "warm workspace rename failed — session will still work but path mismatch may occur");
+      }
     },
     limitedNetworking,
   });

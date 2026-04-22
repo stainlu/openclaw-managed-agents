@@ -24,7 +24,7 @@ function makeFixture(lines: Array<Record<string, unknown>> | undefined): Fixture
   const agentId = "agt_test";
   const sessionId = "ses_test";
   const piSessionId = "pi-0000";
-  const sessionsDir = join(root, agentId, "agents", "main", "sessions");
+  const sessionsDir = join(root, agentId, "sessions", sessionId, "agents", "main", "sessions");
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(
     join(sessionsDir, "sessions.json"),
@@ -300,7 +300,7 @@ describe("PiJsonlEventReader", () => {
   it("skips malformed JSONL lines instead of failing the whole read", () => {
     const f = makeFixture(undefined);
     fixtures.push(f);
-    const sessionsDir = join(f.root, f.agentId, "agents", "main", "sessions");
+    const sessionsDir = join(f.root, f.agentId, "sessions", f.sessionId, "agents", "main", "sessions");
     const mixed =
       JSON.stringify({
         type: "message",
@@ -341,7 +341,7 @@ describe("PiJsonlEventReader", () => {
     expect(reader.listBySession(f.agentId, f.sessionId)).toHaveLength(0);
     const sessionsJson = JSON.parse(
       readFileSync(
-        join(f.root, f.agentId, "agents", "main", "sessions", "sessions.json"),
+        join(f.root, f.agentId, "sessions", f.sessionId, "agents", "main", "sessions", "sessions.json"),
         "utf8",
       ) as string,
     );

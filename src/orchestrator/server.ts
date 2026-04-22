@@ -588,9 +588,11 @@ export function buildApp(deps: ServerDeps): Hono {
 
   app.get("/v1/agents/:agentId/files", async (c) => {
     const agentId = c.req.param("agentId");
+    const sessionId = c.req.query("session_id");
+    if (!sessionId) return c.json({ error: "missing_session_id", message: "session_id query param required" }, 400);
     const path = c.req.query("path") ?? "";
     try {
-      const entries = await deps.router.listFiles(agentId, path);
+      const entries = await deps.router.listFiles(agentId, sessionId, path);
       return c.json({ agent_id: agentId, path, entries });
     } catch (err) {
       return handleRouterError(err, c);
@@ -599,14 +601,13 @@ export function buildApp(deps: ServerDeps): Hono {
 
   app.get("/v1/agents/:agentId/files/*", async (c) => {
     const agentId = c.req.param("agentId");
-    // Hono captures "*" into param "0" for legacy matchers and into the
-    // rest via req.path slicing. Build the relative path from the
-    // portion after `/files/`.
+    const sessionId = c.req.query("session_id");
+    if (!sessionId) return c.json({ error: "missing_session_id", message: "session_id query param required" }, 400);
     const url = new URL(c.req.url);
     const prefix = `/v1/agents/${agentId}/files/`;
     const relPath = decodeURIComponent(url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "");
     try {
-      const buf = await deps.router.readFile(agentId, relPath);
+      const buf = await deps.router.readFile(agentId, sessionId, relPath);
       return new Response(new Uint8Array(buf), {
         status: 200,
         headers: { "Content-Type": "application/octet-stream", "Content-Length": String(buf.length) },
@@ -618,13 +619,15 @@ export function buildApp(deps: ServerDeps): Hono {
 
   app.put("/v1/agents/:agentId/files/*", async (c) => {
     const agentId = c.req.param("agentId");
+    const sessionId = c.req.query("session_id");
+    if (!sessionId) return c.json({ error: "missing_session_id", message: "session_id query param required" }, 400);
     const url = new URL(c.req.url);
     const prefix = `/v1/agents/${agentId}/files/`;
     const relPath = decodeURIComponent(url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "");
     const body = await c.req.arrayBuffer();
     const buf = Buffer.from(body);
     try {
-      const result = await deps.router.writeFile(agentId, relPath, buf);
+      const result = await deps.router.writeFile(agentId, sessionId, relPath, buf);
       writeAudit(deps.audit, c, {
         action: "agent.file.write",
         target: agentId,
@@ -645,11 +648,13 @@ export function buildApp(deps: ServerDeps): Hono {
 
   app.delete("/v1/agents/:agentId/files/*", async (c) => {
     const agentId = c.req.param("agentId");
+    const sessionId = c.req.query("session_id");
+    if (!sessionId) return c.json({ error: "missing_session_id", message: "session_id query param required" }, 400);
     const url = new URL(c.req.url);
     const prefix = `/v1/agents/${agentId}/files/`;
     const relPath = decodeURIComponent(url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "");
     try {
-      await deps.router.deleteFile(agentId, relPath);
+      await deps.router.deleteFile(agentId, sessionId, relPath);
       writeAudit(deps.audit, c, {
         action: "agent.file.delete",
         target: agentId,
