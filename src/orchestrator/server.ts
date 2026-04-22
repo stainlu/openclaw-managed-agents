@@ -221,6 +221,7 @@ function environmentResponse(env: EnvironmentConfig) {
   return {
     environment_id: env.environmentId,
     name: env.name,
+    description: env.description,
     packages: env.packages,
     networking: env.networking,
     created_at: env.createdAt,

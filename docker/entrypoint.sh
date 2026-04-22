@@ -301,24 +301,43 @@ if [ -n "${OPENCLAW_CONFIRM_TOOLS:-}" ] && [ -d /opt/openclaw-plugins/confirm-to
 fi
 
 # Item 15: install environment packages if OPENCLAW_PACKAGES_JSON is set.
-# The JSON has optional keys: pip, apt, npm (each an array of package specs).
-# Runs BEFORE the gateway boots so packages are available when the agent starts.
+# The JSON has optional keys: apt, pip, npm, cargo, gem, go (each an array of
+# package specs). Runs BEFORE the gateway boots so packages are available when
+# the agent starts. Managers run in alphabetical order (apt → cargo → gem →
+# go → npm → pip) matching CMA's documented behaviour.
 if [ -n "${OPENCLAW_PACKAGES_JSON:-}" ]; then
   echo "[entrypoint] installing environment packages: ${OPENCLAW_PACKAGES_JSON}"
   APT_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.apt // [] | join(" ")')
-  PIP_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.pip // [] | join(" ")')
+  CARGO_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.cargo // [] | join(" ")')
+  GEM_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.gem // [] | join(" ")')
+  GO_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.go // [] | join(" ")')
   NPM_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.npm // [] | join(" ")')
+  PIP_PKGS=$(echo "${OPENCLAW_PACKAGES_JSON}" | jq -r '.pip // [] | join(" ")')
   if [ -n "${APT_PKGS}" ] && command -v apt-get >/dev/null 2>&1; then
     echo "[entrypoint] apt-get install: ${APT_PKGS}"
     (apt-get update -qq && apt-get install -y -qq ${APT_PKGS}) 2>&1 | tail -5 || echo "[entrypoint] WARNING: apt-get install failed (non-fatal)"
   elif [ -n "${APT_PKGS}" ]; then
     echo "[entrypoint] WARNING: apt-get not available, skipping: ${APT_PKGS}"
   fi
-  if [ -n "${PIP_PKGS}" ] && command -v pip >/dev/null 2>&1; then
-    echo "[entrypoint] pip install: ${PIP_PKGS}"
-    pip install --quiet ${PIP_PKGS} 2>&1 | tail -5 || echo "[entrypoint] WARNING: pip install failed (non-fatal)"
-  elif [ -n "${PIP_PKGS}" ]; then
-    echo "[entrypoint] WARNING: pip not available, skipping: ${PIP_PKGS}"
+  if [ -n "${CARGO_PKGS}" ] && command -v cargo >/dev/null 2>&1; then
+    echo "[entrypoint] cargo install: ${CARGO_PKGS}"
+    cargo install ${CARGO_PKGS} 2>&1 | tail -5 || echo "[entrypoint] WARNING: cargo install failed (non-fatal)"
+  elif [ -n "${CARGO_PKGS}" ]; then
+    echo "[entrypoint] WARNING: cargo not available, skipping: ${CARGO_PKGS}"
+  fi
+  if [ -n "${GEM_PKGS}" ] && command -v gem >/dev/null 2>&1; then
+    echo "[entrypoint] gem install: ${GEM_PKGS}"
+    gem install --no-document ${GEM_PKGS} 2>&1 | tail -5 || echo "[entrypoint] WARNING: gem install failed (non-fatal)"
+  elif [ -n "${GEM_PKGS}" ]; then
+    echo "[entrypoint] WARNING: gem not available, skipping: ${GEM_PKGS}"
+  fi
+  if [ -n "${GO_PKGS}" ] && command -v go >/dev/null 2>&1; then
+    echo "[entrypoint] go install: ${GO_PKGS}"
+    for pkg in ${GO_PKGS}; do
+      go install "${pkg}" 2>&1 | tail -5 || echo "[entrypoint] WARNING: go install ${pkg} failed (non-fatal)"
+    done
+  elif [ -n "${GO_PKGS}" ]; then
+    echo "[entrypoint] WARNING: go not available, skipping: ${GO_PKGS}"
   fi
   if [ -n "${NPM_PKGS}" ] && command -v npm >/dev/null 2>&1; then
     echo "[entrypoint] npm install: ${NPM_PKGS}"
@@ -327,6 +346,12 @@ if [ -n "${OPENCLAW_PACKAGES_JSON:-}" ]; then
     export NODE_PATH="/tmp/openclaw-env-packages/node_modules:${NODE_PATH:-}"
   elif [ -n "${NPM_PKGS}" ]; then
     echo "[entrypoint] WARNING: npm not available, skipping: ${NPM_PKGS}"
+  fi
+  if [ -n "${PIP_PKGS}" ] && command -v pip >/dev/null 2>&1; then
+    echo "[entrypoint] pip install: ${PIP_PKGS}"
+    pip install --quiet ${PIP_PKGS} 2>&1 | tail -5 || echo "[entrypoint] WARNING: pip install failed (non-fatal)"
+  elif [ -n "${PIP_PKGS}" ]; then
+    echo "[entrypoint] WARNING: pip not available, skipping: ${PIP_PKGS}"
   fi
   echo "[entrypoint] environment packages installed"
 fi

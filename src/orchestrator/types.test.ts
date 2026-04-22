@@ -16,6 +16,8 @@ describe("NetworkingSchema", () => {
     expect(parsed).toEqual({
       type: "limited",
       allowedHosts: ["api.openai.com"],
+      allowMcpServers: false,
+      allowPackageManagers: false,
     });
   });
 

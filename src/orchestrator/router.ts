@@ -1083,6 +1083,8 @@ export class AgentRouter {
       return {
         type: "limited",
         allowedHosts: env.networking.allowedHosts,
+        allowMcpServers: env.networking.allowMcpServers,
+        allowPackageManagers: env.networking.allowPackageManagers,
       };
     }
     return undefined;

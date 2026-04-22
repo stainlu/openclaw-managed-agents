@@ -44,12 +44,14 @@ async function main() {
   console.log("\n== environments ==");
   const envDefault = await api("POST", "/v1/environments", {
     name: "default",
+    description: "Unrestricted networking, no pre-installed packages. The baseline environment for general-purpose agents.",
     networking: { type: "unrestricted" },
   });
   console.log("  ✓", envDefault.environment_id, envDefault.name);
 
   const envPy = await api("POST", "/v1/environments", {
     name: "py-stdlib",
+    description: "Python data-science stack (requests, httpx, beautifulsoup4) with full internet access.",
     packages: { pip: ["requests", "httpx", "beautifulsoup4"] },
     networking: { type: "unrestricted" },
   });
@@ -57,10 +59,15 @@ async function main() {
 
   const envLocked = await api("POST", "/v1/environments", {
     name: "locked-anthropic",
+    description: "Restricted egress — only api.anthropic.com reachable. Package manager access enabled for pip installs.",
     packages: { pip: ["anthropic"] },
-    networking: { type: "limited", allowedHosts: ["api.anthropic.com"] },
+    networking: {
+      type: "limited",
+      allowedHosts: ["api.anthropic.com"],
+      allowPackageManagers: true,
+    },
   });
-  console.log("  ✓", envLocked.environment_id, envLocked.name, "(limited · api.anthropic.com)");
+  console.log("  ✓", envLocked.environment_id, envLocked.name, "(limited · api.anthropic.com + package managers)");
 
   // --- Vaults ---------------------------------------------------------
   // Each vault is created with POST /v1/vaults, then credentials are

@@ -62,6 +62,7 @@ type AgentRow = {
 type EnvironmentRow = {
   environment_id: string;
   name: string;
+  description: string | null;
   packages_json: string | null;
   networking_json: string;
   created_at: number;
@@ -124,6 +125,7 @@ function rowToEnvironment(r: EnvironmentRow): EnvironmentConfig {
   return {
     environmentId: r.environment_id,
     name: r.name,
+    description: r.description ?? "",
     packages: r.packages_json ? (JSON.parse(r.packages_json) as Packages) : null,
     networking: JSON.parse(r.networking_json) as Networking,
     createdAt: r.created_at,
@@ -208,6 +210,7 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 CREATE TABLE IF NOT EXISTS environments (
   environment_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
   packages_json TEXT,
   networking_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
@@ -555,9 +558,9 @@ class SqliteEnvironmentStore implements EnvironmentStore {
   constructor(private readonly db: Database.Database) {
     this.insertStmt = db.prepare(
       `INSERT INTO environments (
-        environment_id, name, packages_json, networking_json, created_at
+        environment_id, name, description, packages_json, networking_json, created_at
        ) VALUES (
-        @environment_id, @name, @packages_json, @networking_json, @created_at
+        @environment_id, @name, @description, @packages_json, @networking_json, @created_at
        )`,
     );
     this.getStmt = db.prepare(`SELECT * FROM environments WHERE environment_id = ?`);
@@ -569,6 +572,7 @@ class SqliteEnvironmentStore implements EnvironmentStore {
     const env: EnvironmentConfig = {
       environmentId: `env_${nanoid()}`,
       name: req.name,
+      description: req.description ?? "",
       packages: req.packages ?? null,
       networking: req.networking,
       createdAt: Date.now(),
@@ -576,6 +580,7 @@ class SqliteEnvironmentStore implements EnvironmentStore {
     this.insertStmt.run({
       environment_id: env.environmentId,
       name: env.name,
+      description: env.description,
       packages_json: env.packages ? JSON.stringify(env.packages) : null,
       networking_json: JSON.stringify(env.networking),
       created_at: env.createdAt,
@@ -1611,6 +1616,15 @@ export class SqliteStore implements Store {
     }
     if (scCols.length > 0 && !scCols.some((c) => c.name === "pool_source")) {
       this.db.exec("ALTER TABLE session_containers ADD COLUMN pool_source TEXT");
+    }
+
+    const envCols = this.db.pragma("table_info(environments)") as Array<{
+      name: string;
+    }>;
+    if (envCols.length > 0 && !envCols.some((c) => c.name === "description")) {
+      this.db.exec(
+        "ALTER TABLE environments ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+      );
     }
 
     this.agents = new SqliteAgentStore(this.db);

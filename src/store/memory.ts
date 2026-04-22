@@ -139,6 +139,7 @@ class InMemoryEnvironmentStore implements EnvironmentStore {
     const env: EnvironmentConfig = {
       environmentId: `env_${nanoid()}`,
       name: req.name,
+      description: req.description ?? "",
       packages: req.packages ?? null,
       networking: req.networking,
       createdAt: Date.now(),

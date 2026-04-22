@@ -191,6 +191,9 @@ export const PackagesSchema = z
     pip: z.array(z.string()).optional(),
     apt: z.array(z.string()).optional(),
     npm: z.array(z.string()).optional(),
+    cargo: z.array(z.string()).optional(),
+    gem: z.array(z.string()).optional(),
+    go: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -241,11 +244,14 @@ export const NetworkingSchema = z.discriminatedUnion("type", [
       )
       .min(1, "allowedHosts must contain at least one entry")
       .max(256, "allowedHosts supports at most 256 entries"),
+    allowMcpServers: z.boolean().default(false),
+    allowPackageManagers: z.boolean().default(false),
   }),
 ]);
 
 export const CreateEnvironmentRequestSchema = z.object({
   name: z.string().min(1, "name is required"),
+  description: z.string().max(500).default(""),
   packages: PackagesSchema.optional(),
   networking: NetworkingSchema.default({ type: "unrestricted" }),
 });
@@ -260,6 +266,7 @@ export type Networking = z.infer<typeof NetworkingSchema>;
 export type EnvironmentConfig = {
   environmentId: string;
   name: string;
+  description: string;
   packages: Packages | null;
   networking: Networking;
   createdAt: number;

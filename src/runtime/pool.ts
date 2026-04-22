@@ -319,6 +319,8 @@ export class SessionContainerPool {
         sessionId: args.sessionId,
         spawnOptions: args.spawnOptions,
         allowedHosts: args.networking.allowedHosts,
+        allowMcpServers: args.networking.allowMcpServers,
+        allowPackageManagers: args.networking.allowPackageManagers,
       });
     }
 
@@ -506,6 +508,8 @@ export class SessionContainerPool {
     sessionId: string;
     spawnOptions: SpawnOptions;
     allowedHosts: string[];
+    allowMcpServers?: boolean;
+    allowPackageManagers?: boolean;
   }): Promise<Container> {
     if (!this.cfg.limitedNetworking) {
       throw new Error(
@@ -593,6 +597,8 @@ export class SessionContainerPool {
           OPENCLAW_EGRESS_HTTP_PORT: String(httpPort),
           OPENCLAW_EGRESS_HEALTHZ_PORT: String(healthzPort),
           OPENCLAW_EGRESS_DNS_PORT: String(dnsPort),
+          ...(args.allowMcpServers ? { OPENCLAW_EGRESS_ALLOW_MCP_SERVERS: "true" } : {}),
+          ...(args.allowPackageManagers ? { OPENCLAW_EGRESS_ALLOW_PACKAGE_MANAGERS: "true" } : {}),
         },
         labels: {
           "managed-by": "openclaw-managed-agents",

@@ -54,7 +54,12 @@ export type SpawnOptions = {
  */
 export type NetworkingSpec =
   | { type: "unrestricted" }
-  | { type: "limited"; allowedHosts: string[] };
+  | {
+      type: "limited";
+      allowedHosts: string[];
+      allowMcpServers?: boolean;
+      allowPackageManagers?: boolean;
+    };
 
 export type Container = {
   /** Backend-specific container ID. */
