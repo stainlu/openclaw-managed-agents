@@ -15,6 +15,8 @@ import type {
   SessionStatus,
   ThinkingLevel,
   UpdateAgentRequest,
+  User,
+  UserTier,
 } from "../orchestrator/types.js";
 import type {
   AgentStore,
@@ -30,6 +32,7 @@ import type {
   SessionContainerStore,
   SessionStore,
   Store,
+  UserStore,
   Vault,
   VaultCredential,
   VaultCredentialMcpOAuth,
@@ -263,6 +266,20 @@ CREATE TABLE IF NOT EXISTS queued_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_queued_events_session ON queued_events(session_id, id);
+
+-- Multi-tenant user accounts. Anonymous users auto-expire after 24h;
+-- GitHub-authenticated users persist. api_token is the bearer token
+-- used in Authorization headers — one per user, opaque to the client.
+CREATE TABLE IF NOT EXISTS users (
+  user_id TEXT PRIMARY KEY,
+  github_id INTEGER UNIQUE,
+  github_username TEXT,
+  avatar_url TEXT,
+  api_token TEXT UNIQUE NOT NULL,
+  tier TEXT NOT NULL CHECK (tier IN ('anonymous', 'github')),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER
+);
 
 -- Structured audit log. One row per mutating API call. See
 -- src/audit.ts for the actor-extraction policy (token fingerprint, IP,
@@ -1466,6 +1483,124 @@ class SqliteAuditStore implements AuditStore {
   }
 }
 
+// ---------- User store ----------
+
+class SqliteUserStore implements UserStore {
+  private readonly insertStmt: Database.Statement;
+  private readonly getByTokenStmt: Database.Statement;
+  private readonly getByGithubIdStmt: Database.Statement;
+  private readonly getStmt: Database.Statement;
+  private readonly deleteExpiredStmt: Database.Statement;
+  private readonly updateGithubStmt: Database.Statement;
+
+  constructor(private readonly db: Database.Database) {
+    this.insertStmt = db.prepare(
+      `INSERT INTO users (user_id, github_id, github_username, avatar_url, api_token, tier, created_at, expires_at)
+       VALUES (@user_id, @github_id, @github_username, @avatar_url, @api_token, @tier, @created_at, @expires_at)`,
+    );
+    this.getByTokenStmt = db.prepare(`SELECT * FROM users WHERE api_token = ?`);
+    this.getByGithubIdStmt = db.prepare(`SELECT * FROM users WHERE github_id = ?`);
+    this.getStmt = db.prepare(`SELECT * FROM users WHERE user_id = ?`);
+    this.deleteExpiredStmt = db.prepare(
+      `DELETE FROM users WHERE tier = 'anonymous' AND expires_at IS NOT NULL AND expires_at < ?`,
+    );
+    this.updateGithubStmt = db.prepare(
+      `UPDATE users SET github_id = @github_id, github_username = @github_username,
+       avatar_url = @avatar_url, tier = 'github', expires_at = NULL
+       WHERE user_id = @user_id`,
+    );
+  }
+
+  create(args: {
+    tier: UserTier;
+    githubId?: number;
+    githubUsername?: string;
+    avatarUrl?: string;
+  }): User {
+    const userId = `usr_${nanoid()}`;
+    const apiToken = `tok_${nanoid(32)}`;
+    const now = Date.now();
+    const expiresAt = args.tier === "anonymous" ? now + 24 * 60 * 60 * 1000 : null;
+    this.insertStmt.run({
+      user_id: userId,
+      github_id: args.githubId ?? null,
+      github_username: args.githubUsername ?? null,
+      avatar_url: args.avatarUrl ?? null,
+      api_token: apiToken,
+      tier: args.tier,
+      created_at: now,
+      expires_at: expiresAt,
+    });
+    return {
+      userId,
+      githubId: args.githubId ?? null,
+      githubUsername: args.githubUsername ?? null,
+      avatarUrl: args.avatarUrl ?? null,
+      apiToken,
+      tier: args.tier,
+      createdAt: now,
+      expiresAt,
+    };
+  }
+
+  getByToken(token: string): User | undefined {
+    const row = this.getByTokenStmt.get(token) as UserRow | undefined;
+    return row ? rowToUser(row) : undefined;
+  }
+
+  getByGithubId(githubId: number): User | undefined {
+    const row = this.getByGithubIdStmt.get(githubId) as UserRow | undefined;
+    return row ? rowToUser(row) : undefined;
+  }
+
+  get(userId: string): User | undefined {
+    const row = this.getStmt.get(userId) as UserRow | undefined;
+    return row ? rowToUser(row) : undefined;
+  }
+
+  deleteExpired(): number {
+    const info = this.deleteExpiredStmt.run(Date.now());
+    return info.changes;
+  }
+
+  updateGithub(
+    userId: string,
+    args: { githubId: number; githubUsername: string; avatarUrl: string },
+  ): User | undefined {
+    this.updateGithubStmt.run({
+      user_id: userId,
+      github_id: args.githubId,
+      github_username: args.githubUsername,
+      avatar_url: args.avatarUrl,
+    });
+    return this.get(userId);
+  }
+}
+
+type UserRow = {
+  user_id: string;
+  github_id: number | null;
+  github_username: string | null;
+  avatar_url: string | null;
+  api_token: string;
+  tier: string;
+  created_at: number;
+  expires_at: number | null;
+};
+
+function rowToUser(r: UserRow): User {
+  return {
+    userId: r.user_id,
+    githubId: r.github_id,
+    githubUsername: r.github_username,
+    avatarUrl: r.avatar_url,
+    apiToken: r.api_token,
+    tier: r.tier as UserTier,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+  };
+}
+
 // ---------- Bundle ----------
 
 export class SqliteStore implements Store {
@@ -1477,6 +1612,7 @@ export class SqliteStore implements Store {
   readonly audit: AuditStore;
   readonly vaults: VaultStore;
   readonly sessionContainers: SessionContainerStore;
+  readonly users: UserStore;
   /** Number of vault credentials re-encrypted during boot migration.
    *  Surfaced via src/index.ts startup log when > 0. */
   readonly migratedVaultCredentials: number = 0;
@@ -1654,6 +1790,7 @@ export class SqliteStore implements Store {
     this.queue = new SqliteQueueStore(this.db);
     this.audit = new SqliteAuditStore(this.db);
     this.sessionContainers = new SqliteSessionContainerStore(this.db);
+    this.users = new SqliteUserStore(this.db);
     // Resolve vault master key. Priority:
     //   1. OPENCLAW_VAULT_KEY env (hex/base64/base64url 32 bytes)
     //   2. Row in kv_secrets (persisted from a previous boot)

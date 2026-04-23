@@ -111,6 +111,7 @@ export type ServerDeps = {
    * `Authorization: Bearer <apiToken>`.
    */
   apiToken?: string;
+  users?: import("../store/types.js").UserStore;
   /**
    * Per-caller rate limit in requests-per-minute. 0 or undefined
    * disables rate limiting. Keyed by Bearer token when present, else
@@ -333,7 +334,85 @@ export function buildApp(deps: ServerDeps): Hono {
   // `/metrics` are whitelisted by all three middlewares independently.
   app.use("*", observabilityMiddleware);
   app.use("*", createRateLimitMiddleware({ rpm: deps.rateLimitRpm ?? 0 }));
-  app.use("*", createAuthMiddleware({ token: deps.apiToken }));
+  app.use("*", createAuthMiddleware({ token: deps.apiToken, users: deps.users }));
+
+  // ---------- Auth endpoints (no /v1/ prefix — infrastructure, not API) ----------
+
+  app.post("/auth/anonymous", async (c) => {
+    if (!deps.users) return c.json({ error: "auth_disabled", message: "user system not enabled" }, 501);
+    const user = deps.users.create({ tier: "anonymous" });
+    return c.json({
+      user_id: user.userId,
+      api_token: user.apiToken,
+      tier: user.tier,
+      expires_at: user.expiresAt,
+    });
+  });
+
+  app.get("/auth/github", (c) => {
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    if (!clientId) return c.json({ error: "github_not_configured" }, 501);
+    const redirectUri = `${c.req.header("x-forwarded-proto") || "https"}://${c.req.header("host")}/auth/github/callback`;
+    const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=read:user`;
+    return c.redirect(url);
+  });
+
+  app.get("/auth/github/callback", async (c) => {
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+    if (!clientId || !clientSecret || !deps.users) {
+      return c.json({ error: "github_not_configured" }, 501);
+    }
+    const code = c.req.query("code");
+    if (!code) return c.json({ error: "missing_code" }, 400);
+
+    const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+    });
+    const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
+    if (!tokenData.access_token) {
+      return c.json({ error: "github_auth_failed", message: tokenData.error || "no access_token" }, 401);
+    }
+
+    const userRes = await fetch("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "openclaw-managed-agents" },
+    });
+    const ghUser = await userRes.json() as { id: number; login: string; avatar_url: string };
+
+    let user = deps.users.getByGithubId(ghUser.id);
+    if (!user) {
+      user = deps.users.create({
+        tier: "github",
+        githubId: ghUser.id,
+        githubUsername: ghUser.login,
+        avatarUrl: ghUser.avatar_url,
+      });
+    }
+
+    return c.redirect(`/v2#token=${user.apiToken}`);
+  });
+
+  app.get("/auth/me", (c) => {
+    const role = (c as any).get("authRole") as string | undefined;
+    const userId = (c as any).get("userId") as string | undefined;
+    if (role === "admin") {
+      return c.json({ role: "admin", tier: "admin" });
+    }
+    if (!userId || !deps.users) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    const user = deps.users.get(userId);
+    if (!user) return c.json({ error: "user_not_found" }, 404);
+    return c.json({
+      user_id: user.userId,
+      tier: user.tier,
+      github_username: user.githubUsername,
+      avatar_url: user.avatarUrl,
+      expires_at: user.expiresAt,
+    });
+  });
 
   // Prometheus scrape endpoint. Not auth-gated (matches /healthz) —
   // operators firewall :8080 if the metrics should not be public.

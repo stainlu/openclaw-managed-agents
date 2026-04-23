@@ -341,6 +341,26 @@ export const CreateSessionRequestSchema = z.object({
 
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>;
 
+// ---------- User (multi-tenant identity) ----------
+
+export type UserTier = "anonymous" | "github";
+
+export type User = {
+  userId: string;
+  githubId: number | null;
+  githubUsername: string | null;
+  avatarUrl: string | null;
+  apiToken: string;
+  tier: UserTier;
+  createdAt: number;
+  expiresAt: number | null;
+};
+
+export const USER_QUOTAS: Record<UserTier, { agents: number; sessions: number; environments: number; vaults: number }> = {
+  anonymous: { agents: 3, sessions: 5, environments: 1, vaults: 0 },
+  github: { agents: 20, sessions: 100, environments: 10, vaults: 5 },
+};
+
 // ---------- Vault (per-end-user credential bundle) ----------
 //
 // Mirrors Claude MA's vault shape so migration from CMA is a rename

@@ -8,6 +8,8 @@ import type {
   PermissionPolicy,
   Session,
   UpdateAgentRequest,
+  User,
+  UserTier,
 } from "../orchestrator/types.js";
 import type {
   AddCredentialInput,
@@ -26,6 +28,7 @@ import type {
   Vault,
   VaultCredential,
   VaultCredentialMcpOAuth,
+  UserStore,
   VaultStore,
 } from "./types.js";
 
@@ -525,6 +528,62 @@ class InMemorySessionContainerStore implements SessionContainerStore {
   }
 }
 
+// ---------- Users ----------
+
+class InMemoryUserStore implements UserStore {
+  private readonly users = new Map<string, User>();
+
+  create(args: { tier: UserTier; githubId?: number; githubUsername?: string; avatarUrl?: string }): User {
+    const userId = `usr_${nanoid()}`;
+    const apiToken = `tok_${nanoid()}`;
+    const now = Date.now();
+    const user: User = {
+      userId,
+      githubId: args.githubId ?? null,
+      githubUsername: args.githubUsername ?? null,
+      avatarUrl: args.avatarUrl ?? null,
+      apiToken,
+      tier: args.tier,
+      createdAt: now,
+      expiresAt: args.tier === "anonymous" ? now + 24 * 60 * 60 * 1000 : null,
+    };
+    this.users.set(userId, user);
+    return user;
+  }
+
+  getByToken(token: string): User | undefined {
+    return Array.from(this.users.values()).find((u) => u.apiToken === token);
+  }
+
+  getByGithubId(githubId: number): User | undefined {
+    return Array.from(this.users.values()).find((u) => u.githubId === githubId);
+  }
+
+  get(userId: string): User | undefined {
+    return this.users.get(userId);
+  }
+
+  deleteExpired(): number {
+    const now = Date.now();
+    let count = 0;
+    for (const [id, u] of this.users) {
+      if (u.tier === "anonymous" && u.expiresAt && u.expiresAt < now) {
+        this.users.delete(id);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  updateGithub(userId: string, args: { githubId: number; githubUsername: string; avatarUrl: string }): User | undefined {
+    const u = this.users.get(userId);
+    if (!u) return undefined;
+    const updated: User = { ...u, ...args, tier: "github", expiresAt: null };
+    this.users.set(userId, updated);
+    return updated;
+  }
+}
+
 export class InMemoryStore implements Store {
   readonly agents: AgentStore;
   readonly environments: EnvironmentStore;
@@ -534,6 +593,7 @@ export class InMemoryStore implements Store {
   readonly audit: AuditStore;
   readonly vaults: VaultStore;
   readonly sessionContainers: SessionContainerStore;
+  readonly users: UserStore;
 
   constructor() {
     this.agents = new InMemoryAgentStore();
@@ -544,6 +604,7 @@ export class InMemoryStore implements Store {
     this.audit = new InMemoryAuditStore();
     this.vaults = new InMemoryVaultStore();
     this.sessionContainers = new InMemorySessionContainerStore();
+    this.users = new InMemoryUserStore();
   }
 
   close(): void {

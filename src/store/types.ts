@@ -5,6 +5,8 @@ import type {
   EnvironmentConfig,
   Session,
   UpdateAgentRequest,
+  User,
+  UserTier,
 } from "../orchestrator/types.js";
 
 // All store methods are synchronous. The two concrete backends (in-memory and
@@ -308,6 +310,15 @@ export interface SessionStore {
  * receive the two leaves individually so they stay agnostic of which backend
  * is in use.
  */
+export interface UserStore {
+  create(args: { tier: UserTier; githubId?: number; githubUsername?: string; avatarUrl?: string }): User;
+  getByToken(token: string): User | undefined;
+  getByGithubId(githubId: number): User | undefined;
+  get(userId: string): User | undefined;
+  deleteExpired(): number;
+  updateGithub(userId: string, args: { githubId: number; githubUsername: string; avatarUrl: string }): User | undefined;
+}
+
 export interface Store {
   readonly agents: AgentStore;
   readonly environments: EnvironmentStore;
@@ -319,6 +330,7 @@ export interface Store {
   readonly audit: AuditStore;
   /** Persistent session ↔ container mapping for restart-safe reattach. */
   readonly sessionContainers: SessionContainerStore;
+  readonly users: UserStore;
   /** Closes any backing file handles or connections. Safe to call more than once. */
   close(): void;
 }

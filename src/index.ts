@@ -687,6 +687,7 @@ async function main(): Promise<void> {
       tokenMinter,
       version,
       apiToken: apiToken || undefined,
+      users: store.users,
       rateLimitRpm: rateLimitRpm > 0 ? rateLimitRpm : undefined,
       sessionContainers: store.sessionContainers,
       startTs: Date.now(),
