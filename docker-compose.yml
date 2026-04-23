@@ -93,6 +93,11 @@ services:
       # for the single-token model (matches Claude Managed Agents' API-key
       # depth).
       OPENCLAW_API_TOKEN: ${OPENCLAW_API_TOKEN:-}
+      # GitHub OAuth for user authentication. Create at
+      # github.com/settings/developers with callback URL:
+      # https://<your-host>/auth/github/callback
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       # Master key for vault credential encryption-at-rest. 32 bytes as
       # 64 hex chars (or base64 / base64url). Unset = orchestrator
       # generates + persists in SQLite (fine for dev, but then key
