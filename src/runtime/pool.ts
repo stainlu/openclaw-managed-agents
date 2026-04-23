@@ -585,14 +585,15 @@ export class SessionContainerPool {
 
       // 2. Egress-proxy sidecar — spawn on confined (so the agent can
       //    reach it), additionally connect to egress (for the forward
-      //    path out). Allowed hosts delivered via env as a JSON array,
-      //    matching the schema proxy.mjs expects.
+      //    path out) and control-plane (so the orchestrator can hit its
+      //    readiness probe). Allowed hosts delivered via env as a JSON
+      //    array, matching the schema proxy.mjs expects.
       const sidecar = await this.runtime.spawn({
         image: netCfg.sidecarImage,
         name: sidecarName,
         containerPort: httpPort,
         network: confinedNet,
-        additionalNetworks: [egressNet],
+        additionalNetworks: [egressNet, netCfg.controlPlaneNetwork],
         mounts: [],
         env: {
           OPENCLAW_EGRESS_ALLOWED_HOSTS: JSON.stringify(args.allowedHosts),

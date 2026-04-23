@@ -518,6 +518,9 @@ describe("SessionContainerPool — networking: limited", () => {
     expect(
       spawns[0].kind === "spawn" ? spawns[0].opts.image : "",
     ).toContain("egress-proxy");
+    expect(
+      spawns[0].kind === "spawn" ? spawns[0].opts.additionalNetworks : [],
+    ).toEqual(["openclaw-sess-confined123-egress", "openclaw-control-plane"]);
     // Second spawn is the agent on the confined network.
     expect(
       spawns[1].kind === "spawn" ? spawns[1].opts.network ?? "" : "",

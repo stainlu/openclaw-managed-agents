@@ -201,7 +201,7 @@ proxyServer.listen(HTTP_PROXY_PORT, "0.0.0.0", () => {
 // ---------------------------------------------------------------------
 
 const healthServer = createHttpServer((req, res) => {
-  if (req.url === "/healthz") {
+  if (req.url === "/healthz" || req.url === "/readyz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, session_id: SESSION_ID }));
     return;
