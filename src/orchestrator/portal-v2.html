@@ -574,12 +574,32 @@ Object.assign(window, { Button, Badge, Mono, Eyebrow, Kbd, HardRule });
 const AUTH = {
   token: localStorage.getItem('openclaw_api_token') || '',
   required: false,
+  user: null,
   set(t) { this.token = t; localStorage.setItem('openclaw_api_token', t); },
-  clear() { this.token = ''; localStorage.removeItem('openclaw_api_token'); },
+  clear() { this.token = ''; this.user = null; localStorage.removeItem('openclaw_api_token'); },
 };
+// Pick up token from GitHub OAuth callback redirect (#token=...)
+const hashToken = new URLSearchParams(window.location.hash.slice(1)).get('token');
+if (hashToken) {
+  AUTH.set(hashToken);
+  history.replaceState(null, '', window.location.pathname);
+}
+// Auto-create anonymous user if no token
+if (!AUTH.token) {
+  fetch('/auth/anonymous', { method: 'POST' })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data?.api_token) {
+        AUTH.set(data.api_token);
+        AUTH.user = data;
+        LIVE_BUS.notify();
+      }
+    })
+    .catch(() => {});
+}
 const _origFetch = window.fetch.bind(window);
 window.fetch = function(url, opts) {
-  if (AUTH.token && typeof url === 'string' && (url.startsWith('/v1/') || url.startsWith('/metrics'))) {
+  if (AUTH.token && typeof url === 'string' && (url.startsWith('/v1/') || url.startsWith('/metrics') || url.startsWith('/auth/'))) {
     opts = opts || {};
     opts.headers = { ...(opts.headers || {}), Authorization: 'Bearer ' + AUTH.token };
   }
@@ -1270,6 +1290,12 @@ Object.assign(window, {
   pumpMetrics();
   pumpHealth();
   pumpVaults();
+  if (AUTH.token) {
+    fetch('/auth/me', { headers: { Authorization: 'Bearer ' + AUTH.token } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) { AUTH.user = data; LIVE_BUS.notify(); } })
+      .catch(() => {});
+  }
 })();
 setInterval(() => { pumpAgents(); }, 10_000);
 setInterval(() => { pumpSessions(); }, 4_000);
@@ -1354,7 +1380,19 @@ function Topbar({ route, setRoute, onTweaks }) {
         }}>
           <Icon n="search" s={14} />
         </button>
-        <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ink)', color: 'var(--paper)', display: 'grid', placeItems: 'center', fontSize: 10, fontFamily: 'var(--font-mono)', flexShrink: 0 }}>sl</div>
+        {AUTH.user?.avatar_url ? (
+          <img src={AUTH.user.avatar_url} alt="" style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0 }} />
+        ) : AUTH.user?.tier === 'anonymous' ? (
+          <button onClick={() => window.location.href = '/auth/github'} style={{
+            all: 'unset', cursor: 'pointer', fontSize: 10, fontFamily: 'var(--font-mono)',
+            padding: '4px 8px', border: '1px solid var(--line-2)', borderRadius: 6,
+            color: 'var(--ink-2)', whiteSpace: 'nowrap',
+          }}>Sign in</button>
+        ) : (
+          <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ink)', color: 'var(--paper)', display: 'grid', placeItems: 'center', fontSize: 10, fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
+            {(AUTH.user?.github_username || '?').slice(0, 2)}
+          </div>
+        )}
       </div>
     </header>
   );

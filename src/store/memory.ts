@@ -177,6 +177,7 @@ class InMemorySessionStore implements SessionStore {
     remainingSubagentDepth?: number;
     vaultId?: string;
     parentSessionId?: string;
+    userId?: string;
   }): Session {
     const sessionId = args.sessionId ?? `ses_${nanoid()}`;
     const session: Session = {
@@ -195,6 +196,7 @@ class InMemorySessionStore implements SessionStore {
       lastEventAt: null,
       vaultId: args.vaultId ?? null,
       parentSessionId: args.parentSessionId ?? null,
+      userId: args.userId ?? null,
     };
     this.sessions.set(sessionId, session);
     return session;

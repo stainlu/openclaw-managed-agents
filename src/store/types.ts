@@ -270,6 +270,7 @@ export interface SessionStore {
     remainingSubagentDepth?: number;
     vaultId?: string;
     parentSessionId?: string;
+    userId?: string;
   }): Session;
   get(sessionId: string): Session | undefined;
   list(): Session[];

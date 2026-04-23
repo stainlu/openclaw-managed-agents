@@ -87,6 +87,7 @@ type SessionRow = {
   last_event_at: number | null;
   vault_id: string | null;
   parent_session_id: string | null;
+  user_id: string | null;
 };
 
 /** True when at least one channel is enabled on the agent — used to
@@ -153,6 +154,7 @@ function rowToSession(r: SessionRow): Session {
     lastEventAt: r.last_event_at,
     vaultId: r.vault_id,
     parentSessionId: r.parent_session_id ?? null,
+    userId: r.user_id ?? null,
   };
 }
 
@@ -646,11 +648,11 @@ class SqliteSessionStore implements SessionStore {
         session_id, agent_id, environment_id, status, ephemeral,
         remaining_subagent_depth,
         tokens_in, tokens_out, cost_usd,
-        error, created_at, last_event_at, vault_id, parent_session_id
+        error, created_at, last_event_at, vault_id, parent_session_id, user_id
        ) VALUES (
         @session_id, @agent_id, @environment_id, 'idle', @ephemeral,
         @remaining_subagent_depth,
-        0, 0, 0, NULL, @created_at, NULL, @vault_id, @parent_session_id
+        0, 0, 0, NULL, @created_at, NULL, @vault_id, @parent_session_id, @user_id
        )`,
     );
     this.getStmt = db.prepare(`SELECT * FROM sessions WHERE session_id = ?`);
@@ -709,6 +711,7 @@ class SqliteSessionStore implements SessionStore {
     remainingSubagentDepth?: number;
     vaultId?: string;
     parentSessionId?: string;
+    userId?: string;
   }): Session {
     const sessionId = args.sessionId ?? `ses_${nanoid()}`;
     const environmentId = args.environmentId ?? null;
@@ -716,6 +719,7 @@ class SqliteSessionStore implements SessionStore {
     const remainingSubagentDepth = args.remainingSubagentDepth ?? 0;
     const vaultId = args.vaultId ?? null;
     const parentSessionId = args.parentSessionId ?? null;
+    const userId = args.userId ?? null;
     const createdAt = Date.now();
     this.insertStmt.run({
       session_id: sessionId,
@@ -726,6 +730,7 @@ class SqliteSessionStore implements SessionStore {
       created_at: createdAt,
       vault_id: vaultId,
       parent_session_id: parentSessionId,
+      user_id: userId,
     });
     return {
       sessionId,
@@ -743,6 +748,7 @@ class SqliteSessionStore implements SessionStore {
       lastEventAt: null,
       vaultId,
       parentSessionId,
+      userId,
     };
   }
 
@@ -1674,6 +1680,9 @@ export class SqliteStore implements Store {
     if (!sessionsCols.some((c) => c.name === "parent_session_id")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT");
     }
+    if (!sessionsCols.some((c) => c.name === "user_id")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN user_id TEXT");
+    }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)",
     );
@@ -1738,10 +1747,10 @@ export class SqliteStore implements Store {
       this.db.exec("ALTER TABLE agents ADD COLUMN thinking_level TEXT");
     }
     if (!agentsCols.some((c) => c.name === "channels_json")) {
-      // D2: declarative channel bindings (e.g., telegram). Pre-D2
-      // rows default to NULL = no channels; rowToAgent maps that to
-      // `{ telegram: { enabled: false } }`.
       this.db.exec("ALTER TABLE agents ADD COLUMN channels_json TEXT");
+    }
+    if (!agentsCols.some((c) => c.name === "user_id")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN user_id TEXT");
     }
     const versionsCols = this.db.pragma("table_info(agent_versions)") as Array<{ name: string }>;
     if (versionsCols.length > 0 && !versionsCols.some((c) => c.name === "permission_policy_json")) {
@@ -1781,6 +1790,9 @@ export class SqliteStore implements Store {
       this.db.exec(
         "ALTER TABLE environments ADD COLUMN description TEXT NOT NULL DEFAULT ''",
       );
+    }
+    if (envCols.length > 0 && !envCols.some((c) => c.name === "user_id")) {
+      this.db.exec("ALTER TABLE environments ADD COLUMN user_id TEXT");
     }
 
     this.agents = new SqliteAgentStore(this.db);

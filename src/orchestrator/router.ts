@@ -210,7 +210,7 @@ export class AgentRouter {
    */
   createSession(
     agentId: string,
-    opts?: { environmentId?: string; remainingSubagentDepth?: number; vaultId?: string; parentSessionId?: string },
+    opts?: { environmentId?: string; remainingSubagentDepth?: number; vaultId?: string; parentSessionId?: string; userId?: string },
   ): Session {
     const agent = this.agents.get(agentId);
     if (!agent) {
@@ -233,6 +233,7 @@ export class AgentRouter {
       remainingSubagentDepth,
       vaultId: opts?.vaultId,
       parentSessionId: opts?.parentSessionId,
+      userId: opts?.userId,
     });
   }
 

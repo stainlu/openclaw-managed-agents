@@ -336,6 +336,10 @@ export function buildApp(deps: ServerDeps): Hono {
   app.use("*", createRateLimitMiddleware({ rpm: deps.rateLimitRpm ?? 0 }));
   app.use("*", createAuthMiddleware({ token: deps.apiToken, users: deps.users }));
 
+  function getUserId(c: any): string | null {
+    return c.get("authRole") === "admin" ? null : (c.get("userId") ?? null);
+  }
+
   // ---------- Auth endpoints (no /v1/ prefix — infrastructure, not API) ----------
 
   app.post("/auth/anonymous", async (c) => {
@@ -965,6 +969,7 @@ export function buildApp(deps: ServerDeps): Hono {
         remainingSubagentDepth: remainingSubagentDepthOverride,
         vaultId: parsed.data.vaultId,
         parentSessionId,
+        userId: getUserId(c) ?? undefined,
       });
       // Proactive warm-up: start booting the container in the background
       // so it's ready (or nearly ready) by the time the first event arrives.
@@ -996,7 +1001,10 @@ export function buildApp(deps: ServerDeps): Hono {
   });
 
   app.get("/v1/sessions", (c) => {
-    const sessions = deps.sessions.list().map((s) => sessionResponse(s, deps.events, deps.sessionContainers));
+    const uid = getUserId(c);
+    const all = deps.sessions.list();
+    const scoped = uid ? all.filter((s) => s.userId === uid) : all;
+    const sessions = scoped.map((s) => sessionResponse(s, deps.events, deps.sessionContainers));
     return c.json({ sessions, count: sessions.length });
   });
 

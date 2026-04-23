@@ -325,6 +325,7 @@ export type Session = {
    */
   vaultId: string | null;
   parentSessionId: string | null;
+  userId: string | null;
 };
 
 export const CreateSessionRequestSchema = z.object({
