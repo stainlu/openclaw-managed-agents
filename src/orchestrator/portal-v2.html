@@ -1428,9 +1428,9 @@ function Sidebar({ route, setRoute }) {
         <Eyebrow>Deploy</Eyebrow>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 8 }}>
           {[
-            { n: 'Hetzner · CAX11', live: true, cost: '$4/mo' },
-            { n: 'GCE · e2-medium', live: false, cost: '$25/mo' },
-            { n: 'Lightsail · m_3_0', live: false, cost: '$24/mo' },
+            { n: 'Hetzner · CAX11', live: true },
+            { n: 'GCE · e2-medium', live: false },
+            { n: 'Lightsail · m_3_0', live: false },
           ].map((d, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12 }}>
               <span style={{
@@ -1438,7 +1438,7 @@ function Sidebar({ route, setRoute }) {
                 background: d.live ? 'var(--ok)' : 'var(--ink-4)',
               }} />
               <span style={{ color: d.live ? 'var(--ink)' : 'var(--ink-3)' }}>{d.n}</span>
-              <Mono s={10} c="var(--ink-3)" style={{ marginLeft: 'auto' }}>{d.cost}</Mono>
+              <Mono s={10} c={d.live ? 'var(--ok)' : 'var(--ink-4)'} style={{ marginLeft: 'auto' }}>{d.live ? 'active' : 'inactive'}</Mono>
             </div>
           ))}
         </div>
@@ -2897,74 +2897,172 @@ GET /v1/sessions/:id/events
 }
 
 function AgentsView() {
+  const [selectedId, setSelectedId] = useState(null);
+  const selected = AGENTS.find(a => a.id === selectedId) || null;
+
   return (
-    <div style={{ height: '100%', overflowY: 'auto' }}>
-      <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
-          <div>
-            <Eyebrow>v1 · agents</Eyebrow>
-            <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Agents</h1>
-            <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
-              Reusable configs: model, instructions, tools, MCP servers, permission policy, delegation rules, quotas. Versioned with immutable history.
-            </p>
+    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', minWidth: 0 }}>
+        <div style={{ padding: '28px 40px 20px', borderBottom: '1px solid var(--ink)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
+            <div>
+              <Eyebrow>v1 · agents</Eyebrow>
+              <h1 style={{ marginTop: 8, fontSize: 36, fontWeight: 500, letterSpacing: '-0.035em' }}>Agents</h1>
+              <p style={{ marginTop: 8, maxWidth: '56ch', fontSize: 14, color: 'var(--ink-2)' }}>
+                Reusable configs: model, instructions, tools, MCP servers, permission policy, delegation rules, quotas. Versioned with immutable history.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button variant="secondary" size="md" icon="docs">Spec</Button>
+              <NewAgentButton />
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="secondary" size="md" icon="docs">Spec</Button>
-            <NewAgentButton />
+        </div>
+
+        <div className="oc-table-scroll" style={{ padding: '0 40px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 120px 100px 90px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+            {['Name', 'Model · tools', 'Policy', 'Sessions', 'Updated'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
           </div>
+          {AGENTS.map(a => {
+            const active = a.id === selectedId;
+            return (
+              <div key={a.id} onClick={() => setSelectedId(active ? null : a.id)} style={{
+                display: 'grid', gridTemplateColumns: '220px 1fr 120px 100px 90px',
+                gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)',
+                alignItems: 'center', cursor: 'pointer',
+                background: active ? 'var(--paper-2)' : 'transparent',
+                borderLeft: active ? '2px solid var(--ink)' : '2px solid transparent',
+                transition: 'background 120ms var(--ease)',
+              }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--paper-2)'; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: '-0.015em' }}>{a.name}</div>
+                  <Mono s={11} c="var(--ink-3)">{a.id}</Mono>
+                </div>
+                <div>
+                  <Mono s={12} c="var(--ink)">{a.model}</Mono>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                    {a.tools.length === 0 && <Mono s={10} c="var(--ink-3)">all tools</Mono>}
+                    {a.tools.slice(0, 3).map(t => (
+                      <span key={t} style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        padding: '1px 6px', border: '1px solid var(--line)',
+                        background: 'var(--card)', color: 'var(--ink-3)', borderRadius: 3,
+                      }}>{t}</span>
+                    ))}
+                    {a.tools.length > 3 && <Mono s={10} c="var(--ink-4)">+{a.tools.length - 3}</Mono>}
+                    {a.mcp.map(m => (
+                      <span key={m} style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 10,
+                        padding: '1px 6px', border: '1px solid var(--ink)',
+                        background: 'var(--ink)', color: 'var(--paper)', borderRadius: 3,
+                      }}>mcp · {m}</span>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  {a.policy === 'always_ask' && <Badge tone="soft">always_ask</Badge>}
+                  {a.policy === 'always_allow' && <Badge tone="neutral">always_allow</Badge>}
+                  {a.policy === 'deny' && <Badge tone="warn">deny</Badge>}
+                </div>
+                <Mono s={12} c="var(--ink)">{a.sessions.toLocaleString()}</Mono>
+                <Mono s={11} c="var(--ink-3)">{a.updated}</Mono>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="oc-table-scroll" style={{ padding: '0 40px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px', gap: 16, padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
-          {['Name', 'Model · tools · MCP', 'Policy', 'Version', 'Sessions', 'Cost · 24h', 'Updated'].map(h => <Eyebrow key={h}>{h}</Eyebrow>)}
-        </div>
-        {AGENTS.map(a => (
-          <div key={a.id} style={{
-            display: 'grid', gridTemplateColumns: '220px 1fr 180px 120px 100px 90px 90px',
-            gap: 16, padding: '16px 0', borderBottom: '1px solid var(--line)',
-            alignItems: 'center', cursor: 'pointer',
-            transition: 'background 120ms var(--ease)',
-          }}
-            onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-2)'}
-            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-          >
+      {selected && (
+        <aside style={{
+          width: 340, borderLeft: '1px solid var(--ink)',
+          overflowY: 'auto', padding: '16px 18px', background: 'var(--paper)',
+          flexShrink: 0,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <Eyebrow>Agent detail</Eyebrow>
+            <button onClick={() => setSelectedId(null)} style={{ all: 'unset', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 14 }}>×</button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div><Mono s={10} c="var(--ink-3)">ID</Mono><div style={{ fontSize: 13, marginTop: 2 }}>{selected.id}</div></div>
+            <div><Mono s={10} c="var(--ink-3)">NAME</Mono><div style={{ fontSize: 13, marginTop: 2, fontWeight: 500 }}>{selected.name}</div></div>
+            <div><Mono s={10} c="var(--ink-3)">VERSION</Mono><div style={{ fontSize: 13, marginTop: 2 }}>v{selected.version} · latest</div></div>
+            <div><Mono s={10} c="var(--ink-3)">MODEL</Mono><Mono s={12} c="var(--ink)" style={{ marginTop: 2, display: 'block' }}>{selected.model}</Mono></div>
+            <div><Mono s={10} c="var(--ink-3)">THINKING</Mono><div style={{ fontSize: 13, marginTop: 2 }}>{selected.thinkingLevel}</div></div>
+
             <div>
-              <div style={{ fontSize: 14, fontWeight: 500, letterSpacing: '-0.015em' }}>{a.name}</div>
-              <Mono s={11} c="var(--ink-3)">{a.id}</Mono>
-            </div>
-            <div>
-              <Mono s={12} c="var(--ink)">{a.model}</Mono>
+              <Mono s={10} c="var(--ink-3)">TOOLS · {selected.policy.toUpperCase()}</Mono>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-                {a.tools.slice(0, 3).map(t => (
-                  <span key={t} style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 10,
-                    padding: '1px 6px', border: '1px solid var(--line)',
-                    background: 'var(--card)', color: 'var(--ink-3)', borderRadius: 3,
-                  }}>{t}</span>
-                ))}
-                {a.tools.length > 3 && <Mono s={10} c="var(--ink-4)">+{a.tools.length - 3}</Mono>}
-                {a.mcp.map(m => (
-                  <span key={m} style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 10,
-                    padding: '1px 6px', border: '1px solid var(--ink)',
-                    background: 'var(--ink)', color: 'var(--paper)', borderRadius: 3,
-                  }}>mcp · {m}</span>
-                ))}
+                {selected.tools.length === 0 && <Mono s={11} c="var(--ink-3)">all tools (default)</Mono>}
+                {selected.tools.map(t => {
+                  const isAsk = selected.askList.includes(t);
+                  const isDenied = selected.denied.includes(t);
+                  return (
+                    <span key={t} style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10,
+                      padding: '2px 6px', border: '1px solid var(--line)',
+                      background: isDenied ? 'var(--lobster-wash)' : 'var(--card)',
+                      color: isDenied ? 'var(--danger)' : isAsk ? 'var(--lobster)' : 'var(--ink-2)',
+                      borderRadius: 3,
+                    }}>{t}{isDenied ? ' · deny' : isAsk ? ' · ask' : ' · allow'}</span>
+                  );
+                })}
               </div>
             </div>
+
             <div>
-              {a.policy === 'always_ask' && <Badge tone="soft">always_ask</Badge>}
-              {a.policy === 'always_allow' && <Badge tone="neutral">always_allow</Badge>}
-              {a.policy === 'deny' && <Badge tone="warn">deny</Badge>}
+              <Mono s={10} c="var(--ink-3)">MCP SERVERS · {selected.mcp.length}</Mono>
+              {selected.mcp.length === 0 && <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-4)' }}>— none configured</div>}
+              {selected.mcp.map(m => (
+                <Mono key={m} s={11} c="var(--ink)" style={{ display: 'block', marginTop: 4 }}>{m}</Mono>
+              ))}
             </div>
-            <Mono s={12} c="var(--ink-2)">v{a.version} · latest</Mono>
-            <Mono s={12} c="var(--ink)">{a.sessions.toLocaleString()}</Mono>
-            <Mono s={12} c="var(--ink)">{a.cost24h}</Mono>
-            <Mono s={11} c="var(--ink-3)">{a.updated}</Mono>
+
+            {selected.callableAgents.length > 0 && (
+              <div>
+                <Mono s={10} c="var(--ink-3)">DELEGATION</Mono>
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                  Callable: {selected.callableAgents.join(', ')}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>Max depth: {selected.maxSubagentDepth}</div>
+              </div>
+            )}
+
+            <div>
+              <Mono s={10} c="var(--ink-3)">QUOTA</Mono>
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ink-2)' }}>
+                {selected.quota.maxCostUsdPerSession != null
+                  ? `$${selected.quota.maxCostUsdPerSession.toFixed(2)} / session`
+                  : '— no cost cap'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                {selected.quota.maxTokensPerSession != null
+                  ? `${selected.quota.maxTokensPerSession.toLocaleString()} tokens / session`
+                  : '— no token cap'}
+              </div>
+            </div>
+
+            <div>
+              <Mono s={10} c="var(--ink-3)">INSTRUCTIONS</Mono>
+              <div style={{
+                marginTop: 4, fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.5,
+                maxHeight: 120, overflow: 'hidden',
+                WebkitMaskImage: selected.instructions.length > 200 ? 'linear-gradient(to bottom, black 70%, transparent 100%)' : undefined,
+              }}>
+                {selected.instructions || '— none'}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 4 }}>
+              <Mono s={10} c="var(--ink-3)">SESSIONS</Mono>
+              <div style={{ fontSize: 13, marginTop: 2 }}>{selected.sessions} active</div>
+            </div>
           </div>
-        ))}
-      </div>
+        </aside>
+      )}
     </div>
   );
 }
