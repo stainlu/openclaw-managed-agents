@@ -97,8 +97,8 @@ Expected output (timings on a fresh run, EU location):
     IPv6:              2a01:4f8:c0c:abc::1
 ==> Waiting for cloud-init to install Docker + bring up the stack (~4 min)
     [+  0:20] Docker installed
-    [+  2:10] Repo cloned, pnpm install done
-    [+  3:45] docker compose build complete
+    [+  2:10] Repo cloned, GHCR images pulling
+    [+  3:00] docker compose up complete
     [+  4:30] Orchestrator reports /healthz ok
 ==> Deploy complete
     Orchestrator:      http://5.75.123.45:8080
@@ -145,6 +145,16 @@ curl -s "http://5.75.123.45:8080/v1/sessions/$SESSION/events" \
 ```
 
 You should see a real Kimi K2.5 response within 30-60 seconds of the first event (first turn spawns a container; subsequent turns are fast).
+
+## Routine redeploy
+
+For later updates on an already-provisioned box, use:
+
+```bash
+ssh root@<ip> 'cd /opt/openclaw && git pull && docker compose pull && docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest && docker compose up -d'
+```
+
+`docker compose pull` updates the compose-managed images, and the extra `docker pull` is load-bearing because the `egress-proxy` sidecar is spawned dynamically rather than by compose.
 
 ## Cost breakdown
 
@@ -205,7 +215,7 @@ while ! curl -sf "http://${IP}:8080/healthz" >/dev/null; do sleep 5; done
 echo "Orchestrator ready on http://${IP}:8080"
 ```
 
-The cloud-init user-data (generated at deploy time by the script) installs Docker via the official Docker repo, clones this repo onto `/opt/openclaw`, writes a `.env` file with your provider key, and runs `docker compose up -d --build`.
+The cloud-init user-data (generated at deploy time by the script) installs Docker via the official Docker repo, clones this repo onto `/opt/openclaw`, writes a `.env` file with your provider key, runs `docker compose pull`, explicitly pulls `ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest`, and then runs `docker compose up -d`.
 
 ## What's next — more backends
 

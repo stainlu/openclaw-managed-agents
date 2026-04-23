@@ -60,7 +60,7 @@ Agent NET capabilities stay minimal (no `NET_ADMIN`); enforcement is at the Dock
 
 ### Egress proxy (sidecar)
 
-A new per-session container built from a new image `openclaw-egress-proxy:latest`. ~300 LOC Node.js using **stdlib `node:http` + `node:tls` + `node:dgram`** — no hand-rolled HTTP parsing. The advisor correctly flagged that a parser written from scratch on untrusted input is a known footgun class (malformed CONNECT lines, oversized headers, HTTP/2 upgrade attempts, smuggling); stdlib handles all of these.
+A new per-session container built from the published image `ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest`. ~300 LOC Node.js using **stdlib `node:http` + `node:tls` + `node:dgram`** — no hand-rolled HTTP parsing. The advisor correctly flagged that a parser written from scratch on untrusted input is a known footgun class (malformed CONNECT lines, oversized headers, HTTP/2 upgrade attempts, smuggling); stdlib handles all of these.
 
 - TCP 8118 listener uses `http.createServer` + its `connect` event for HTTPS CONNECT tunneling. Plain HTTP GET/POST is served via the normal request handler.
 - For CONNECT (HTTPS): the connect target is a host:port string. Validate the host against the allowlist BEFORE dialing upstream. On allow: `net.connect()` to upstream and pipe sockets. On deny: write `HTTP/1.1 403 Forbidden\r\n\r\n` and close.
@@ -68,7 +68,7 @@ A new per-session container built from a new image `openclaw-egress-proxy:latest
 - UDP 53 DNS filter: parse the A/AAAA question, compare name to allowlist, forward to upstream resolver (default 1.1.1.1) if allowed, synthesize NXDOMAIN response if denied. Pure DNS wire format, ~50 LOC of parsing.
 - Allowlist matching: exact hostname OR wildcard prefix (`*.googleapis.com` → `foo.googleapis.com` allowed, `googleapis.com` NOT allowed — industry convention, explicit in the docs).
 - Logs one line per decision to stdout (JSON): `{ts, session_id, host, port, decision, bytes_in?, bytes_out?}`. Docker logs surfaces it.
-- Exposes `/healthz` on TCP 8119 for the orchestrator to poll.
+- Exposes `/healthz` on TCP 8119 for the orchestrator to poll, with `/readyz` as a compatibility alias.
 - Hardening: reject headers > 8 KiB, reject CONNECT lines > 256 bytes, refuse HTTP/2 upgrades (we only proxy HTTP/1.1), timeout idle tunnels at 10 min.
 
 Alternative considered: `tinyproxy` (C, existing). Rejected because it doesn't filter DNS (a confined container could exfiltrate via raw UDP 53), wildcard host matching is awkward, and we already have Node.js in our stack.
@@ -104,7 +104,7 @@ For each session whose environment has `networking.type === "limited"`:
 2. Before spawning the agent:
    a. Create the two per-session networks (`--internal` + egress) via dockerode.
    b. Spawn the egress-proxy sidecar with the rendered allowlist, attach to both networks.
-   c. Poll sidecar `/healthz` (readyTimeoutMs window).
+   c. Poll sidecar `/readyz` (or `/healthz`, both are served) within the readyTimeoutMs window.
 3. Spawn the agent container with `--network openclaw-sess-<sid>-confined`. Set:
    - `HTTP_PROXY=http://openclaw-sess-<sid>-proxy:8118`
    - `HTTPS_PROXY=http://openclaw-sess-<sid>-proxy:8118`
@@ -158,7 +158,7 @@ Revised against advisor's scope review — HTTP+DNS proxy with robust untrusted-
 | Step | Scope | Files | Est. |
 |---|---|---|---|
 | **1. Schema** | Extend `NetworkingSchema` + types tests | `src/orchestrator/types.ts`, new `src/orchestrator/types.test.ts` case | 1 h |
-| **2. Proxy — HTTP side** | stdlib `http.createServer` + CONNECT, allowlist matching, `/healthz` | `docker/egress-proxy/{Dockerfile,proxy.mjs,README.md}` | 5 h |
+| **2. Proxy — HTTP side** | stdlib `http.createServer` + CONNECT, allowlist matching, `/healthz` + `/readyz` | `docker/egress-proxy/{Dockerfile,proxy.mjs,README.md}` | 5 h |
 | **3. Proxy — DNS side** | `dgram` UDP 53 listener + wire format parse + forward/NXDOMAIN | same | 3 h |
 | **4. Proxy — hardening + unit tests** | Oversized headers, malformed CONNECT, HTTP/2 reject, timeouts, wildcard matcher edge cases | `docker/egress-proxy/*.test.mjs` | 4 h |
 | **5. Control-plane network** | Create `openclaw-control-plane` in `DockerContainerRuntime.ensureNetwork()`, connect orchestrator to both networks on startup | `src/runtime/docker.ts`, `docker-compose.yml` | 2 h |
@@ -200,5 +200,5 @@ Each shipment stands alone. If shipment 2 surfaces a Docker-networking issue on 
 - `networking: limited` accepted by schema with validation.
 - E2E test passes all 8 cases against a real Docker daemon on Linux.
 - README documents the feature, including the enforcement boundary.
-- `openclaw-egress-proxy` image published to GHCR.
+- `ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest` published to GHCR.
 - No regression on existing `networking: unrestricted` path (default behavior unchanged).

@@ -152,6 +152,16 @@ curl -s "$ORCH/v1/sessions/$SESSION/events" \
   | jq -r '[.events[]|select(.type=="agent.message")]|last|.content'
 ```
 
+## Routine redeploy
+
+For later updates on an existing instance, use:
+
+```bash
+ssh ubuntu@<ip> "sudo bash -lc 'cd /opt/openclaw && git pull && docker compose pull && docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest && docker compose up -d'"
+```
+
+The explicit `docker pull` is load-bearing because the `egress-proxy` sidecar is not a compose-managed service.
+
 ## Cost breakdown
 
 The GCE instance cost is fixed (actually per-second billed but effectively a monthly rate for always-on workloads). What scales is the LLM token cost, which is billed directly by your provider.

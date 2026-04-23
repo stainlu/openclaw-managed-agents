@@ -9,7 +9,7 @@ Design doc: [`docs/designs/networking-limited.md`](../../docs/designs/networking
 | Port | Proto | Purpose |
 |---|---|---|
 | `8118` | TCP | HTTP(S) proxy. The agent container's `HTTP_PROXY` / `HTTPS_PROXY` env vars point here. |
-| `8119` | TCP | `GET /healthz` liveness probe (orchestrator uses this to decide when the sidecar is ready). |
+| `8119` | TCP | `GET /healthz` liveness probe (`/readyz` is a compatibility alias; the orchestrator can use either). |
 | `53` | UDP | DNS filter. The agent container's `--dns` flag points here so raw `socket` / `getaddrinfo` code hits the allowlist too, not just HTTP clients. |
 
 ## Config (env vars)

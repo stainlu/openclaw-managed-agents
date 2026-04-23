@@ -224,7 +224,7 @@ POST   /v1/sessions/:id/cancel            # abort in-flight run
 
 POST events accepts two event types:
 - `{"content":"...","model":"..."}` — user message (triggers agent loop, optional model override)
-- `{"type":"user.tool_confirmation","toolUseId":"...","result":"allow"}` — resolve a pending tool confirmation
+- `{"type":"user.tool_confirmation","toolUseId":"<approval_id>","result":"allow"}` — resolve a pending tool confirmation (`toolUseId` is a legacy field name; pass the `approval_id` from the SSE event)
 
 **OpenAI compatibility**
 
@@ -270,7 +270,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Agent versioning.** Every update creates an immutable version. Optimistic concurrency via `version` field on PATCH. List the full history. Archive agents without losing data.
 
-**Permission policy.** Three modes: `always_allow` (default), `deny` (block specific tools entirely), and `always_ask` (pause for client confirmation before executing specific tools). The `always_ask` flow uses OpenClaw's `before_tool_call` plugin hook with `requireApproval` — the agent blocks, the orchestrator surfaces a confirmation request via SSE, and the client resolves it via `user.tool_confirmation`.
+**Permission policy.** Three modes: `always_allow` (default), `deny` (block specific tools entirely), and `always_ask` (pause for client confirmation before executing specific tools). The `always_ask` flow uses OpenClaw's `before_tool_call` plugin hook with `requireApproval` — the agent blocks, the orchestrator surfaces a confirmation request via SSE (`approval_id` for resolution, `tool_call_id` for correlation), rehydrates pending approvals from the gateway on warm reuse / adoption, and the client resolves it via `user.tool_confirmation`.
 
 **MCP servers.** Agents declare `mcpServers` (object keyed by server name, value is either a stdio `{command, args, env, cwd}` or HTTP `{url, headers}` config). The orchestrator forwards them into the container's `openclaw.json` at spawn time; OpenClaw's MCP integration handles the rest. Matches Claude Managed Agents' shape so SDKs porting across translate without rewrites.
 
@@ -278,7 +278,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Networking: `limited`.** Per-session confined `--internal` Docker network + egress-proxy sidecar filtering hostname allowlist at HTTP + DNS layers. Enforcement at the Docker bridge, not inside the container — raw-socket / DNS-exfil paths both closed. Proven with a 9-case E2E script in CI on native Linux (`test/e2e-networking.sh`).
 
-**Pre-warmed container pool.** When a non-delegating agent is created, a container boots in the background. The first session on that agent claims the pre-warmed container instead of cold-spawning. After claiming, the pool replenishes automatically. Active containers are reaped after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min) of no use; the warm bucket is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` (default 5) with oldest-first eviction. Measured pool reuse: 4 s vs 78 s cold-start on Hetzner CAX11.
+**Pre-warmed container pool.** When a non-delegating agent is created, a template-level container boots in the background. The first session whose boot config is also template-level claims the pre-warmed container instead of cold-spawning. Sessions with session-specific boot inputs (vault credentials, `networking: limited`, package preinstalls) bypass warm reuse and cold-spawn their own sandbox. After a warm claim, the pool replenishes automatically. Active containers are reaped after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min) of no use; the warm bucket is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` (default 5) with oldest-first eviction. Measured pool reuse: 4 s vs 78 s cold-start on Hetzner CAX11.
 
 **Delegated subagents.** An agent can delegate tasks to other agents via the `openclaw-call-agent` CLI. Children are first-class sessions — fully inspectable through the same API. Allowlists, depth caps, and HMAC-signed tokens enforce who can call whom. Subagent transcripts are not hidden behind an opaque tool result.
 
@@ -292,7 +292,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Cancel + queue.** Cancel aborts the in-flight run via the WebSocket control plane. Events posted to a busy session queue automatically and drain in order.
 
-**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from the provider's own billing data — cache-aware, not a static price sheet. Anthropic, OpenAI, Google, xAI, Mistral, OpenRouter, and Bedrock auto-report non-zero cost with no config. Moonshot's upstream catalog currently ships zero prices (real prices tracked in [openclaw/openclaw#67928](https://github.com/openclaw/openclaw/pull/67928)); once that PR lands and the openclaw pin bumps, Moonshot reports real cost via the same path with zero runtime changes.
+**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from the provider's own billing data — cache-aware, not a static price sheet. Anthropic, OpenAI, Google, xAI, Mistral, OpenRouter, and Bedrock auto-report non-zero cost with no config. Moonshot currently gets real non-zero cost via the runtime's `provider-prices.json` overrides layered onto the bundled catalog; when upstream ships the same prices, deleting the local override block cleanly defers back to upstream.
 
 **OpenAI SDK drop-in.** Point any OpenAI SDK at `http://<host>:8080/v1` with an `x-openclaw-agent-id` header. Sticky sessions via the `user` field. Real per-token streaming (not emulated) when `stream: true`.
 
@@ -349,6 +349,14 @@ export MOONSHOT_API_KEY=sk-...
 `e2-medium` (1 vCPU burstable / 4 GB / 20 GB PD, ~$25/month) is the default and matches the Hetzner/Lightsail capacity floor. Override `GCE_MACHINE_TYPE=e2-micro` for the Always Free tier ($0/mo in us-east1/us-central1/us-west1, 1 GB RAM — good for smoke testing). GCE's NVMe-backed disk puts first-turn cold spawn in Hetzner territory (~80 s), not Lightsail territory (~5 min).
 [Full guide](./docs/deploying-on-gcp-compute.md)
 
+### Routine redeploy on an existing VM
+
+```bash
+ssh <user>@<host> 'cd /opt/openclaw && git pull && docker compose pull && docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest && docker compose up -d'
+```
+
+Use `root` on the Hetzner path. On Lightsail and GCE, `/opt/openclaw` is root-owned, so wrap the inner command with `sudo bash -lc '...'`.
+
 ### Cost by deployment target (infrastructure only, no token costs)
 
 | | 1 session 24/7 | 10 sessions 24/7 | 100 sessions 24/7 |
@@ -373,7 +381,7 @@ Orchestrator (Hono, TypeScript)
   |-- QueueStore (durable per-session event queue)
   |-- SecretStore (HMAC secret for subagent tokens)
   |-- AuditStore (structured audit log with retention)
-  |-- SessionContainerPool (per-session active + per-agent pre-warmed + adopt on restart)
+  |-- SessionContainerPool (per-session active + template-level warm pool + adopt on restart)
   |-- GatewayWebSocketClient (cancel, model override, tool confirmation, observer-resume)
   |-- PiJsonlEventReader (event log, cost, SSE, size sampler)
   |-- ParentTokenMinter (HMAC-SHA256 subagent auth, persisted)
@@ -393,7 +401,7 @@ The orchestrator keeps only ephemeral caches in memory; all commitments live in 
 
 ## Test status
 
-**175 tests pass**, covering unit + restart-safety + contract + integration shapes:
+**195 tests pass**, covering unit + restart-safety + contract + integration shapes:
 
 - Session-centric resume (multi-turn memory across turns, across container restart, across orchestrator restart)
 - Cost accounting from provider billing data

@@ -1,5 +1,7 @@
 # Audit 02 — Router brain (`src/orchestrator/router.ts`)
 
+> Historical audit snapshot. Findings in this file were accurate at the time of the audit, but later commits may have fixed some or all of them. Treat this as a point-in-time review, not the current architecture contract.
+
 Auditor: Worker 2/16, parallel strategy audit. Scope locked to the two files listed below.
 
 ## Scope

@@ -1,5 +1,7 @@
 # Audit 09 — Restart safety (B4 + B6)
 
+> Historical audit snapshot. Findings in this file were accurate at the time of the audit, but later commits may have fixed some or all of them. Treat this as a point-in-time review, not the current architecture contract.
+
 **Scope.** `src/index.ts` (startup + shutdown blocks), `src/runtime/docker.ts::listManaged`, `src/runtime/pool.ts::adopt` and `::shutdown`, `src/store/sqlite.ts` (`queued_events` schema + `SqliteQueueStore`), `src/orchestrator/router.ts::observeAdoptedSession/finalizeFromJsonl/endRunFailure`. E2E skipped per brief.
 
 **The bar.** Strategy §"Why we exist" #4 (`docs/strategy.md:176-180`) calls restart safety a "reusable correctness asset" and a structurally-permanent advantage over Claude MA (strategy line 424: `Restart safety invariants | Not documented | **Ahead (durable queue, HMAC persistence, observer-resume)**`). The category-defining quote from Anthropic's own engineering post (`https://www.anthropic.com/engineering/managed-agents`, cited at strategy:15 and :158) is that the pre-decoupling architecture had the property *"if a container failed, the session was lost."* Our claim — restated at strategy:327 — is: *"any orchestrator picks up any session; adoption on restart reconnects without respawn."* The operator bar is: SIGKILL mid-turn → every running session resumes with zero data loss; and the same must hold for orderly SIGTERM.

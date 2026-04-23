@@ -156,6 +156,16 @@ curl -s "$ORCH/v1/sessions/$SESSION/events" \
   | jq -r '[.events[]|select(.type=="agent.message")]|last|.content'
 ```
 
+## Routine redeploy
+
+For later updates on an existing instance, use:
+
+```bash
+ssh ubuntu@<ip> "sudo bash -lc 'cd /opt/openclaw && git pull && docker compose pull && docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest && docker compose up -d'"
+```
+
+The explicit `docker pull` is load-bearing because the `egress-proxy` sidecar is not a compose-managed service.
+
 ## Measured performance (live on 2026-04-16)
 
 | Metric | `medium_3_0` bundle | Hetzner CAX11 (comparison) |
@@ -210,7 +220,7 @@ packages:
 runcmd:
   - curl -fsSL https://get.docker.com | sh
   - git clone https://github.com/stainlu/openclaw-managed-agents.git /opt/openclaw
-  - cd /opt/openclaw && echo "MOONSHOT_API_KEY=$MOONSHOT_API_KEY" > .env && docker compose up -d --build
+  - cd /opt/openclaw && echo "MOONSHOT_API_KEY=$MOONSHOT_API_KEY" > .env && docker compose pull && docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest && docker compose up -d
 CLOUDINIT
 )"
 
@@ -272,5 +282,5 @@ Each new backend is a ~300-line sibling of this script. No orchestrator core cha
 
 - **`aws sts get-caller-identity` fails with "Unable to locate credentials"**: your credentials aren't configured. Run `aws configure` and enter your access key pair, or export the env vars directly.
 - **`aws lightsail create-instances` fails with "User is not authorized"**: your IAM principal doesn't have Lightsail permissions. Attach the `AmazonLightsailFullAccess` managed policy in the IAM console, or use the fine-grained list from the prereqs section.
-- **Instance reaches "running" state but `/healthz` never responds**: cloud-init is still running. SSH in (`ssh ubuntu@<ip>`) and inspect `sudo tail -f /var/log/openclaw-bootstrap.log`. Most commonly this is an image-build failure (check `cd /opt/openclaw && docker compose logs`).
+- **Instance reaches "running" state but `/healthz` never responds**: cloud-init is still running. SSH in (`ssh ubuntu@<ip>`) and inspect `sudo tail -f /var/log/openclaw-bootstrap.log`. Most commonly this is an image-pull or compose bootstrap failure (check `cd /opt/openclaw && sudo docker compose logs`).
 - **SSH to port 22 fails**: remember SSH is break-glass only — if you're just running routine operations, the HTTP API on port 8080 is all you need. If you genuinely need a shell, use the **Lightsail browser-based SSH console** (in the AWS console → Lightsail → your instance → "Connect using SSH" button) — it tunnels over HTTPS and bypasses any client-side networking restrictions.

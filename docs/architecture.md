@@ -77,29 +77,30 @@ Operator-role WebSocket client to each live container's gateway control plane. D
 - **`steer(sessionKey, message)`** → `sessions.steer` — interrupt the active run with a new message. Not currently wired to an HTTP surface (see "Item 7b deferred" in the plan).
 - **`send(sessionKey, message)`** → `sessions.send` — send without interrupting. Not currently wired.
 - **`patch(sessionKey, fields)`** → `sessions.patch` — mutate session fields. Used for the per-event `model` override on `POST /v1/sessions/:id/events`.
-- **`approvalResolve(id, decision, denyMessage?)`** → `plugin.approval.resolve` — resolves a pending tool-confirmation approval. Backs the `user.tool_confirmation` event type when the agent template has `always_ask` permission policy.
-- **`onEvent(eventName, handler)`** — subscribes to gateway broadcast events. Returns an unsubscribe function. Used by the orchestrator to listen for `plugin.approval.requested` events.
+- **`approvalResolve(id, decision)`** → `plugin.approval.resolve` — resolves a pending tool-confirmation approval. Backs the `user.tool_confirmation` event type when the agent template has `always_ask` permission policy.
+- **`approvalList()`** → `plugin.approval.list` — returns the gateway's current pending approvals so the orchestrator can rehydrate approval state after warm reuse, adoption, or reconnect.
+- **`onEvent(eventName, handler)`** — subscribes to gateway broadcast events. Returns an unsubscribe function. Used by the orchestrator to listen for both `plugin.approval.requested` and `plugin.approval.resolved`.
 - **`close()`** — shuts the socket down, rejects every outstanding request.
 
 Auth is the same `OPENCLAW_GATEWAY_TOKEN` the orchestrator uses on HTTP. The `dangerouslyDisableDeviceAuth: true` flag in the generated `openclaw.json` is safe because the gateway is bound to `openclaw-net` (a private Docker bridge), only the orchestrator ever reaches it, and the token is per-container random.
 
-### SessionEventQueue (`src/orchestrator/event-queue.ts`)
+### QueueStore (`src/store/{types,sqlite,memory}.ts`)
 
-In-memory per-session FIFO. When `POST /v1/sessions/:id/events` arrives while the session is already `running`, the event is enqueued instead of returning 409. The router's `executeInBackground` success path pops the queue and recursively starts the next run without flipping status to `idle` — polling clients never observe a brief idle window between queued runs.
+Durable per-session FIFO. When `POST /v1/sessions/:id/events` arrives while the session is already `running`, the event is enqueued instead of returning 409. The router's `executeInBackground` success path shifts the next queued event and recursively starts the next run without flipping status to `idle` — polling clients never observe a brief idle window between queued runs.
 
-Queue is lost on orchestrator restart, consistent with Item 3's rehydration semantics.
+On the default SQLite backend, the queue survives orchestrator restart. The in-memory backend drops it, which is acceptable because `memory` is test-only.
 
 ### AgentRouter (`src/orchestrator/router.ts`)
 
 The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the event queue, and a config bundle. Exposes six methods:
 
 - **`createSession(agentId, opts?)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. Validates the agent is not archived. The container is only spawned when the first event arrives (or earlier via warm-up).
-- **`warmSession(sessionId)`** — proactively boots a container for a session so it's ready by the time the first event arrives. Called by the server right after `createSession`. Fire-and-forget.
-- **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a session. **Skipped for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`). `buildSpawnOptions` bakes the sessionId into both Docker labels and the signed `OPENCLAW_ORCHESTRATOR_TOKEN` env var, and Docker env is immutable post-create; a warm container built with the `__warm__` placeholder would carry that placeholder into every subagent spawn the claimed session later hosts, producing wrong token lineage (the orchestrator doesn't currently verify `parentSessionId` against the session store, so the failure would be silent rather than a crash). Skipping the warm pool for delegating agents preserves the latency benefit for the common non-delegating case without the identity smear.
+- **`warmSession(sessionId)`** — proactively boots template-level warmth for a session so the first event can claim a ready container. Sessions with dedicated container config (`vaultId`, `networking: limited`, package installs) bypass this path and cold-spawn.
+- **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a compatible session. **Skipped for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`). `buildSpawnOptions` bakes the sessionId into both Docker labels and the signed `OPENCLAW_ORCHESTRATOR_TOKEN` env var, and Docker env is immutable post-create; a warm container built with the `__warm__` placeholder would carry that placeholder into every subagent spawn the claimed session later hosts, producing wrong token lineage (the orchestrator doesn't currently verify `parentSessionId` against the session store, so the failure would be silent rather than a crash). Skipping the warm pool for delegating agents preserves the latency benefit for the common non-delegating case without the identity smear.
 - **`runEvent({sessionId, content, model?})`** — idle path starts a background run (`beginRun` + fire-and-forget `executeInBackground`); running path enqueues. Returns `{session, queued}`.
 - **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled`. Cancellation is a deliberate stop, not an agent failure.
-- **`confirmTool(sessionId, approvalId, decision, denyMessage?)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
-- **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model override, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
+- **`confirmTool(sessionId, approvalId, decision)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
+- **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model override, installs one approval subscription set per session, rehydrates pending approvals from `plugin.approval.list`, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
 - **`handleBackgroundFailure`** (private) — guard against overwriting a cancel's idle state with an in-flight HTTP error. If `session.status !== "running"` at catch time, the failure is a side-effect of an external cancel and we leave the session alone. Otherwise drain the queue + evict the container + `endRunFailure`.
 
 ### Server (`src/orchestrator/server.ts`)
@@ -111,13 +112,13 @@ The Hono app. Every route in the API section of the README registers here. Notab
 - **Environment routes** — CRUD. Deletion rejected (409) while sessions reference the environment.
 - **Session routes** — `POST /v1/sessions` validates environmentId if provided, fires proactive `warmSession` in the background. `POST /v1/sessions/:id/events` dispatches on event type: `user.message` triggers `runEvent`, `user.tool_confirmation` triggers `confirmTool`.
 - **SSE streaming** — `GET /v1/sessions/:id/events?stream=true` uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`. Emits an initial `session.status_*` event on connect, checks for status transitions on every yielded event and on every 15 s heartbeat tick, and emits a final status event when the follow loop ends.
-- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Polls every 500 ms with a 600 s cap. `stream: true` is emulated (three chunks + `[DONE]`).
+- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session.
 
 ### Delegated subagents (`src/runtime/parent-token.ts` + `docker/call-agent.mjs`)
 
 The Item 12-14 delegation story is **entirely additive on top of the existing session/event API**. No new HTTP routes, no new Session type, no orchestrator-side "subagent" concept — a subagent is simply a `Session` created by an in-container CLI tool that calls back to `POST /v1/sessions`.
 
-- **`ParentTokenMinter`** (`src/runtime/parent-token.ts`) — one instance per orchestrator process. Generates a random 32-byte HMAC secret in its constructor; `mint()` produces compact `<base64url-payload>.<base64url-mac>` tokens containing `{parentSessionId, parentAgentId, allowlist, remainingDepth, expiresAt}`; `verify()` checks the signature in constant time, validates expiration, and returns the payload or undefined. The secret never leaves the process and regenerates on every restart, invalidating every outstanding token — consistent with the runtime's other "restart drops ephemeral state" invariants (Items 3, 7).
+- **`ParentTokenMinter`** (`src/runtime/parent-token.ts`) — one instance per orchestrator process. `src/index.ts` loads its HMAC secret from `SecretStore`, generating and persisting one on first boot; `mint()` produces compact `<base64url-payload>.<base64url-mac>` tokens containing `{parentSessionId, parentAgentId, allowlist, remainingDepth, expiresAt}`; `verify()` checks the signature in constant time, validates expiration, and returns the payload or undefined. Because the secret is persisted, outstanding delegation tokens survive orchestrator restarts and deploys.
 - **`openclaw-call-agent` CLI** (`docker/call-agent.mjs`, installed into the runtime image at `/usr/local/bin/openclaw-call-agent`) — a single-file Node script the agent invokes through its built-in `exec` tool. Reads `OPENCLAW_ORCHESTRATOR_URL` and `OPENCLAW_ORCHESTRATOR_TOKEN` from the container env (injected at spawn time by `AgentRouter.executeInBackground`), posts `POST /v1/sessions` + `POST /events`, polls for completion, extracts the subagent's final `agent.message` from the JSONL event log, prints one line of JSON to stdout, exits. No Pi extension, no OpenClaw plugin — this matches [Mario Zechner's own MCP critique](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/) literally ("Build CLI tools with README files"). Progressive disclosure via `openclaw-call-agent --help`.
 - **Policy surface** — agent templates gain `callableAgents: string[]` (default `[]`) and `maxSubagentDepth: number` (default `0`). The router's `executeInBackground` reads both off the agent template when minting a token, and appends a short delegation hint to `OPENCLAW_INSTRUCTIONS` only when `callableAgents.length > 0 && remainingSubagentDepth > 0`. The orchestrator's `POST /v1/sessions` handler verifies the `X-OpenClaw-Parent-Token` header when present: rejects with HTTP 403 if the target agent is not in the allowlist, if the signature fails, if the token is expired, or if remaining depth is zero. Child sessions inherit `parent.remainingDepth - 1` as their own `remainingSubagentDepth`, persisted on the sessions table so container respawn mints a correctly-scoped token.
 - **Observability is a side-effect, not new plumbing.** A subagent session is a first-class `Session` — visible via `GET /v1/sessions`, inspectable via `GET /v1/sessions/:id/events`, streamable via `?stream=true`, cancellable via `POST /v1/sessions/:id/cancel`. Cost is rolled up per Item 9. The parent's `exec` tool output captures the CLI's stdout (which includes the `subagent_session_id` and `events_url`), so a reader of the parent's JSONL can navigate directly to the child.
@@ -132,7 +133,7 @@ Agent templates support three permission policies:
 - **`deny`** — specified tools are blocked entirely via OpenClaw's `tools.deny` config
 - **`always_ask`** — specified tools pause for client confirmation before execution
 
-The `always_ask` flow uses an OpenClaw plugin installed in the runtime container image at `/opt/openclaw-plugins/confirm-tools/`. The entrypoint copies it to `/workspace/extensions/confirm-tools/` (the plugin discovery path, derived from `OPENCLAW_STATE_DIR`) when `OPENCLAW_CONFIRM_TOOLS` is set. The plugin registers a `before_tool_call` hook via `definePluginEntry` (from `openclaw/plugin-sdk/core`) that returns `requireApproval` for matching tools. The gateway then broadcasts `plugin.approval.requested` to WS clients; the orchestrator's `GatewayWebSocketClient.onEvent()` listener receives it and can surface it as an `agent.tool_confirmation_request` SSE event. The client resolves it via `POST /v1/sessions/:id/events { type: "user.tool_confirmation", toolUseId, result }`, which the server routes to `router.confirmTool()` → `wsClient.approvalResolve()`.
+The `always_ask` flow uses an OpenClaw plugin installed in the runtime container image at `/opt/openclaw-plugins/confirm-tools/`. The entrypoint copies it to `/workspace/extensions/confirm-tools/` (the plugin discovery path, derived from `OPENCLAW_STATE_DIR`) when `OPENCLAW_CONFIRM_TOOLS` is set. The plugin registers a `before_tool_call` hook via `definePluginEntry` (from `openclaw/plugin-sdk/core`) that returns `requireApproval` for matching tools. The gateway then broadcasts `plugin.approval.requested` / `plugin.approval.resolved` to WS clients; the orchestrator keeps one approval subscription set per session, rehydrates pending approvals via `plugin.approval.list` after warm reuse or adoption, and surfaces them as `agent.tool_confirmation_request` SSE events. Those SSE events carry both `approval_id` (resolver key) and `tool_call_id` (used to correlate the approval with the matching `agent.tool_use` row). The client resolves the approval via `POST /v1/sessions/:id/events { type: "user.tool_confirmation", toolUseId: <approval_id>, result }`, which the server routes to `router.confirmTool()` → `wsClient.approvalResolve()`.
 
 ### Python SDK (`sdk/python/`)
 
@@ -140,7 +141,7 @@ Typed Python client publishable to PyPI as `openclaw-managed-agents`. Uses `http
 
 ### DockerContainerRuntime (`src/runtime/docker.ts`)
 
-`dockerode`-backed implementation of the `ContainerRuntime` interface. Spawns containers on `openclaw-net` (a Docker bridge), labels them `managed-by=openclaw-managed-agents` for orphan detection, caps memory at 2 GiB and PIDs at 512, waits for `/readyz` on the gateway port. `cleanupOrphaned()` is called by `index.ts` at startup — it's a concrete method on the Docker implementation, not on the interface, because the Docker-label filter is backend-specific.
+`dockerode`-backed implementation of the `ContainerRuntime` interface. Spawns containers on `openclaw-net` (a Docker bridge), labels them `managed-by=openclaw-managed-agents` for orphan detection, caps memory at 2 GiB and PIDs at 512, waits for `/readyz` on the gateway port. Normal startup uses `listManaged()` plus selective pool adoption to preserve valid session containers and stop only true orphans. `cleanupOrphaned()` remains a concrete Docker-only helper for explicit orphan sweeps / tests, not the default startup path.
 
 The interface is the seam for cloud backends (ECS, Cloud Run, Container Apps, ECI, VKE) — new backends are drop-in alongside `docker.ts` without touching the pool, router, or server.
 
@@ -267,9 +268,9 @@ OpenClaw provider plugins fall into two categories, and the entrypoint handles e
 
 **Category B: require an onboarding flow to materialize the catalog.** Plugins built with `defineSingleProviderPluginEntry` — for example `moonshot` — define their catalog declaratively through a `catalog.buildProvider` hook that is only invoked during the interactive `openclaw models auth login` flow (`applyMoonshotConfig` in `extensions/moonshot/onboard.ts`). Without that flow, the catalog never appears in the runtime registry and invocation fails with `Unknown model`.
 
-For Category B providers the entrypoint runs `docker/apply-provider-config.mjs` at container startup. That script dynamic-imports the bundled openclaw extension's catalog-builder (e.g. `buildMoonshotProvider()` from `openclaw/dist/extensions/moonshot/provider-catalog.js`) and merges the full catalog into `config.models.providers.<id>`. The upstream catalog is the source of truth — when upstream prices or model IDs change (see [openclaw/openclaw#67928](https://github.com/openclaw/openclaw/pull/67928) for real Moonshot prices), we pick up the change on the next image rebuild with no downstream edit required.
+For Category B providers the entrypoint runs `docker/apply-provider-config.mjs` at container startup. That script dynamic-imports the bundled openclaw extension's catalog-builder (e.g. `buildMoonshotProvider()` from `openclaw/dist/extensions/moonshot/provider-catalog.js`) and merges the full catalog into `config.models.providers.<id>`. For providers whose bundled catalog is still missing real prices, the script then patches the matching models from `docker/provider-prices.json`. That means the runtime can ship real Moonshot `cost_usd` today while still deferring back to upstream as soon as upstream prices land.
 
-Earlier versions of this runtime hand-mirrored the provider block inside `docker/entrypoint.sh` (the old `PROVIDER_BLOCK_JSON` variable) and had a parallel `OPENCLAW_MOONSHOT_PRICE_*_USD_PER_M` env-var override path to compensate for the upstream catalog's zero prices. Both are gone; the bundled extension is now the single source of truth. Adding another Category B provider (deepseek, qwen, fireworks, together, kilocode) is one line in `PROVIDER_CATALOGS` at the top of `apply-provider-config.mjs`.
+Earlier versions of this runtime hand-mirrored the provider block inside `docker/entrypoint.sh` (the old `PROVIDER_BLOCK_JSON` variable). That is gone. The current layering is: upstream catalog first, then a small local price-override table where upstream is still incomplete. Adding another Category B provider (deepseek, qwen, fireworks, together, kilocode) is one line in `PROVIDER_CATALOGS` at the top of `apply-provider-config.mjs`.
 
 ### Session persistence and continuity
 
@@ -445,8 +446,9 @@ in the pool for the next event.
       model: afterMsg.model ?? agent.model.primary
       choices: [{index: 0, message: {role: "assistant", content: afterMsg.content}, finish_reason: "stop"}]
       usage: { prompt_tokens, completion_tokens, total_tokens } from afterMsg
-10. If body.stream === true, write the same content as an emulated
-    SSE stream (three chunks: role → content → finish, then [DONE]).
+10. If body.stream === true, proxy the container's real SSE response
+    byte-for-byte (OpenAI-compatible `ChatCompletionChunk` frames,
+    terminated by `data: [DONE]`).
 ```
 
 ### Live event streaming (`GET /v1/sessions/:id/events?stream=true`)
@@ -487,7 +489,7 @@ Why read from the JSONL instead of computing cost in the orchestrator:
 2. **Cache-aware for free.** Moonshot and Anthropic both bill `cacheRead` tokens at a much lower rate than fresh input. A naive `tokens * perMillion` sheet ignores that and reports the wrong number. Pi's per-turn cost already includes the cache discount.
 3. **Zero hardcoding.** The orchestrator is provider-agnostic. It does not embed knowledge of any particular provider's pricing.
 
-When cost is zero: if a provider plugin does not report cost, `message.usage.cost.total` stays 0, and that's what the orchestrator rolls up. Moonshot's upstream catalog currently ships zero prices (tracked by [openclaw/openclaw#67928](https://github.com/openclaw/openclaw/pull/67928), which populates real per-token prices); once that PR lands and we bump the `openclaw` pin in `Dockerfile.runtime`, Moonshot runs start reporting real `cost_usd` through `apply-provider-config.mjs` with no other code change required. Any Category A provider (anthropic, openai, google, xai, mistral, openrouter, amazon-bedrock) whose plugin auto-registers its catalog reports a real non-zero value today without any operator action.
+When cost is zero: if a provider plugin does not report cost, `message.usage.cost.total` stays 0, and that's what the orchestrator rolls up. Today the runtime patches Moonshot prices from `docker/provider-prices.json` on top of the bundled catalog, so Moonshot runs report real non-zero `cost_usd` even before the upstream catalog is fixed. Once upstream ships those same prices, deleting the local override block cleanly defers back to upstream. Any Category A provider (anthropic, openai, google, xai, mistral, openrouter, amazon-bedrock) whose plugin auto-registers its catalog reports a real non-zero value with no operator action.
 
 ## What lives where
 
@@ -507,7 +509,7 @@ When cost is zero: if a provider plugin does not report cost, `message.usage.cos
 | Per-session container lifecycle + reuse | Orchestrator (`src/runtime/pool.ts`) |
 | Ephemeral session cleanup (Item 8) | Orchestrator — pool's `cleanupOnReap` callback wired in `src/index.ts` |
 | WebSocket control client per container | Orchestrator (`src/runtime/gateway-ws.ts`) |
-| In-memory per-session event queue | Orchestrator (`src/orchestrator/event-queue.ts`) |
+| Durable per-session event queue | Orchestrator (`QueueStore` in `src/store/{types,sqlite,memory}.ts`) |
 | Run orchestration + queue drain + cost rollup | Orchestrator (`src/orchestrator/router.ts`) |
 | Parent-token minting + verification (Item 12-14) | Orchestrator (`src/runtime/parent-token.ts`) |
 | In-container delegation CLI (`openclaw-call-agent`) | Runtime image (`docker/call-agent.mjs` → `/usr/local/bin/openclaw-call-agent`) |
@@ -549,7 +551,7 @@ Future upstream contributions (nice-to-have, not blocking):
 - **`defineSingleProviderPluginEntry` auto-register** — would eliminate the `PROVIDER_BLOCK_JSON` hack in `docker/entrypoint.sh` for Category B providers (currently moonshot; likely deepseek, qwen in the future).
 - **`SessionStorage` abstraction** — would let us swap the host bind mount for S3 / GCS / Azure Blob / Aliyun OSS / Volcengine TOS without reimplementing Pi's SessionManager.
 - **`SecretRef` extension** — would let us pull provider API keys from AWS Secrets Manager / GCP Secret Manager / Azure Key Vault with rotation, replacing the env-var passthrough.
-- **Real-time delta forwarding** — an HTTP/SSE wrapper around Pi's `AgentSessionEvent` bus would let `GET /v1/sessions/:id/events?stream=true` and `POST /v1/chat/completions stream=true` forward token-by-token deltas instead of polling the JSONL.
+- **Real-time delta forwarding for the session event stream** — `POST /v1/chat/completions stream=true` already forwards the container's real SSE chunks, but `GET /v1/sessions/:id/events?stream=true` still tail-follows the JSONL. An HTTP/SSE wrapper around Pi's `AgentSessionEvent` bus would let the session event stream surface token deltas too.
 - **`sessions.compact` and `sessions.navigateTree`** exposed over the gateway WS control plane — currently there's no WS handler for compact or branch, which is why the runtime's control surface stops at cancel + steer + send + patch.
 
 ## Observability
@@ -602,7 +604,9 @@ The project has two layers of tests that serve different purposes.
 **Unit tests (`src/**/*.test.ts`, vitest).** Fast, no Docker required. Cover the three modules that encode load-bearing semantics you cannot see through the HTTP surface:
 
 - `src/runtime/parent-token.test.ts` — HMAC round-trip, rejection of tampered / expired / malformed / wrong-secret tokens, allowlist + depth edge cases.
-- `src/orchestrator/event-queue.test.ts` — FIFO order, per-session isolation, clear semantics.
+- `src/store/queue.test.ts` — FIFO order, per-session isolation, durable clear / shift semantics on the shared `QueueStore` contract.
+- `src/orchestrator/router.test.ts` — router decision tree, warm-pool reuse vs bypass, approval lifecycle, cancel / failure cleanup.
+- `src/runtime/pool.test.ts` — active/warm pool semantics, readiness rollback, limited-networking spawn, warm reuse critical-path behavior.
 - `src/store/pi-jsonl.test.ts` — JSONL fixture files in a tmp dir; asserts user/assistant/tool/toolResult parsing, empty-content assistant message drop (Pi auto-retry noise), malformed-line recovery, `latestAgentMessage` reverse scan, `deleteBySession` removal of both JSONL and `sessions.json` entry.
 - `src/log.test.ts` — AsyncLocalStorage context: `withContext` propagation, `addContext` mutation semantics, parallel-scope isolation, `withCapturedContext` deferred-execution binding, nested-scope shadowing.
 - `src/metrics.test.ts` — Prometheus registry: expected metric names present, default Node.js process metrics attached, `service` label set, counter/gauge/histogram render correctly to the scrape endpoint.

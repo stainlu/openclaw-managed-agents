@@ -1,5 +1,7 @@
 # Audit 03 — Runtime pool (`SessionContainerPool`)
 
+> Historical audit snapshot. Findings in this file were accurate at the time of the audit, but later commits may have fixed some or all of them. Treat this as a point-in-time review, not the current architecture contract.
+
 Worker 3/16. Files in scope (no scope leak):
 
 - `/Users/stainlu/claude-project/openclaw-managed-agents/src/runtime/pool.ts`
