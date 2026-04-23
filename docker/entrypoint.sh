@@ -56,6 +56,10 @@ profile "entrypoint start"
 : "${OPENCLAW_TOOLS:=}"
 : "${OPENCLAW_INSTRUCTIONS:=}"
 
+OPENCLAW_EFFECTIVE_MODEL="${OPENCLAW_MODEL}"
+OPENCLAW_PROVIDER_MODEL="${OPENCLAW_MODEL}"
+USE_ZENMUX_PROVIDER="false"
+
 # Derive the plugin id from OPENCLAW_MODEL if not explicitly set. Model format
 # is "<provider>/<model-id>"; the provider half maps 1:1 to an OpenClaw plugin
 # id for every first-party provider except "bedrock" which enables the
@@ -66,6 +70,44 @@ if [[ -z "${OPENCLAW_PLUGIN:-}" ]]; then
     bedrock) OPENCLAW_PLUGIN="amazon-bedrock" ;;
     *)       OPENCLAW_PLUGIN="${provider_prefix}" ;;
   esac
+fi
+
+# ZenMux compatibility.
+#
+# ZenMux is OpenAI-compatible, but stable OpenClaw releases do NOT ship a
+# bundled `tencent`, `glm`, etc. provider plugin for raw model ids like
+# `tencent/hy3-preview`. ZenMux's own OpenClaw docs describe two supported
+# paths:
+#   1. a pending upstream ZenMux integration PR with auto-discovery, or
+#   2. manual config with an explicit `models.providers.zenmux` block and
+#      agent models under the `zenmux/` provider namespace.
+#
+# Managed Agents uses the stable npm release, so we implement path (2)
+# here. Two triggers:
+#   - explicit: OPENCLAW_MODEL already starts with `zenmux/`
+#   - fallback: the requested provider plugin is NOT bundled in the image,
+#               but ZENMUX_API_KEY is present
+#
+# In both cases the runtime synthesizes a minimal `models.providers.zenmux`
+# block and rewrites the effective model to `zenmux/<raw-model-id>`.
+if [[ "${OPENCLAW_MODEL}" == zenmux/* ]]; then
+  if [[ -z "${ZENMUX_API_KEY:-}" ]]; then
+    echo "[entrypoint] ERROR: OPENCLAW_MODEL uses zenmux/ but ZENMUX_API_KEY is unset" >&2
+    exit 1
+  fi
+  USE_ZENMUX_PROVIDER="true"
+  OPENCLAW_PLUGIN="zenmux"
+  OPENCLAW_PROVIDER_MODEL="${OPENCLAW_MODEL#zenmux/}"
+  OPENCLAW_EFFECTIVE_MODEL="zenmux/${OPENCLAW_PROVIDER_MODEL}"
+elif [[ -n "${ZENMUX_API_KEY:-}" && ! -d "/usr/local/lib/node_modules/openclaw/dist/extensions/${OPENCLAW_PLUGIN}" ]]; then
+  echo "[entrypoint] provider plugin '${OPENCLAW_PLUGIN}' is not bundled; routing ${OPENCLAW_MODEL} via ZenMux" >&2
+  USE_ZENMUX_PROVIDER="true"
+  OPENCLAW_PLUGIN="zenmux"
+  OPENCLAW_PROVIDER_MODEL="${OPENCLAW_MODEL}"
+  OPENCLAW_EFFECTIVE_MODEL="zenmux/${OPENCLAW_PROVIDER_MODEL}"
+elif [[ ! -d "/usr/local/lib/node_modules/openclaw/dist/extensions/${OPENCLAW_PLUGIN}" ]]; then
+  echo "[entrypoint] ERROR: provider plugin '${OPENCLAW_PLUGIN}' is not bundled in this OpenClaw runtime for model ${OPENCLAW_MODEL}. Set ZENMUX_API_KEY to route unsupported models via ZenMux, or choose a bundled provider." >&2
+  exit 1
 fi
 
 # Per-container auth token. The orchestrator generates this at spawn time and
@@ -188,6 +230,35 @@ else
   MCP_JSON='null'
 fi
 
+zenmux_json_fragment() {
+  if [[ "${USE_ZENMUX_PROVIDER}" != "true" ]]; then
+    printf 'null'
+    return
+  fi
+  jq -n \
+    --arg apiKey "${ZENMUX_API_KEY}" \
+    --arg modelId "${OPENCLAW_PROVIDER_MODEL}" \
+    --arg modelName "${OPENCLAW_PROVIDER_MODEL} via ZenMux" \
+    '{
+      baseUrl: "https://zenmux.ai/api/v1",
+      apiKey: $apiKey,
+      api: "openai-completions",
+      models: [
+        {
+          id: $modelId,
+          name: $modelName,
+          reasoning: false,
+          input: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 262144,
+          maxTokens: 8192
+        }
+      ]
+    }'
+}
+
+ZENMUX_JSON=$(zenmux_json_fragment)
+
 # Assemble the base config with jq (no string-escaping footguns). The
 # models.providers.<plugin-id> block that Category B providers need (moonshot,
 # deepseek, qwen, etc.) is populated by apply-provider-config.mjs after this
@@ -218,7 +289,7 @@ fi
 #      ever reaches it is the orchestrator we control.
 jq -n \
   --arg agent_id       "${OPENCLAW_AGENT_ID}" \
-  --arg model          "${OPENCLAW_MODEL}" \
+  --arg model          "${OPENCLAW_EFFECTIVE_MODEL}" \
   --arg instructions   "${OPENCLAW_INSTRUCTIONS}" \
   --arg plugin         "${OPENCLAW_PLUGIN}" \
   --arg confirm_tools  "${OPENCLAW_CONFIRM_TOOLS:-}" \
@@ -227,6 +298,7 @@ jq -n \
   --argjson denied     "${DENIED_TOOLS_JSON}" \
   --argjson otel       "${OTEL_JSON}" \
   --argjson mcp        "${MCP_JSON}" \
+  --argjson zenmux     "${ZENMUX_JSON}" \
 '
 {
   gateway: {
@@ -261,13 +333,14 @@ jq -n \
   },
   plugins: {
     entries: (
-      { ($plugin): { enabled: true } }
+      (if $plugin == "zenmux" then {} else { ($plugin): { enabled: true } } end)
       + (if $confirm_tools != "" then { "confirm-tools": { enabled: true } } else {} end)
     )
   }
 }
 + (if $otel != null then { diagnostics: { otel: $otel } } else {} end)
 + (if $mcp != null then { mcp: { servers: $mcp } } else {} end)
++ (if $zenmux != null then { models: { mode: "merge", providers: { zenmux: $zenmux } } } else {} end)
 ' > "${CONFIG_PATH}"
 profile "wrote base config via jq"
 
@@ -276,7 +349,7 @@ profile "wrote base config via jq"
 # auto-register their catalog at plugin load. Prints a status line on success,
 # fails loudly on error (we'd rather surface a clear startup failure than
 # silently produce a config with no provider block).
-if [ -f /opt/openclaw-plugins/apply-provider-config.mjs ]; then
+if [ "${OPENCLAW_PLUGIN}" != "zenmux" ] && [ -f /opt/openclaw-plugins/apply-provider-config.mjs ]; then
   echo "[entrypoint] applying ${OPENCLAW_PLUGIN} catalog via bundled openclaw extension"
   node /opt/openclaw-plugins/apply-provider-config.mjs "${CONFIG_PATH}" "${OPENCLAW_PLUGIN}"
   profile "apply-provider-config.mjs done"

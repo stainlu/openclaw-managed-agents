@@ -213,7 +213,9 @@ git clone --depth 1 https://github.com/stainlu/openclaw-managed-agents.git /opt/
 cd /opt/openclaw
 mkdir -p data/sessions data/state
 echo "MOONSHOT_API_KEY=$MOONSHOT_API_KEY" > .env
-docker compose pull && docker compose up -d
+docker compose pull
+docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest
+docker compose up -d
 SCRIPT
 
 # 3. Write ssh-keys metadata

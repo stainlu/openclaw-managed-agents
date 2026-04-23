@@ -50,14 +50,16 @@ RUN mkdir -p /workspace && chown -R openclaw:openclaw /workspace
 # Parsing: /src/agents/model-selection-normalize.ts in openclaw/openclaw.
 #
 # OPENCLAW_PLUGIN selects which provider plugin the entrypoint enables in the
-# generated config. It must match the <provider> prefix in OPENCLAW_MODEL.
+# generated config. Leave it empty by default so the entrypoint derives it from
+# OPENCLAW_MODEL at runtime; hardcoding a default here makes non-Moonshot model
+# ids inherit the wrong plugin when the caller doesn't explicitly override it.
 #
 # The smoke default is moonshot/kimi-k2.5 because it works from any country
 # Moonshot supports with just a MOONSHOT_API_KEY env var, no cloud account
 # setup. Swap to any other provider by overriding both OPENCLAW_PLUGIN and
 # OPENCLAW_MODEL at `docker run -e`.
 ENV OPENCLAW_AGENT_ID="default" \
-    OPENCLAW_PLUGIN="moonshot" \
+    OPENCLAW_PLUGIN="" \
     OPENCLAW_MODEL="moonshot/kimi-k2.5" \
     OPENCLAW_TOOLS="" \
     OPENCLAW_INSTRUCTIONS="You are a helpful assistant." \

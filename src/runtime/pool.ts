@@ -184,13 +184,10 @@ export class SessionContainerPool {
   /** Pre-warmed containers keyed by agentId, waiting to be claimed. */
   private readonly warm = new Map<string, WarmContainer>();
   /**
-   * Inflight spawn promises keyed by agentId — used to dedupe concurrent
-   * warmForAgent calls AND concurrent first-event acquireForSession calls
-   * for sessions on the same agent. This is load-bearing: Pi's
-   * SessionManager takes an exclusive SQLite lock on the agent workspace
-   * bind mount, so two containers spawning against the same `agt_<id>`
-   * workspace race and one exits(1). Serialize per-agent to eliminate the
-   * collision entirely.
+   * Inflight speculative warm promises keyed by agentId. Used only to
+   * dedupe concurrent template-level `warmForAgent()` calls with each
+   * other. Real session acquires must not wait on this map — warming is
+   * best-effort and outside the user's critical path.
    */
   private readonly pendingByAgent = new Map<string, Promise<void>>();
   private sweeperHandle: NodeJS.Timeout | undefined;
@@ -305,10 +302,11 @@ export class SessionContainerPool {
     /**
      * True when this session's spawn env embeds session-specific config
      * that warm-pool containers (built with placeholder "__warm__"
-     * session context) cannot carry. Today that's: vault-bound
-     * sessions (MCP credentials injected into OPENCLAW_MCP_SERVERS_JSON).
-     * Bypass warm pool for those — same rationale as the networking:
-     * limited branch below.
+     * session context) cannot carry. Today that includes vault-bound
+     * sessions (MCP credentials injected into OPENCLAW_MCP_SERVERS_JSON)
+     * and sessions with environment package preinstalls. Bypass warm
+     * pool for those — same rationale as the networking: limited branch
+     * below.
      */
     bypassWarmPool?: boolean;
   }): Promise<Container> {
@@ -332,32 +330,28 @@ export class SessionContainerPool {
       });
     }
 
-    // If any warm spawn is inflight for this agent, wait for it BEFORE
-    // we proceed — whether we'd claim it or do our own fresh spawn.
-    // Each session gets its own workspace dir, but a warm spawn and a
-    // fresh spawn for the same agent could race on directory creation.
-    // The pendingByAgent map makes warmForAgent idempotent, so this
-    // wait is cheap: it resolves instantly if there's no inflight spawn.
-    if (args.agentId) {
-      const inflight = this.pendingByAgent.get(args.agentId);
-      if (inflight) {
-        const waitStart = Date.now();
-        await inflight.catch(() => {
-          /* if the warm spawn threw, fall through to a fresh spawn below */
-        });
-        const waited = Date.now() - waitStart;
-        log.info(
-          { session_id: args.sessionId, agent_id: args.agentId, waited_for_warm_ms: waited },
-          waited > 500 ? "acquireForSession: WAITED for inflight warm" : "acquireForSession: warm-wait (instant)",
-        );
-      }
-    }
+    // IMPORTANT: do NOT wait for an inflight warm spawn here.
+    //
+    // Warming is speculative. Session-create, agent-create, and startup
+    // all kick warmForAgent() in the background with the documented
+    // promise that failure is non-fatal and the first real event can
+    // still cold-spawn. Waiting here breaks that contract and turns a
+    // broken/speculative warm into head-of-line blocking for the user's
+    // first turn (up to readyTimeoutMs, which is 10 minutes in prod).
+    //
+    // Correct behavior:
+    //   - if a ready warm container already exists, claim it below
+    //   - otherwise ignore any inflight warm and cold-spawn now
+    //
+    // The warm promise is still useful for deduping warmForAgent() calls
+    // with each other; it just must not sit on the critical path of a
+    // real session acquire.
 
     // Check the warm pool for a matching pre-warmed container — but
-    // only if the caller is willing to claim one. Vault-bound sessions
-    // carry session-specific env (OPENCLAW_MCP_SERVERS_JSON with
-    // per-session Authorization headers) that warm containers built
-    // with placeholder "__warm__" context can't carry.
+    // only if the caller is willing to claim one. Sessions with
+    // session-specific env (for example vault-bound MCP credentials or
+    // environment package preinstalls) cannot safely reuse a generic
+    // template warm built with placeholder "__warm__" context.
     if (args.agentId && !args.bypassWarmPool) {
       const warmEntry = this.warm.get(args.agentId);
       if (warmEntry) {
@@ -400,9 +394,9 @@ export class SessionContainerPool {
       }
     }
 
-    // Deduplicate concurrent spawns for the same session. If a background
-    // warm-up (triggered at session-create time) is already in progress,
-    // wait for it rather than spawning a second container.
+    // Deduplicate concurrent acquires for the same session. This covers
+    // duplicate client submits / retries on the same session, not the
+    // speculative warm path above (which has its own per-agent map).
     const inflight = this.pending.get(args.sessionId);
     if (inflight) return inflight;
 

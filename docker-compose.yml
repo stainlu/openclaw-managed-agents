@@ -21,8 +21,10 @@ services:
   orchestrator:
     # Production: images are pre-built by .github/workflows/publish-images.yaml
     # on every push to main and published to GHCR as public packages. Deploy
-    # scripts run `docker compose pull && docker compose up -d` to skip the
-    # build step entirely — cuts Lightsail deploy time from ~12 min to ~3 min.
+    # scripts run `docker compose pull`, then explicitly
+    # `docker pull ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest`,
+    # then `docker compose up -d` to skip the build step entirely — cuts
+    # Lightsail deploy time from ~12 min to ~3 min.
     #
     # Local dev: run `docker compose up --build` and compose will rebuild
     # both images from the Dockerfiles below, tagging them with the same

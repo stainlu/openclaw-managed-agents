@@ -153,27 +153,23 @@ if (overrides && overrides[providerId] && Array.isArray(providerConfig.models)) 
       `[apply-provider-config] applied price overrides to ${patched} ${providerId} model(s) from provider-prices.json\n`,
     );
   }
-  // Inject models that exist in the price table but not yet in the
-  // bundled catalog (e.g. kimi-k2.6 released after the pinned openclaw
-  // version). Without this, new models work at runtime but report $0.
+  // Do NOT inject models that exist only in the price table. The
+  // provider schema requires more than {id, cost} (for example `name`),
+  // so a price-only injection produces an invalid openclaw.json and the
+  // container dies before /readyz. New model ids still work at runtime
+  // via agents.defaults.models; they just keep the upstream provider
+  // catalog's pricing/capability metadata until the pinned openclaw
+  // version learns about them.
   const knownIds = new Set(providerConfig.models.map((m) => m.id));
-  let injected = 0;
+  const skipped = [];
   for (const [modelId, row] of Object.entries(table)) {
     if (knownIds.has(modelId)) continue;
-    providerConfig.models.push({
-      id: modelId,
-      cost: {
-        input: row.input ?? 0,
-        output: row.output ?? 0,
-        cacheRead: row.cacheRead ?? 0,
-        cacheWrite: row.cacheWrite ?? 0,
-      },
-    });
-    injected++;
+    void row;
+    skipped.push(modelId);
   }
-  if (injected > 0) {
+  if (skipped.length > 0) {
     process.stdout.write(
-      `[apply-provider-config] injected ${injected} missing ${providerId} model(s) from provider-prices.json\n`,
+      `[apply-provider-config] skipped ${skipped.length} missing ${providerId} model(s) from provider-prices.json because price-only entries do not satisfy the provider schema: ${skipped.join(", ")}\n`,
     );
   }
 }

@@ -239,9 +239,10 @@ export class AgentRouter {
 
   /**
    * Proactively start booting a container for the given session in the
-   * background. Called by the server handler right after createSession so
-   * the container is warm (or warming) by the time the first event arrives.
-   * Fire-and-forget — failure is non-fatal, the first event will cold-spawn.
+   * background. Called by the server handler right after createSession.
+   * Only sessions whose boot config is purely template-level can use this;
+   * sessions with dedicated container config simply skip the warm path and
+   * cold-spawn on first event. Fire-and-forget — failure is non-fatal.
    */
   async warmSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
@@ -254,15 +255,18 @@ export class AgentRouter {
       log.warn({ session_id: sessionId, agent_id: session.agentId }, "warmSession: agent not found, skipping warm-up");
       return;
     }
-    // Delegate to warmForAgent so the shared per-agent dedup map in the
-    // pool prevents a parallel spawn against the same agent-workspace
-    // bind mount. The previous implementation spawned a session-scoped
-    // container here that could collide with the warmForAgent triggered
-    // on agent-create, causing one of them to exit(1) under Pi's
-    // SessionManager lock. Sessions for delegating agents (subagent
-    // tokens baked into env) skip warm pool entirely via warmForAgent's
-    // own guard, so the first POST /events on those sessions still
-    // cold-spawns on demand.
+    // Template-level warm containers are only reusable for sessions whose
+    // boot config is also template-level. Skip the background warm when
+    // this session needs its own container config (vault creds, limited
+    // networking, package preinstalls).
+    if (this.shouldBypassWarmPool(session)) {
+      return;
+    }
+    // Delegate to warmForAgent so session-create / agent-create / startup
+    // all share the same per-agent dedupe path. With the current
+    // per-session sandbox model, sessions on the same agent have separate
+    // /workspace mounts and may run in parallel; the dedupe here is only
+    // for speculative template warming.
     await this.warmForAgent(agent.agentId);
   }
 
@@ -446,7 +450,7 @@ export class AgentRouter {
         spawnOptions,
         agentId: agent.agentId,
         networking,
-        bypassWarmPool: Boolean(running.vaultId),
+        bypassWarmPool: this.shouldBypassWarmPool(running),
       });
 
       const effectiveThinking = args.thinkingLevel ?? agent.thinkingLevel;
@@ -1094,6 +1098,23 @@ export class AgentRouter {
     return undefined;
   }
 
+  /**
+   * Warm-pool entries are keyed only by agent template. Any session whose
+   * container boot depends on session-specific inputs must bypass warm
+   * reuse and cold-spawn its own container.
+   */
+  private shouldBypassWarmPool(session: Session | undefined): boolean {
+    if (!session) return false;
+    if (session.vaultId) return true;
+    if (this.resolveNetworking(session)?.type === "limited") return true;
+    if (!session.environmentId) return false;
+    const env = this.environments.get(session.environmentId);
+    if (!env?.packages) return false;
+    return Object.values(env.packages).some(
+      (pkgs) => Array.isArray(pkgs) && pkgs.length > 0,
+    );
+  }
+
   private buildSpawnOptions(
     sessionId: string,
     agent: AgentConfig,
@@ -1498,7 +1519,7 @@ export class AgentRouter {
           spawnOptions,
           agentId: agent.agentId,
           networking: currentSession ? this.resolveNetworking(currentSession) : undefined,
-          bypassWarmPool: Boolean(currentSession?.vaultId),
+          bypassWarmPool: this.shouldBypassWarmPool(currentSession),
         });
 
         if (agent.permissionPolicy.type === "always_ask") {

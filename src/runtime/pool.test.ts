@@ -52,6 +52,7 @@ class FakeRuntime implements ContainerRuntime {
   readonly stopped = new Set<string>();
   readonly networks = new Set<string>();
   spawnDelayMs = 0;
+  readyDelayMs = 0;
   readyShouldFail = false;
 
   private counter = 0;
@@ -96,6 +97,9 @@ class FakeRuntime implements ContainerRuntime {
 
   async waitForReady(container: Container, _timeoutMs: number): Promise<void> {
     this.calls.push({ kind: "waitForReady", id: container.id });
+    if (this.readyDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.readyDelayMs));
+    }
     if (this.readyShouldFail) {
       throw new Error("readyz timeout (simulated)");
     }
@@ -269,6 +273,43 @@ describe("SessionContainerPool.acquireForSession", () => {
     // Give the event loop one tick so the replenish can settle.
     await new Promise((r) => setImmediate(r));
     expect(runtime.calls.filter((c) => c.kind === "spawn")).toHaveLength(2);
+    await pool.shutdown();
+  });
+
+  it("does not block a real acquire on an inflight background warm spawn", async () => {
+    const { pool, runtime } = makePool();
+    let releaseWarmReady!: () => void;
+    const warmReadyGate = new Promise<void>((resolve) => {
+      releaseWarmReady = resolve;
+    });
+    let firstReady = true;
+    const origWaitForReady = runtime.waitForReady.bind(runtime);
+    runtime.waitForReady = async (container, timeoutMs) => {
+      if (firstReady) {
+        firstReady = false;
+        runtime.calls.push({ kind: "waitForReady", id: container.id });
+        await warmReadyGate;
+        return;
+      }
+      return origWaitForReady(container, timeoutMs);
+    };
+
+    const warming = pool.warmForAgent("agt_x", baseSpawnOptions());
+    // Let the speculative warm win the first waitForReady() call so the
+    // real acquire proves it ignores the inflight warm rather than merely
+    // becoming the first caller through the fake gate.
+    await new Promise((r) => setImmediate(r));
+    const acquired = await pool.acquireForSession({
+      sessionId: "ses_real",
+      spawnOptions: baseSpawnOptions(),
+      agentId: "agt_x",
+    });
+
+    expect(acquired.id).toBe("cnt_2");
+    expect(runtime.calls.filter((c) => c.kind === "spawn")).toHaveLength(2);
+
+    releaseWarmReady();
+    await warming;
     await pool.shutdown();
   });
 });

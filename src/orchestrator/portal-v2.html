@@ -2159,6 +2159,7 @@ function EventRow({ e, streaming, session }) {
       poolSource === 'cold' ? 'cold spawn' :
       poolSource === 'limited' ? 'cold spawn · limited' :
       poolSource === 'adopt' ? 'adopted on restart' :
+      session?.status === 'running' ? 'booting...' :
       'no container';
     return (
       <Row>

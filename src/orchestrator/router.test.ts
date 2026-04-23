@@ -133,6 +133,105 @@ describe("AgentRouter.createSession", () => {
   });
 });
 
+describe("AgentRouter.warmSession", () => {
+  function seedAgent(store: InMemoryStore) {
+    return store.agents.create({
+      model: "moonshot/kimi-k2.5",
+      tools: [],
+      instructions: "",
+      permissionPolicy: { type: "always_allow" },
+      callableAgents: [],
+      maxSubagentDepth: 0,
+    });
+  }
+
+  it("queues a template warm for a default session", async () => {
+    const warmed: string[] = [];
+    const { router, store } = makeRouter({
+      poolStub: {
+        warmForAgent: async (agentId: string) => {
+          warmed.push(agentId);
+        },
+      },
+    });
+    const agent = seedAgent(store);
+    const session = router.createSession(agent.agentId);
+
+    await router.warmSession(session.sessionId);
+
+    expect(warmed).toEqual([agent.agentId]);
+  });
+
+  it("skips template warm for sessions with package preinstalls", async () => {
+    const warmed: string[] = [];
+    const { router, store } = makeRouter({
+      poolStub: {
+        warmForAgent: async (agentId: string) => {
+          warmed.push(agentId);
+        },
+      },
+    });
+    const agent = seedAgent(store);
+    const env = store.environments.create({
+      name: "python",
+      description: "",
+      packages: { pip: ["numpy"] },
+      networking: { type: "unrestricted" },
+    });
+    const session = router.createSession(agent.agentId, {
+      environmentId: env.environmentId,
+    });
+
+    await router.warmSession(session.sessionId);
+
+    expect(warmed).toEqual([]);
+  });
+
+  it("skips template warm for limited-networking sessions", async () => {
+    const warmed: string[] = [];
+    const { router, store } = makeRouter({
+      poolStub: {
+        warmForAgent: async (agentId: string) => {
+          warmed.push(agentId);
+        },
+      },
+    });
+    const agent = seedAgent(store);
+    const env = store.environments.create({
+      name: "limited",
+      description: "",
+      networking: { type: "limited", allowedHosts: ["api.example.com"] },
+    });
+    const session = router.createSession(agent.agentId, {
+      environmentId: env.environmentId,
+    });
+
+    await router.warmSession(session.sessionId);
+
+    expect(warmed).toEqual([]);
+  });
+
+  it("skips template warm for vault-bound sessions", async () => {
+    const warmed: string[] = [];
+    const { router, store } = makeRouter({
+      poolStub: {
+        warmForAgent: async (agentId: string) => {
+          warmed.push(agentId);
+        },
+      },
+    });
+    const agent = seedAgent(store);
+    const vault = store.vaults.createVault({ userId: "usr_test", name: "prod" });
+    const session = router.createSession(agent.agentId, {
+      vaultId: vault.vaultId,
+    });
+
+    await router.warmSession(session.sessionId);
+
+    expect(warmed).toEqual([]);
+  });
+});
+
 describe("AgentRouter.streamEvent — pre-container decision tree", () => {
   // These tests exercise the parts of streamEvent that run BEFORE we hit
   // the pool / WS / fetch to the container — that surface is covered by
