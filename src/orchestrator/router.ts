@@ -1444,10 +1444,11 @@ export class AgentRouter {
     // PiJsonlEventReader already surfaces that as agent.message.costUsd,
     // so the orchestrator reads the single source of truth rather than
     // maintaining a separate static price sheet that would drift. If
-    // the provider plugin does not report cost (e.g., our moonshot
-    // config block in docker/entrypoint.sh currently hardcodes zeros),
-    // the recorded cost is 0 — not a rollup bug, just the truth per
-    // the active catalog. Updating moonshot's prices there will
+    // the provider plugin does not report cost (for example, when the
+    // pinned OpenClaw runtime is missing full catalog metadata for a
+    // downstream model id), the recorded cost is 0 — not a rollup bug,
+    // just the truth per the active catalog. Updating the runtime
+    // provider catalog or our price-override injection layer will
     // propagate through this path with zero code changes.
     const latestAgent = this.events.latestAgentMessage(agent.agentId, sessionId);
     const costUsd = latestAgent?.costUsd ?? 0;

@@ -33,6 +33,7 @@
 // tree in its published files list (confirmed in 2026.4.11).
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const OPENCLAW_DIST_ROOT =
   "file:///usr/local/lib/node_modules/openclaw/dist";
@@ -48,71 +49,77 @@ const PROVIDER_CATALOGS = {
   },
 };
 
-const [, , configPath, providerId] = process.argv;
-if (!configPath || !providerId) {
-  process.stderr.write(
-    "usage: apply-provider-config.mjs <config-path> <provider-id>\n",
-  );
-  process.exit(1);
+function toCost(row) {
+  if (!row || typeof row !== "object") return undefined;
+  const cost = row.cost && typeof row.cost === "object" ? row.cost : row;
+  return {
+    input: cost.input ?? 0,
+    output: cost.output ?? 0,
+    cacheRead: cost.cacheRead ?? 0,
+    cacheWrite: cost.cacheWrite ?? 0,
+  };
 }
 
-const entry = PROVIDER_CATALOGS[providerId];
-if (!entry) {
-  process.stdout.write(
-    `[apply-provider-config] ${providerId} is not a registered Category B provider; no-op\n`,
-  );
-  process.exit(0);
+function buildSyntheticModel(modelId, row, providerConfig) {
+  if (!row || typeof row !== "object" || typeof row.name !== "string") {
+    return undefined;
+  }
+  const fallback = Array.isArray(providerConfig.models) ? providerConfig.models[0] : undefined;
+  return {
+    id: modelId,
+    name: row.name,
+    reasoning: row.reasoning ?? fallback?.reasoning ?? false,
+    input: Array.isArray(row.modalities) && row.modalities.length > 0
+      ? row.modalities.filter((v) => v === "text" || v === "image")
+      : (fallback?.input ?? ["text"]),
+    cost: toCost(row),
+    contextWindow: row.contextWindow ?? fallback?.contextWindow ?? 262144,
+    maxTokens: row.maxTokens ?? fallback?.maxTokens ?? row.contextWindow ?? fallback?.contextWindow ?? 262144,
+  };
 }
 
-let catalogModule;
-try {
-  catalogModule = await import(`${OPENCLAW_DIST_ROOT}/${entry.module}`);
-} catch (err) {
-  process.stderr.write(
-    `[apply-provider-config] failed to import ${entry.module} for ${providerId}: ${err.message}\n`,
-  );
-  process.exit(1);
+export function applyPriceOverrides(providerId, providerConfig, overrides, logger = () => {}) {
+  if (!overrides || !overrides[providerId] || !Array.isArray(providerConfig.models)) {
+    return providerConfig;
+  }
+  const table = overrides[providerId];
+  let patched = 0;
+  let injected = 0;
+  const knownIds = new Set(providerConfig.models.map((m) => m.id));
+  for (const model of providerConfig.models) {
+    const row = table[model.id];
+    if (!row) continue;
+    model.cost = toCost(row);
+    patched++;
+  }
+  if (patched > 0) {
+    logger(
+      `[apply-provider-config] applied price overrides to ${patched} ${providerId} model(s) from provider-prices.json\n`,
+    );
+  }
+  const skipped = [];
+  for (const [modelId, row] of Object.entries(table)) {
+    if (knownIds.has(modelId)) continue;
+    const synthetic = buildSyntheticModel(modelId, row, providerConfig);
+    if (!synthetic) {
+      skipped.push(modelId);
+      continue;
+    }
+    providerConfig.models.push(synthetic);
+    injected++;
+  }
+  if (injected > 0) {
+    logger(
+      `[apply-provider-config] injected ${injected} missing ${providerId} model(s) from provider-prices.json\n`,
+    );
+  }
+  if (skipped.length > 0) {
+    logger(
+      `[apply-provider-config] skipped ${skipped.length} missing ${providerId} model(s) from provider-prices.json because they do not include the full metadata required for an inline model: ${skipped.join(", ")}\n`,
+    );
+  }
+  return providerConfig;
 }
-
-const factory = catalogModule[entry.factory];
-if (typeof factory !== "function") {
-  process.stderr.write(
-    `[apply-provider-config] expected ${entry.factory} from ${entry.module}, got ${typeof factory}\n`,
-  );
-  process.exit(1);
-}
-
-let providerConfig;
-try {
-  providerConfig = factory();
-} catch (err) {
-  process.stderr.write(
-    `[apply-provider-config] ${entry.factory}() threw: ${err.message}\n`,
-  );
-  process.exit(1);
-}
-
-if (!providerConfig || typeof providerConfig !== "object") {
-  process.stderr.write(
-    `[apply-provider-config] ${entry.factory}() returned non-object\n`,
-  );
-  process.exit(1);
-}
-
-let cfg;
-try {
-  cfg = JSON.parse(readFileSync(configPath, "utf8"));
-} catch (err) {
-  process.stderr.write(
-    `[apply-provider-config] failed to read/parse ${configPath}: ${err.message}\n`,
-  );
-  process.exit(1);
-}
-
-cfg.models = cfg.models ?? {};
-cfg.models.mode = cfg.models.mode ?? "merge";
-cfg.models.providers = cfg.models.providers ?? {};
-cfg.models.providers[providerId] = providerConfig;
 
 // Price-override pass. openclaw's bundled plugin catalogs ship with
 // real prices for most Category A providers (Anthropic, OpenAI, Google,
@@ -123,58 +130,96 @@ cfg.models.providers[providerId] = providerConfig;
 // cost.total comes out non-zero. When openclaw ships real prices
 // upstream, delete the matching provider block from the JSON to defer
 // to upstream without any other change.
-const PRICES_PATH = "/opt/openclaw-plugins/provider-prices.json";
-let overrides;
-try {
-  overrides = JSON.parse(readFileSync(PRICES_PATH, "utf8"));
-} catch (err) {
-  if (err.code !== "ENOENT") {
+const PRICES_PATH = process.env.OPENCLAW_PROVIDER_PRICES_PATH || "/opt/openclaw-plugins/provider-prices.json";
+
+export async function main(argv = process.argv) {
+  const [, , configPath, providerId] = argv;
+  if (!configPath || !providerId) {
     process.stderr.write(
-      `[apply-provider-config] warning: couldn't read price overrides: ${err.message}\n`,
+      "usage: apply-provider-config.mjs <config-path> <provider-id>\n",
     );
+    process.exit(1);
   }
-}
-if (overrides && overrides[providerId] && Array.isArray(providerConfig.models)) {
-  const table = overrides[providerId];
-  let patched = 0;
-  for (const model of providerConfig.models) {
-    const row = table[model.id];
-    if (!row) continue;
-    model.cost = {
-      input: row.input ?? 0,
-      output: row.output ?? 0,
-      cacheRead: row.cacheRead ?? 0,
-      cacheWrite: row.cacheWrite ?? 0,
-    };
-    patched++;
-  }
-  if (patched > 0) {
+
+  const entry = PROVIDER_CATALOGS[providerId];
+  if (!entry) {
     process.stdout.write(
-      `[apply-provider-config] applied price overrides to ${patched} ${providerId} model(s) from provider-prices.json\n`,
+      `[apply-provider-config] ${providerId} is not a registered Category B provider; no-op\n`,
     );
+    process.exit(0);
   }
-  // Do NOT inject models that exist only in the price table. The
-  // provider schema requires more than {id, cost} (for example `name`),
-  // so a price-only injection produces an invalid openclaw.json and the
-  // container dies before /readyz. New model ids still work at runtime
-  // via agents.defaults.models; they just keep the upstream provider
-  // catalog's pricing/capability metadata until the pinned openclaw
-  // version learns about them.
-  const knownIds = new Set(providerConfig.models.map((m) => m.id));
-  const skipped = [];
-  for (const [modelId, row] of Object.entries(table)) {
-    if (knownIds.has(modelId)) continue;
-    void row;
-    skipped.push(modelId);
-  }
-  if (skipped.length > 0) {
-    process.stdout.write(
-      `[apply-provider-config] skipped ${skipped.length} missing ${providerId} model(s) from provider-prices.json because price-only entries do not satisfy the provider schema: ${skipped.join(", ")}\n`,
+
+  let catalogModule;
+  try {
+    catalogModule = await import(`${OPENCLAW_DIST_ROOT}/${entry.module}`);
+  } catch (err) {
+    process.stderr.write(
+      `[apply-provider-config] failed to import ${entry.module} for ${providerId}: ${err.message}\n`,
     );
+    process.exit(1);
   }
+
+  const factory = catalogModule[entry.factory];
+  if (typeof factory !== "function") {
+    process.stderr.write(
+      `[apply-provider-config] expected ${entry.factory} from ${entry.module}, got ${typeof factory}\n`,
+    );
+    process.exit(1);
+  }
+
+  let providerConfig;
+  try {
+    providerConfig = factory();
+  } catch (err) {
+    process.stderr.write(
+      `[apply-provider-config] ${entry.factory}() threw: ${err.message}\n`,
+    );
+    process.exit(1);
+  }
+
+  if (!providerConfig || typeof providerConfig !== "object") {
+    process.stderr.write(
+      `[apply-provider-config] ${entry.factory}() returned non-object\n`,
+    );
+    process.exit(1);
+  }
+
+  let cfg;
+  try {
+    cfg = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (err) {
+    process.stderr.write(
+      `[apply-provider-config] failed to read/parse ${configPath}: ${err.message}\n`,
+    );
+    process.exit(1);
+  }
+
+  cfg.models = cfg.models ?? {};
+  cfg.models.mode = cfg.models.mode ?? "merge";
+  cfg.models.providers = cfg.models.providers ?? {};
+  cfg.models.providers[providerId] = providerConfig;
+
+  let overrides;
+  try {
+    overrides = JSON.parse(readFileSync(PRICES_PATH, "utf8"));
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      process.stderr.write(
+        `[apply-provider-config] warning: couldn't read price overrides: ${err.message}\n`,
+      );
+    }
+  }
+
+  applyPriceOverrides(providerId, providerConfig, overrides, (line) => {
+    process.stdout.write(line);
+  });
+
+  writeFileSync(configPath, JSON.stringify(cfg, null, 2), "utf8");
+  process.stdout.write(
+    `[apply-provider-config] populated models.providers.${providerId} with ${providerConfig.models?.length ?? 0} model(s) from bundled openclaw catalog\n`,
+  );
 }
 
-writeFileSync(configPath, JSON.stringify(cfg, null, 2), "utf8");
-process.stdout.write(
-  `[apply-provider-config] populated models.providers.${providerId} with ${providerConfig.models?.length ?? 0} model(s) from bundled openclaw catalog\n`,
-);
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
