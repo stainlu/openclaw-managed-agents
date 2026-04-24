@@ -379,6 +379,15 @@ function mapLineToEvents(line: PiLine, sessionId: string): Event[] {
   if (msg.role === "user") {
     const text = extractText(msg.content);
     if (!text) return [];
+    if (isRuntimeNotice(text)) {
+      return [{
+        eventId,
+        sessionId,
+        type: "session.runtime_notice",
+        content: text,
+        createdAt,
+      }];
+    }
     return [{
       eventId,
       sessionId,
@@ -477,6 +486,28 @@ function extractText(blocks: PiContentBlock[] | undefined): string {
     }
   }
   return parts.join("");
+}
+
+function isRuntimeNotice(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // OpenClaw sometimes persists internal operator/runtime notices into the
+  // JSONL as synthetic role="user" text messages. These are not actual user
+  // turns — they should not increment turns, satisfy "user.message written"
+  // durability checks, or render in the UI as if the human typed them.
+  //
+  // Match conservatively on the stock notice forms we have observed in prod:
+  //   System (untrusted): [...]
+  //   System (trusted):   [...]
+  // plus the async-command completion footer OpenClaw appends.
+  if (
+    /^System \((?:untrusted|trusted)\):/i.test(trimmed) ||
+    trimmed.includes("An async command you ran earlier has completed.") ||
+    trimmed.includes("Handle the result internally. Do not relay it to the user")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function combineModel(

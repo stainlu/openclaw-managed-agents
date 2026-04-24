@@ -438,7 +438,8 @@ export type EventType =
   | "agent.tool_confirmation_request"
   | "session.model_change"
   | "session.thinking_level_change"
-  | "session.compaction";
+  | "session.compaction"
+  | "session.runtime_notice";
 
 export type Event = {
   eventId: string;

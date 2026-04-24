@@ -837,6 +837,9 @@ function asDesignEvent(e, anchorTs) {
       prompt: contentStr,
     };
   }
+  if (e.type === 'session.runtime_notice') {
+    return { ...base, actor: 'system', text: contentStr };
+  }
   if (e.type === 'session.container_attached' || e.type === 'session.container_detached') {
     return {
       ...base,
@@ -2190,6 +2193,7 @@ function EventRow({ e, streaming, session }) {
     'session.status_starting': { tag: 'status', c: 'var(--ink-3)' },
     'session.status_running':  { tag: 'status', c: 'var(--ink-3)' },
     'session.status_failed':   { tag: 'status', c: 'var(--lobster)' },
+    'session.runtime_notice':  { tag: 'system', c: 'var(--ink-3)' },
     'session.container_attached': { tag: 'container', c: 'var(--ink-3)' },
     'session.container_detached': { tag: 'container', c: 'var(--ink-4)' },
     'user.message':            { tag: 'user',   c: 'var(--ink)' },
@@ -2375,6 +2379,24 @@ function EventRow({ e, streaming, session }) {
         <span style={{ fontSize: 12, color: 'var(--lobster)' }}>
           Session failed{session?.error ? <> · <Mono s={11} c="var(--lobster)">{session.error}</Mono></> : null}
         </span>
+      </Row>
+    );
+  }
+  if (e.type === 'session.runtime_notice') {
+    return (
+      <Row>
+        <div style={{
+          padding: '8px 10px',
+          border: '1px solid var(--line-2)',
+          borderRadius: 6,
+          background: 'var(--paper-2)',
+          fontSize: 12,
+          color: 'var(--ink-3)',
+          lineHeight: 1.6,
+          maxWidth: '62ch',
+        }}>
+          {e.text}
+        </div>
       </Row>
     );
   }

@@ -297,6 +297,47 @@ describe("PiJsonlEventReader", () => {
     expect(events[2]?.content).toBe("compacted turns 1-5");
   });
 
+  it("reclassifies synthetic runtime notices so they do not count as user turns", () => {
+    const f = makeFixture([
+      {
+        type: "message",
+        id: "evt-notice",
+        timestamp: "2026-04-24T11:26:04.000Z",
+        message: {
+          role: "user",
+          content: [{
+            type: "text",
+            text:
+              "System (untrusted): [2026-04-24 11:26:04 UTC] Exec failed (neat-bis, code 127) :: sh: 1: python3: not found An async command you ran earlier has completed. The result is shown in the system messages above. Handle the result internally. Do not relay it to the user unless explicitly requested.",
+          }],
+        },
+      },
+      {
+        type: "message",
+        id: "evt-user",
+        timestamp: "2026-04-24T11:26:05.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "deploy it" }],
+        },
+      },
+    ]);
+    fixtures.push(f);
+    const reader = new PiJsonlEventReader(f.root);
+    const events = reader.listBySession(f.agentId, f.sessionId);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      eventId: "evt-notice",
+      type: "session.runtime_notice",
+    });
+    expect(events[1]).toMatchObject({
+      eventId: "evt-user",
+      type: "user.message",
+      content: "deploy it",
+    });
+    expect(reader.countUserTurns(f.agentId, f.sessionId)).toBe(1);
+  });
+
   it("skips malformed JSONL lines instead of failing the whole read", () => {
     const f = makeFixture(undefined);
     fixtures.push(f);
