@@ -499,6 +499,8 @@ describe("session ownership in the HTTP API", () => {
       containerPort: 18789,
       gatewayToken: "gw_test",
       claimedAt: 1_777_000_000_000,
+      configSignature: "sig_test",
+      spawnedAt: 1_777_000_000_000,
       bootMs: 4321,
       poolSource: "cold",
     });
@@ -605,6 +607,41 @@ describe("session ownership in the HTTP API", () => {
       "user.message",
       "agent.message",
     ]);
+  });
+
+  it("returns 409 for busy non-streaming chat-completions instead of queueing", async () => {
+    let sawRejectIfBusy = false;
+    const { app, store } = makeApp({
+      routerOverrides: {
+        async runEvent(args: { rejectIfBusy?: boolean }) {
+          sawRejectIfBusy = args.rejectIfBusy === true;
+          throw new RouterError("session_busy", "session sticky-busy is busy");
+        },
+      } as Partial<ServerDeps["router"]>,
+    });
+    const agent = createAgent(store);
+    store.sessions.create({
+      agentId: agent.agentId,
+      sessionId: "sticky-busy",
+      userId: null,
+    });
+
+    const res = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        user: "sticky-busy",
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+
+    expect(res.status).toBe(409);
+    expect(sawRejectIfBusy).toBe(true);
+    expect(res.body).toMatchObject({
+      error: { type: "session_busy" },
+    });
   });
 
   it("cleans up ephemeral chat-completions sessions on run failure", async () => {

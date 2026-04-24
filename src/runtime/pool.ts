@@ -128,6 +128,10 @@ export type PoolConfig = {
      * spawn duration for cold / limited.
      */
     bootMs: number | null;
+    /** Boot config fingerprint stored for restart adoption. */
+    configSignature: string | null;
+    /** Original container spawn time stored for stale-vault checks. */
+    spawnedAt: number | null;
   }) => void;
   /**
    * Invoked after the pool releases a container back to the
@@ -191,6 +195,8 @@ type ActiveContainer = {
   };
 };
 
+export type OwnedSessionResources = NonNullable<ActiveContainer["ownedResources"]>;
+
 /** A pre-warmed container waiting to be claimed by a session. */
 type WarmContainer = {
   agentId: string;
@@ -225,6 +231,29 @@ function normalizeNetworkingSpec(
     allowedHosts: [...spec.allowedHosts].sort(),
     allowMcpServers: Boolean(spec.allowMcpServers),
     allowPackageManagers: Boolean(spec.allowPackageManagers),
+  };
+}
+
+export function limitedNetworkingResourceNames(sessionId: string): {
+  confinedNet: string;
+  egressNet: string;
+  sidecarName: string;
+  networks: string[];
+} {
+  // Full session id, sanitized to Docker's name rules ([a-z0-9-_]).
+  // Do NOT truncate: nanoid session ids are 12 chars and prefix truncation
+  // would let two sessions with the same prefix silently share a sidecar.
+  const safeId = sessionId
+    .replace(/^ses_/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-");
+  const confinedNet = `openclaw-sess-${safeId}-confined`;
+  const egressNet = `openclaw-sess-${safeId}-egress`;
+  return {
+    confinedNet,
+    egressNet,
+    sidecarName: `openclaw-sess-${safeId}-proxy`,
+    networks: [confinedNet, egressNet],
   };
 }
 
@@ -599,10 +628,7 @@ export class SessionContainerPool {
     });
     const existing = this.active.get(args.sessionId);
     if (existing) {
-      if (
-        existing.configSignature !== "adopted"
-        && existing.configSignature !== configSignature
-      ) {
+      if (existing.configSignature !== configSignature) {
         await this.evictSession(args.sessionId);
       } else {
         const healthy = await this.ensureReusableEntryHealthy(
@@ -723,7 +749,39 @@ export class SessionContainerPool {
               poolWarmContainers.set(this.warm.size);
               const warmHostPath = warmEntry.spawnOptions.mounts[0]?.hostPath;
               if (warmHostPath && this.cfg.renameWorkspaceOnClaim) {
-                this.cfg.renameWorkspaceOnClaim(warmHostPath, args.sessionId);
+                try {
+                  this.cfg.renameWorkspaceOnClaim(warmHostPath, args.sessionId);
+                } catch (err) {
+                  log.warn(
+                    {
+                      err,
+                      session_id: args.sessionId,
+                      agent_id: args.agentId,
+                      container_id: warmEntry.container.id,
+                    },
+                    "warm workspace claim failed; discarding warm container and cold-spawning",
+                  );
+                  await warmEntry.wsClient.close().catch(() => {
+                    /* best-effort */
+                  });
+                  await this.runtime.stop(warmEntry.container.id).catch((stopErr) => {
+                    log.warn(
+                      {
+                        err: stopErr,
+                        container_id: warmEntry.container.id,
+                        agent_id: args.agentId,
+                      },
+                      "warm stop failed after workspace claim failure",
+                    );
+                  });
+                  void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((warmErr) => {
+                    log.warn(
+                      { err: warmErr, agent_id: args.agentId },
+                      "warm-pool replenish after workspace claim failure failed",
+                    );
+                  });
+                  return await this.doSpawn(args, configSignature);
+                }
               }
               const now = Date.now();
               this.active.set(args.sessionId, {
@@ -742,6 +800,8 @@ export class SessionContainerPool {
                 container: warmEntry.container,
                 source: "warm",
                 bootMs: 0,
+                configSignature,
+                spawnedAt: warmEntry.spawnedAt,
               });
               log.info(
                 { session_id: args.sessionId, agent_id: args.agentId },
@@ -821,6 +881,8 @@ export class SessionContainerPool {
         container,
         source: "cold",
         bootMs: totalSpawnMs,
+        configSignature,
+        spawnedAt: now,
       });
     }
     log.info(
@@ -887,20 +949,8 @@ export class SessionContainerPool {
       },
     });
 
-    // Full session id, sanitized to Docker's name rules ([a-z0-9-_]).
-    // Do NOT truncate: nanoid session ids are 12 chars and prefix
-    // truncation would let two sessions with the same prefix collide
-    // on the same network + sidecar (`ensureNetwork` is idempotent so
-    // it wouldn't error — it would silently share the sidecar).
-    // Underscores in nanoids do not occur (alphabet is a-z0-9), but
-    // test ids may have them; replace to keep Docker's parser happy.
-    const safeId = args.sessionId
-      .replace(/^ses_/, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-");
-    const confinedNet = `openclaw-sess-${safeId}-confined`;
-    const egressNet = `openclaw-sess-${safeId}-egress`;
-    const sidecarName = `openclaw-sess-${safeId}-proxy`;
+    const { confinedNet, egressNet, sidecarName, networks } =
+      limitedNetworkingResourceNames(args.sessionId);
     const dnsPort = netCfg.proxyDnsPort ?? 53;
     const httpPort = netCfg.proxyHttpPort ?? 8118;
     const healthzPort = netCfg.proxyHealthzPort ?? 8119;
@@ -1062,7 +1112,7 @@ export class SessionContainerPool {
         lastUsedAt: now,
         ownedResources: {
           sidecar,
-          networks: [confinedNet, egressNet],
+          networks,
         },
       });
       poolActiveContainers.set(this.active.size);
@@ -1077,6 +1127,8 @@ export class SessionContainerPool {
           container: agent,
           source: "limited",
           bootMs: limitedBootMs,
+          configSignature,
+          spawnedAt: now,
         });
       }
       log.info(
@@ -1168,7 +1220,14 @@ export class SessionContainerPool {
    * ourselves; on failure the caller is responsible for stopping the
    * container. Throws if the session already has an active entry.
    */
-  async adopt(args: { sessionId: string; container: Container; agentId?: string }): Promise<void> {
+  async adopt(args: {
+    sessionId: string;
+    container: Container;
+    agentId?: string;
+    configSignature?: string | null;
+    spawnedAt?: number | null;
+    ownedResources?: OwnedSessionResources;
+  }): Promise<void> {
     if (this.active.has(args.sessionId)) {
       throw new Error(
         `session ${args.sessionId} already has an active container in the pool`,
@@ -1193,9 +1252,10 @@ export class SessionContainerPool {
       sessionId: args.sessionId,
       container: args.container,
       wsClient,
-      configSignature: "adopted",
-      spawnedAt: now,
+      configSignature: args.configSignature ?? "adopted",
+      spawnedAt: args.spawnedAt ?? 0,
       lastUsedAt: now,
+      ownedResources: args.ownedResources,
     });
     poolActiveContainers.set(this.active.size);
     poolAcquireTotal.labels({ source: "adopt" }).inc();
@@ -1206,6 +1266,8 @@ export class SessionContainerPool {
         container: args.container,
         source: "adopt",
         bootMs: null,
+        configSignature: args.configSignature ?? null,
+        spawnedAt: args.spawnedAt ?? null,
       });
     }
     log.info(

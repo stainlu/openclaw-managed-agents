@@ -164,7 +164,7 @@ function makePool(overrides: Partial<PoolConfig> = {}): {
 }
 
 describe("SessionContainerPool.adopt", () => {
-  it("registers an existing container in active without spawning", async () => {
+  it("registers an existing container in active without spawning during adopt", async () => {
     const { pool, runtime } = makePool();
     const preExisting = {
       id: "cnt_existing",
@@ -174,12 +174,26 @@ describe("SessionContainerPool.adopt", () => {
     };
     await pool.adopt({ sessionId: "ses_restart", container: preExisting });
     expect(runtime.calls.map((c) => c.kind)).toEqual(["waitForReady"]);
+    expect(pool.snapshot()).toHaveLength(1);
+    await pool.shutdown();
+  });
+
+  it("cold-respawns an adopted container when no persisted config signature proves reuse is safe", async () => {
+    const { pool, runtime } = makePool();
+    const preExisting = {
+      id: "cnt_existing",
+      name: "pre-existing",
+      baseUrl: "http://pre-existing:18789",
+      token: "tok_recovered",
+    };
+    await pool.adopt({ sessionId: "ses_restart", container: preExisting });
     const reused = await pool.acquireForSession({
       sessionId: "ses_restart",
       spawnOptions: baseSpawnOptions(),
     });
-    expect(reused.id).toBe("cnt_existing");
-    expect(runtime.calls.filter((c) => c.kind === "spawn")).toHaveLength(0);
+    expect(reused.id).toBe("cnt_1");
+    expect(runtime.stopped.has("cnt_existing")).toBe(true);
+    expect(runtime.calls.filter((c) => c.kind === "spawn")).toHaveLength(1);
     await pool.shutdown();
   });
 
@@ -219,6 +233,37 @@ describe("SessionContainerPool.adopt", () => {
     ).rejects.toThrow(/readyz timeout/);
     expect(runtime.calls.some((c) => c.kind === "stop")).toBe(false);
     await pool.shutdown();
+  });
+
+  it("restores owned limited-network resources so later eviction cleans them up", async () => {
+    const { pool, runtime } = makePool();
+    await pool.adopt({
+      sessionId: "ses_limited",
+      container: {
+        id: "cnt_agent",
+        name: "agent",
+        baseUrl: "http://agent:18789",
+        token: "tok_agent",
+      },
+      ownedResources: {
+        sidecar: {
+          id: "cnt_proxy",
+          name: "proxy",
+          baseUrl: "",
+          token: "",
+        },
+        networks: ["net_confined", "net_egress"],
+      },
+    });
+
+    await pool.evictSession("ses_limited");
+
+    expect(runtime.stopped.has("cnt_agent")).toBe(true);
+    expect(runtime.stopped.has("cnt_proxy")).toBe(true);
+    expect(runtime.calls.filter((c) => c.kind === "removeNetwork")).toEqual([
+      { kind: "removeNetwork", network: "net_confined" },
+      { kind: "removeNetwork", network: "net_egress" },
+    ]);
   });
 });
 
@@ -281,6 +326,29 @@ describe("SessionContainerPool.acquireForSession", () => {
     // Give the event loop one tick so the replenish can settle.
     await new Promise((r) => setImmediate(r));
     expect(runtime.calls.filter((c) => c.kind === "spawn")).toHaveLength(2);
+    await pool.shutdown();
+  });
+
+  it("discards a warm container and cold-spawns when workspace rename fails", async () => {
+    const { pool, runtime } = makePool({
+      renameWorkspaceOnClaim: () => {
+        throw new Error("target exists");
+      },
+    });
+    const spawnOptions = baseSpawnOptions(undefined, {
+      env: { OPENCLAW_MODEL: "moonshot/kimi-k2.5" },
+    });
+    spawnOptions.mounts = [{ hostPath: "/tmp/warm", containerPath: "/workspace" }];
+    await pool.warmForAgent("agt_x", spawnOptions);
+
+    const c = await pool.acquireForSession({
+      sessionId: "ses_rename_fail",
+      spawnOptions,
+      agentId: "agt_x",
+    });
+
+    expect(c.id).toBe("cnt_2");
+    expect(runtime.stopped.has("cnt_1")).toBe(true);
     await pool.shutdown();
   });
 

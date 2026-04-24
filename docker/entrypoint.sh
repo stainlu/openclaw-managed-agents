@@ -55,6 +55,7 @@ profile "entrypoint start"
 : "${OPENCLAW_GATEWAY_PORT:=18789}"
 : "${OPENCLAW_TOOLS:=}"
 : "${OPENCLAW_INSTRUCTIONS:=}"
+: "${OPENCLAW_THINKING_LEVEL:=off}"
 
 OPENCLAW_EFFECTIVE_MODEL="${OPENCLAW_MODEL}"
 OPENCLAW_PROVIDER_MODEL="${OPENCLAW_MODEL}"
@@ -266,6 +267,7 @@ ZENMUX_JSON=$(zenmux_json_fragment)
 jq -n \
   --arg agent_id       "${OPENCLAW_AGENT_ID}" \
   --arg model          "${OPENCLAW_EFFECTIVE_MODEL}" \
+  --arg thinking_level "${OPENCLAW_THINKING_LEVEL}" \
   --arg instructions   "${OPENCLAW_INSTRUCTIONS}" \
   --arg plugin         "${OPENCLAW_PLUGIN}" \
   --arg confirm_tools  "${OPENCLAW_CONFIRM_TOOLS:-}" \
@@ -297,6 +299,7 @@ jq -n \
           id: $agent_id,
           model: { primary: $model }
         }
+        + (if $thinking_level != "" and $thinking_level != "off" then { thinkingLevel: $thinking_level } else {} end)
         + (if ($tools.alsoAllow // null) then { tools: $tools } else {} end)
         + (if ($denied | length) > 0 then { tools: ((.tools // {}) + { deny: $denied }) } else {} end)
         + (if $instructions != "" then { systemPromptOverride: $instructions } else {} end)

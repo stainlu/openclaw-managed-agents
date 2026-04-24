@@ -61,6 +61,7 @@ RUN mkdir -p /workspace && chown -R openclaw:openclaw /workspace
 ENV OPENCLAW_AGENT_ID="default" \
     OPENCLAW_PLUGIN="" \
     OPENCLAW_MODEL="moonshot/kimi-k2.5" \
+    OPENCLAW_THINKING_LEVEL="off" \
     OPENCLAW_TOOLS="" \
     OPENCLAW_INSTRUCTIONS="You are a helpful assistant." \
     OPENCLAW_SESSION_ID="" \

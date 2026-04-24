@@ -16,7 +16,11 @@ import { AgentRouter, type RouterConfig } from "./orchestrator/router.js";
 import { startServer } from "./orchestrator/server.js";
 import { DockerContainerRuntime } from "./runtime/docker.js";
 import { ParentTokenMinter } from "./runtime/parent-token.js";
-import { SessionContainerPool } from "./runtime/pool.js";
+import {
+  limitedNetworkingResourceNames,
+  type OwnedSessionResources,
+  SessionContainerPool,
+} from "./runtime/pool.js";
 import {
   buildStore,
   PiJsonlEventReader,
@@ -293,7 +297,15 @@ async function main(): Promise<void> {
     // post-create), so without this SQLite mapping adoption would
     // misclassify every claimed-warm container as an orphan and
     // kill its running session. See SessionContainerStore docstring.
-    onContainerClaimed: ({ sessionId, agentId, container, source, bootMs }) => {
+    onContainerClaimed: ({
+      sessionId,
+      agentId,
+      container,
+      source,
+      bootMs,
+      configSignature,
+      spawnedAt,
+    }) => {
       store.sessionContainers.put({
         sessionId,
         agentId,
@@ -302,6 +314,8 @@ async function main(): Promise<void> {
         containerPort: gatewayPort,
         gatewayToken: container.token,
         claimedAt: Date.now(),
+        configSignature,
+        spawnedAt,
         bootMs,
         poolSource: source,
       });
@@ -329,8 +343,11 @@ async function main(): Promise<void> {
         mkdirSync(dirname(targetPath), { recursive: true });
         renameSync(sourcePath, targetPath);
       } catch (err) {
-        log.warn({ err, session_id: sessionId, from: sourcePath, to: targetPath },
-          "warm workspace rename failed — session will still work but path mismatch may occur");
+        log.warn(
+          { err, session_id: sessionId, from: sourcePath, to: targetPath },
+          "warm workspace rename failed",
+        );
+        throw err;
       }
     },
     limitedNetworking,
@@ -424,6 +441,12 @@ async function main(): Promise<void> {
   let adoptionStoppedOrphan = 0;
   let adoptionFailed = 0;
   const managedContainers = await runtime.listManaged();
+  const sidecarsBySession = new Map(
+    managedContainers
+      .filter((c) => c.role === "egress-proxy" && c.sessionId)
+      .map((c) => [c.sessionId!, c]),
+  );
+  const adoptedSidecarIds = new Set<string>();
   // Authoritative session→container map is the SQLite store. Docker
   // labels on claimed-warm containers are stale (still say __warm__),
   // so we resolve every listManaged entry through the SQLite mapping
@@ -438,11 +461,19 @@ async function main(): Promise<void> {
   );
   for (const info of managedContainers) {
     adoptionAttempts += 1;
+    if (info.role === "egress-proxy") continue;
     // Resolve session-id: SQLite first, Docker label as fallback.
     const persisted = persistedByContainer.get(info.id);
     const sessionId = persisted?.sessionId ?? info.sessionId;
-    if (!sessionId || sessionId === "__warm__") {
-      // Genuinely orphan: no SQLite row, and Docker label says __warm__.
+    if (
+      info.role !== "agent" ||
+      !info.baseUrl ||
+      !info.token ||
+      !sessionId ||
+      sessionId === "__warm__"
+    ) {
+      // Genuinely orphan: no usable gateway metadata, no SQLite row, or
+      // Docker label says __warm__.
       await runtime.stop(info.id).catch(() => { /* best-effort */ });
       adoptionStoppedOrphan += 1;
       startupAdoptionsTotal.labels({ outcome: "stopped_orphan" }).inc();
@@ -468,6 +499,32 @@ async function main(): Promise<void> {
       // pre-dating the feature, fall back to reading the env var via
       // listManaged — both paths produce the same valid token.
       const gatewayToken = persisted?.gatewayToken ?? info.token;
+      let ownedResources: OwnedSessionResources | undefined;
+      if (persisted?.poolSource === "limited") {
+        const sidecar = sidecarsBySession.get(sessionId);
+        const names = limitedNetworkingResourceNames(sessionId);
+        if (!sidecar?.running) {
+          await runtime.stop(info.id).catch(() => { /* best-effort */ });
+          if (sidecar) await runtime.stop(sidecar.id).catch(() => { /* best-effort */ });
+          for (const net of names.networks) {
+            await runtime.removeNetwork(net).catch(() => { /* best-effort */ });
+          }
+          store.sessionContainers.delete(sessionId);
+          adoptionFailed += 1;
+          startupAdoptionsTotal.labels({ outcome: "reattach_failed" }).inc();
+          continue;
+        }
+        adoptedSidecarIds.add(sidecar.id);
+        ownedResources = {
+          sidecar: {
+            id: sidecar.id,
+            name: sidecar.name,
+            baseUrl: sidecar.baseUrl ?? "",
+            token: sidecar.token ?? "",
+          },
+          networks: names.networks,
+        };
+      }
       await pool.adopt({
         sessionId,
         agentId: persisted?.agentId ?? info.agentId,
@@ -477,6 +534,9 @@ async function main(): Promise<void> {
           baseUrl: info.baseUrl,
           token: gatewayToken,
         },
+        configSignature: persisted?.configSignature,
+        spawnedAt: persisted?.spawnedAt,
+        ownedResources,
       });
       adopted.add(sessionId);
       adoptionReattached += 1;
@@ -491,6 +551,18 @@ async function main(): Promise<void> {
       adoptionFailed += 1;
       startupAdoptionsTotal.labels({ outcome: "reattach_failed" }).inc();
     }
+  }
+  for (const info of managedContainers) {
+    if (info.role !== "egress-proxy" || adoptedSidecarIds.has(info.id)) continue;
+    await runtime.stop(info.id).catch(() => { /* best-effort */ });
+    if (info.sessionId) {
+      const names = limitedNetworkingResourceNames(info.sessionId);
+      for (const net of names.networks) {
+        await runtime.removeNetwork(net).catch(() => { /* best-effort */ });
+      }
+    }
+    adoptionStoppedOrphan += 1;
+    startupAdoptionsTotal.labels({ outcome: "stopped_orphan" }).inc();
   }
   // Any persisted mapping that didn't correspond to a still-existing
   // container on the host is stale (container was removed while
@@ -551,20 +623,22 @@ async function main(): Promise<void> {
       continue;
     }
     if (session.status !== "idle") continue;
-    const head = store.queue.shift(sessionId);
+    const head = store.queue.peek(sessionId);
     if (!head) continue;
     try {
       await router.runEvent({
         sessionId,
         content: head.content,
         model: head.model,
+        thinkingLevel: head.thinkingLevel,
       });
+      store.queue.shift(sessionId);
       drainedEvents += 1;
       startupQueueDrainedTotal.inc();
     } catch (err) {
       log.warn(
         { err, session_id: sessionId },
-        "startup queue drain failed; leaving remaining events for next boot",
+        "startup queue drain failed; leaving queued head for next boot",
       );
     }
   }

@@ -194,6 +194,8 @@ CREATE TABLE ${tableName} (
   container_port INTEGER NOT NULL,
   gateway_token TEXT NOT NULL,
   claimed_at INTEGER NOT NULL,
+  config_signature TEXT,
+  spawned_at INTEGER,
   boot_ms INTEGER,
   pool_source TEXT
 )`;
@@ -307,6 +309,7 @@ CREATE TABLE IF NOT EXISTS queued_events (
   session_id TEXT NOT NULL,
   content TEXT NOT NULL,
   model TEXT,
+  thinking_level TEXT,
   enqueued_at INTEGER NOT NULL
 );
 
@@ -403,6 +406,8 @@ CREATE TABLE IF NOT EXISTS session_containers (
   container_port INTEGER NOT NULL,
   gateway_token TEXT NOT NULL,
   claimed_at INTEGER NOT NULL,
+  config_signature TEXT,
+  spawned_at INTEGER,
   -- Pool telemetry. NULL boot_ms only for adopt-at-restart (we didn't spawn it).
   -- pool_source ∈ { cold, warm, limited, adopt }. Neither column is indexed —
   -- they're read only when joining a single session row in the HTTP response.
@@ -1267,8 +1272,8 @@ class SqliteQueueStore implements QueueStore {
 
   constructor(db: Database.Database) {
     this.insertStmt = db.prepare(
-      `INSERT INTO queued_events (session_id, content, model, enqueued_at)
-       VALUES (@session_id, @content, @model, @enqueued_at)`,
+      `INSERT INTO queued_events (session_id, content, model, thinking_level, enqueued_at)
+       VALUES (@session_id, @content, @model, @thinking_level, @enqueued_at)`,
     );
     // Head-of-queue is the lowest id for a session. Peek-then-delete is a
     // two-statement shift; both run inside the same sync better-sqlite3
@@ -1276,7 +1281,7 @@ class SqliteQueueStore implements QueueStore {
     // are naturally serialized. Cross-process contention is out of scope
     // (the orchestrator is still single-process by design).
     this.peekStmt = db.prepare(
-      `SELECT id, content, model, enqueued_at
+      `SELECT id, content, model, thinking_level, enqueued_at
        FROM queued_events WHERE session_id = ?
        ORDER BY id ASC LIMIT 1`,
     );
@@ -1295,19 +1300,46 @@ class SqliteQueueStore implements QueueStore {
       session_id: sessionId,
       content: event.content,
       model: event.model ?? null,
+      thinking_level: event.thinkingLevel ?? null,
       enqueued_at: event.enqueuedAt,
     });
   }
 
+  peek(sessionId: string): QueuedEvent | undefined {
+    const row = this.peekStmt.get(sessionId) as
+      | {
+          id: number;
+          content: string;
+          model: string | null;
+          thinking_level: string | null;
+          enqueued_at: number;
+        }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      content: row.content,
+      model: row.model ?? undefined,
+      thinkingLevel: row.thinking_level ?? undefined,
+      enqueuedAt: row.enqueued_at,
+    };
+  }
+
   shift(sessionId: string): QueuedEvent | undefined {
     const row = this.peekStmt.get(sessionId) as
-      | { id: number; content: string; model: string | null; enqueued_at: number }
+      | {
+          id: number;
+          content: string;
+          model: string | null;
+          thinking_level: string | null;
+          enqueued_at: number;
+        }
       | undefined;
     if (!row) return undefined;
     this.deleteByIdStmt.run(row.id);
     return {
       content: row.content,
       model: row.model ?? undefined,
+      thinkingLevel: row.thinking_level ?? undefined,
       enqueuedAt: row.enqueued_at,
     };
   }
@@ -1341,10 +1373,12 @@ class SqliteSessionContainerStore implements SessionContainerStore {
       `INSERT INTO session_containers (
          session_id, agent_id, container_id, container_name,
          container_port, gateway_token, claimed_at,
+         config_signature, spawned_at,
          boot_ms, pool_source
        ) VALUES (
          @session_id, @agent_id, @container_id, @container_name,
          @container_port, @gateway_token, @claimed_at,
+         @config_signature, @spawned_at,
          @boot_ms, @pool_source
        )
        ON CONFLICT(session_id) DO UPDATE SET
@@ -1354,13 +1388,15 @@ class SqliteSessionContainerStore implements SessionContainerStore {
          container_port = excluded.container_port,
          gateway_token = excluded.gateway_token,
          claimed_at = excluded.claimed_at,
+         config_signature = excluded.config_signature,
+         spawned_at = excluded.spawned_at,
          boot_ms = excluded.boot_ms,
          pool_source = excluded.pool_source`,
     );
     this.getStmt = db.prepare(
       `SELECT session_id, agent_id, container_id, container_name,
               container_port, gateway_token, claimed_at,
-              boot_ms, pool_source
+              config_signature, spawned_at, boot_ms, pool_source
        FROM session_containers WHERE session_id = ?`,
     );
     this.deleteStmt = db.prepare(
@@ -1369,7 +1405,7 @@ class SqliteSessionContainerStore implements SessionContainerStore {
     this.listStmt = db.prepare(
       `SELECT session_id, agent_id, container_id, container_name,
               container_port, gateway_token, claimed_at,
-              boot_ms, pool_source
+              config_signature, spawned_at, boot_ms, pool_source
        FROM session_containers`,
     );
   }
@@ -1383,6 +1419,8 @@ class SqliteSessionContainerStore implements SessionContainerStore {
       container_port: entry.containerPort,
       gateway_token: entry.gatewayToken,
       claimed_at: entry.claimedAt,
+      config_signature: entry.configSignature,
+      spawned_at: entry.spawnedAt,
       boot_ms: entry.bootMs,
       pool_source: entry.poolSource,
     });
@@ -1411,6 +1449,8 @@ type SessionContainerRow = {
   container_port: number;
   gateway_token: string;
   claimed_at: number;
+  config_signature: string | null;
+  spawned_at: number | null;
   boot_ms: number | null;
   pool_source: string | null;
 };
@@ -1438,6 +1478,8 @@ function rowToSessionContainer(row: SessionContainerRow): SessionContainer {
     containerPort: row.container_port,
     gatewayToken: row.gateway_token,
     claimedAt: row.claimed_at,
+    configSignature: row.config_signature,
+    spawnedAt: row.spawned_at,
     bootMs: row.boot_ms,
     poolSource: source,
   };
@@ -1837,6 +1879,18 @@ export class SqliteStore implements Store {
     if (scCols.length > 0 && !scCols.some((c) => c.name === "pool_source")) {
       this.db.exec("ALTER TABLE session_containers ADD COLUMN pool_source TEXT");
     }
+    if (scCols.length > 0 && !scCols.some((c) => c.name === "config_signature")) {
+      this.db.exec("ALTER TABLE session_containers ADD COLUMN config_signature TEXT");
+    }
+    if (scCols.length > 0 && !scCols.some((c) => c.name === "spawned_at")) {
+      this.db.exec("ALTER TABLE session_containers ADD COLUMN spawned_at INTEGER");
+    }
+    const queueCols = this.db.pragma("table_info(queued_events)") as Array<{
+      name: string;
+    }>;
+    if (queueCols.length > 0 && !queueCols.some((c) => c.name === "thinking_level")) {
+      this.db.exec("ALTER TABLE queued_events ADD COLUMN thinking_level TEXT");
+    }
     this.migrateSessionStatusConstraint();
 
     const envCols = this.db.pragma("table_info(environments)") as Array<{
@@ -1929,11 +1983,11 @@ export class SqliteStore implements Store {
         this.db.exec(`
           INSERT INTO session_containers_new (
             session_id, agent_id, container_id, container_name, container_port,
-            gateway_token, claimed_at, boot_ms, pool_source
+            gateway_token, claimed_at, config_signature, spawned_at, boot_ms, pool_source
           )
           SELECT
             session_id, agent_id, container_id, container_name, container_port,
-            gateway_token, claimed_at, boot_ms, pool_source
+            gateway_token, claimed_at, config_signature, spawned_at, boot_ms, pool_source
           FROM session_containers
         `);
         this.db.exec("DROP TABLE session_containers");

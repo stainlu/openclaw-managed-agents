@@ -1471,10 +1471,12 @@ export function buildApp(deps: ServerDeps): Hono {
   //   - `stream: true` pipes the container's real SSE chunks through to
   //     the caller byte-for-byte (OpenAI-compatible ChatCompletionChunk
   //     format, terminator `[DONE]`). The run cannot be queued in this
-  //     mode: a busy session returns 409 `session_busy` and the client
-  //     retries. Client disconnect aborts our relay but the container's
-  //     turn continues server-side — Pi's JSONL retains truth, and the
-  //     session is rolled back to idle so the next event isn't blocked.
+  //     mode: a busy session returns 409 `session_busy`. Client disconnect
+  //     before `[DONE]` aborts the upstream reader and marks the managed
+  //     run failed so the session cannot stay stuck in `running`.
+  //   - Non-streaming sticky-session calls also return 409 when busy.
+  //     Blocking OpenAI responses need request/reply correlation, so they
+  //     must not enter the native queued-event path.
   //
   // Session resolution:
   //   - `x-openclaw-session-key` header or body `user` field → sticky
@@ -1483,13 +1485,10 @@ export function buildApp(deps: ServerDeps): Hono {
   //   - Neither → ephemeral session, auto-generated id, flagged for
   //     reap-time cleanup by the idle sweeper.
   //
-  // Stale-detection: because the pool queues events when a session is
-  // busy, a /v1/chat/completions call on a running session may wait for
-  // both the in-flight run AND subsequent queued events to drain. The
-  // handler snapshots the newest agent.message id BEFORE calling runEvent
-  // and verifies the post-wait message is different — otherwise we'd
-  // return a stale response from an earlier turn. Guards the race flagged
-  // by the advisor.
+  // Stale-detection: the handler snapshots the newest agent.message id
+  // BEFORE calling runEvent and verifies the post-wait message is different
+  // so a failed/no-op turn never returns a stale response from an earlier
+  // turn.
   app.post("/v1/chat/completions", async (c) => {
     const agentId = c.req.header("x-openclaw-agent-id");
     if (!agentId) {
@@ -1677,18 +1676,47 @@ export function buildApp(deps: ServerDeps): Hono {
 
       return streamSSE(c, async (sse) => {
         let finalized = false;
+        let streamCompleted = false;
+        let finalizeStarted = false;
         try {
           for await (const data of handle.chunks) {
+            if (data === "[DONE]") streamCompleted = true;
             if (sse.aborted || sse.closed) break;
             await sse.writeSSE({ data });
           }
+          if ((sse.aborted || sse.closed) && !streamCompleted) {
+            await handle.abort("client disconnected before stream completed");
+            await handle.finalize({
+              ok: false,
+              error: "client disconnected before stream completed",
+            });
+            finalized = true;
+            cleanupEphemeralOnError();
+            return;
+          }
+          finalizeStarted = true;
           await handle.finalize({ ok: true });
           finalized = true;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          await handle.finalize({ ok: false, error: msg });
+          if (streamCompleted && !finalizeStarted) {
+            finalizeStarted = true;
+            try {
+              await handle.finalize({ ok: true });
+            } catch (finalizeErr) {
+              const finalizeMsg = finalizeErr instanceof Error
+                ? finalizeErr.message
+                : String(finalizeErr);
+              await handle.abort(finalizeMsg);
+              await handle.finalize({ ok: false, error: finalizeMsg });
+              cleanupEphemeralOnError();
+            }
+          } else {
+            await handle.abort(msg);
+            await handle.finalize({ ok: false, error: msg });
+            cleanupEphemeralOnError();
+          }
           finalized = true;
-          cleanupEphemeralOnError();
           if (!sse.aborted && !sse.closed) {
             try {
               await sse.writeSSE({
@@ -1701,12 +1729,16 @@ export function buildApp(deps: ServerDeps): Hono {
           }
         } finally {
           if (!finalized) {
-            // Client aborted mid-stream. The container's turn continues
-            // server-side; we roll up whatever made it to the JSONL and
-            // flip the session idle so subsequent events aren't blocked.
-            await handle.finalize({ ok: true }).catch(() => {
+            await handle.abort("stream closed before finalization").catch(() => {
               /* best-effort */
             });
+            await handle.finalize({
+              ok: false,
+              error: "stream closed before finalization",
+            }).catch(() => {
+              /* best-effort */
+            });
+            cleanupEphemeralOnError();
           }
         }
       });
@@ -1720,15 +1752,17 @@ export function buildApp(deps: ServerDeps): Hono {
       await deps.router.runEvent({
         sessionId: session.sessionId,
         content: lastUserContent,
+        rejectIfBusy: true,
       });
     } catch (err) {
       cleanupEphemeralOnError();
       if (err instanceof RouterError) {
+        const status = err.code === "session_busy" ? 409 : 500;
         return c.json(
           {
             error: { message: err.message, type: err.code },
           },
-          500,
+          status,
         );
       }
       const msg = err instanceof Error ? err.message : String(err);
@@ -1740,9 +1774,8 @@ export function buildApp(deps: ServerDeps): Hono {
       );
     }
 
-    // Poll for completion. Item 7's queue-drain keeps status=running
-    // across the whole chain so this naturally waits for queued events
-    // to finish before returning.
+    // Poll for completion. OpenAI blocking calls use rejectIfBusy above, so
+    // this waits only for the turn owned by this request.
     const pollStart = Date.now();
     let finalSession: Session | undefined;
     while (Date.now() - pollStart < CHAT_COMPLETION_TIMEOUT_MS) {

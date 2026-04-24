@@ -477,6 +477,29 @@ describe("AgentRouter.runEvent — decision tree", () => {
     const next = queue.shift(session.sessionId);
     expect(next?.model).toBe("anthropic/claude-sonnet-4-6");
   });
+
+  it("rejects busy sessions instead of queueing when rejectIfBusy is set", async () => {
+    const { router, store, queue } = makeRouter();
+    const agent = store.agents.create({
+      model: "m",
+      tools: [],
+      instructions: "",
+      permissionPolicy: { type: "always_allow" },
+      callableAgents: [],
+      maxSubagentDepth: 0,
+    });
+    const session = router.createSession(agent.agentId);
+    store.sessions.beginRun(session.sessionId);
+
+    await expect(
+      router.runEvent({
+        sessionId: session.sessionId,
+        content: "do not queue",
+        rejectIfBusy: true,
+      }),
+    ).rejects.toMatchObject({ name: "RouterError", code: "session_busy" });
+    expect(queue.size(session.sessionId)).toBe(0);
+  });
 });
 
 describe("AgentRouter.runEvent — JSONL advancement guarantees", () => {
@@ -587,6 +610,158 @@ describe("AgentRouter.runEvent — JSONL advancement guarantees", () => {
     expect(finished?.tokensIn).toBe(11);
     expect(finished?.tokensOut).toBe(7);
     expect(finished?.costUsd).toBe(0.12);
+  });
+
+  it("bakes first-turn model and thinking overrides into spawn options", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "done" } }],
+            usage: { prompt_tokens: 11, completion_tokens: 7 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const fakeEvents = {
+      stateRoot: "/tmp/test-state",
+      countUserTurns: vi
+        .fn()
+        .mockReturnValueOnce(0)
+        .mockReturnValueOnce(1),
+      latestAgentMessage: vi
+        .fn()
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({
+          eventId: "evt_new",
+          sessionId: "ses_unused",
+          type: "agent.message",
+          content: "done",
+          createdAt: Date.now(),
+          tokensIn: 11,
+          tokensOut: 7,
+        }),
+    };
+    let capturedSpawnOptions: unknown;
+    const { router, store } = makeRouter({
+      poolStub: {
+        acquireForSession: async (args: { spawnOptions: unknown }) => {
+          capturedSpawnOptions = args.spawnOptions;
+          return { baseUrl: "http://container.test", token: "tok" } as any;
+        },
+        evictSession: async () => {},
+      },
+      eventReaderStub: fakeEvents as unknown as PiJsonlEventReader,
+    });
+    const agent = store.agents.create({
+      model: "moonshot/kimi-k2.5",
+      tools: [],
+      instructions: "",
+      permissionPolicy: { type: "always_allow" },
+      callableAgents: [],
+      maxSubagentDepth: 0,
+      thinkingLevel: "medium",
+    });
+    const session = router.createSession(agent.agentId);
+
+    await router.runEvent({
+      sessionId: session.sessionId,
+      content: "hi",
+      model: "openai/gpt-5.4",
+      thinkingLevel: "high",
+    });
+    await waitForSessionToStopRunning(store, session.sessionId);
+
+    expect(capturedSpawnOptions).toMatchObject({
+      env: {
+        OPENCLAW_MODEL: "openai/gpt-5.4",
+        OPENCLAW_THINKING_LEVEL: "high",
+      },
+    });
+  });
+
+  it("uses WS patch instead of changing boot config for later-turn overrides", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "done" } }],
+            usage: { prompt_tokens: 11, completion_tokens: 7 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const fakeEvents = {
+      stateRoot: "/tmp/test-state",
+      countUserTurns: vi
+        .fn()
+        .mockReturnValueOnce(1)
+        .mockReturnValueOnce(2),
+      latestAgentMessage: vi
+        .fn()
+        .mockReturnValueOnce({ eventId: "evt_old", sessionId: "ses_unused", type: "agent.message", content: "old", createdAt: 1 })
+        .mockReturnValueOnce({
+          eventId: "evt_new",
+          sessionId: "ses_unused",
+          type: "agent.message",
+          content: "done",
+          createdAt: Date.now(),
+          tokensIn: 11,
+          tokensOut: 7,
+        }),
+    };
+    let capturedSpawnOptions: unknown;
+    let patched: Record<string, unknown> | undefined;
+    const fakeWs = {
+      patch: async (_key: string, fields: Record<string, unknown>) => {
+        patched = fields;
+      },
+    };
+    const { router, store } = makeRouter({
+      poolStub: {
+        acquireForSession: async (args: { spawnOptions: unknown }) => {
+          capturedSpawnOptions = args.spawnOptions;
+          return { baseUrl: "http://container.test", token: "tok" } as any;
+        },
+        getWsClient: () => fakeWs as unknown as GatewayWebSocketClient,
+        evictSession: async () => {},
+      },
+      eventReaderStub: fakeEvents as unknown as PiJsonlEventReader,
+    });
+    const agent = store.agents.create({
+      model: "moonshot/kimi-k2.5",
+      tools: [],
+      instructions: "",
+      permissionPolicy: { type: "always_allow" },
+      callableAgents: [],
+      maxSubagentDepth: 0,
+      thinkingLevel: "off",
+    });
+    const session = router.createSession(agent.agentId);
+    store.sessions.bumpTurns(session.sessionId);
+
+    await router.runEvent({
+      sessionId: session.sessionId,
+      content: "hi",
+      model: "openai/gpt-5.4",
+      thinkingLevel: "high",
+    });
+    await waitForSessionToStopRunning(store, session.sessionId);
+
+    expect(capturedSpawnOptions).toMatchObject({
+      env: {
+        OPENCLAW_MODEL: "moonshot/kimi-k2.5",
+        OPENCLAW_THINKING_LEVEL: "off",
+      },
+    });
+    expect(patched).toEqual({
+      model: "openai/gpt-5.4",
+      thinkingLevel: "high",
+    });
   });
 
   it("falls back to transcript usage when the completion response omits usage", async () => {

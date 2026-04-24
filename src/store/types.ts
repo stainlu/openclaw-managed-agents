@@ -373,6 +373,13 @@ export type SessionContainer = {
   /** Per-container auth token. Required for WS reconnect after restart. */
   gatewayToken: string;
   claimedAt: number;
+  /** Fingerprint of the boot-time config baked into this container. */
+  configSignature: string | null;
+  /**
+   * Original container spawn time. Different from claimedAt for warm
+   * containers, which may be claimed long after they booted.
+   */
+  spawnedAt: number | null;
   /**
    * Wall-clock milliseconds the pool spent acquiring this container from
    * the caller's perspective. Definition varies by `poolSource`:
@@ -414,6 +421,8 @@ export interface SessionContainerStore {
 export interface QueueStore {
   /** Append an event to the given session's queue. Ordered by enqueue time. */
   enqueue(sessionId: string, event: QueuedEvent): void;
+  /** Return the head event without removing it. */
+  peek(sessionId: string): QueuedEvent | undefined;
   /** Remove and return the head event for the session, or undefined if empty. */
   shift(sessionId: string): QueuedEvent | undefined;
   /** Non-destructive count of queued events for a session. */

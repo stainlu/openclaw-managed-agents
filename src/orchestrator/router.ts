@@ -97,6 +97,12 @@ export type RunEventArgs = {
    * persists across subsequent runs until changed.
    */
   thinkingLevel?: string;
+  /**
+   * Return session_busy instead of appending to the durable queue when
+   * the session is already running. Used by OpenAI-compatible blocking
+   * calls, which cannot correlate a queued turn with its eventual reply.
+   */
+  rejectIfBusy?: boolean;
 };
 
 export type RunEventResult = {
@@ -126,6 +132,8 @@ export type StreamingRunHandle = {
    * underlying socket closes.
    */
   chunks: AsyncGenerator<string, void, void>;
+  /** Abort the upstream stream when the HTTP client disconnects early. */
+  abort(reason?: string): Promise<void>;
   finalize(outcome: StreamOutcome): Promise<void>;
 };
 
@@ -540,6 +548,12 @@ export class AgentRouter {
     this.assertQuota(session, agent);
 
     if (isSessionInflight(session)) {
+      if (args.rejectIfBusy) {
+        throw new RouterError(
+          "session_busy",
+          `session ${args.sessionId} is busy; retry after the current run completes`,
+        );
+      }
       this.queue.enqueue(args.sessionId, {
         content: args.content,
         model: args.model,
@@ -611,7 +625,7 @@ export class AgentRouter {
     this.assertQuota(session, agent);
 
     const running = this.sessions.beginRun(args.sessionId) ?? session;
-    this.sessions.bumpTurns(args.sessionId);
+    const bumped = this.sessions.bumpTurns(args.sessionId) ?? running;
     addContext({ sessionId: args.sessionId, agentId: agent.agentId });
 
     try {
@@ -621,7 +635,12 @@ export class AgentRouter {
       // `credential_expired` on refresh failure so the caller's app
       // knows to re-run OAuth for the end-user.
       await this.refreshExpiringOAuthCredentials(agent, running.vaultId ?? null);
-      const spawnOptions = this.buildSpawnOptions(args.sessionId, agent, running);
+      const effectiveThinking = args.thinkingLevel ?? agent.thinkingLevel;
+      const streamIsFirstTurn = bumped.turns <= 1;
+      const spawnOptions = this.buildSpawnOptions(args.sessionId, agent, bumped, {
+        modelOverride: streamIsFirstTurn ? args.model : undefined,
+        thinkingLevel: streamIsFirstTurn ? effectiveThinking : agent.thinkingLevel,
+      });
       const networking = this.resolveNetworking(running);
       const container = await this.pool.acquireForSession({
         sessionId: args.sessionId,
@@ -638,8 +657,6 @@ export class AgentRouter {
         }
       }
 
-      const effectiveThinking = args.thinkingLevel ?? agent.thinkingLevel;
-      const streamIsFirstTurn = session.turns <= 1;
       if ((args.model || effectiveThinking !== "off") && !streamIsFirstTurn) {
         const wsClient = this.pool.getWsClient(args.sessionId);
         if (!wsClient) {
@@ -649,7 +666,12 @@ export class AgentRouter {
           );
         }
         const patch: Record<string, string> = {};
-        if (args.model) patch.model = args.model;
+        if (args.model) {
+          patch.model = normalizeModelForRuntime(
+            args.model,
+            this.cfg.passthroughEnv,
+          );
+        }
         if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
         try {
           await wsClient.patch(`agent:main:${args.sessionId}`, patch);
@@ -701,6 +723,7 @@ export class AgentRouter {
       }
 
       const reader = res.body.getReader();
+      let readerClosed = false;
       const chunks = (async function* (): AsyncGenerator<string, void, void> {
         const decoder = new TextDecoder("utf-8");
         let buf = "";
@@ -733,6 +756,7 @@ export class AgentRouter {
             }
           }
         } finally {
+          readerClosed = true;
           runEnd();
           try {
             reader.releaseLock();
@@ -741,6 +765,14 @@ export class AgentRouter {
           }
         }
       })();
+      const abort = async (reason?: string): Promise<void> => {
+        if (readerClosed) return;
+        try {
+          await reader.cancel(reason ?? "client disconnected");
+        } catch {
+          /* reader may already be closed or released */
+        }
+      };
 
       const router = this;
       const finalize = async (outcome: StreamOutcome): Promise<void> => {
@@ -779,7 +811,7 @@ export class AgentRouter {
         router.sessions.endRunFailure(args.sessionId, outcome.error);
       };
 
-      return { session: running, chunks, finalize };
+      return { session: bumped, chunks, abort, finalize };
     } catch (err) {
       // Failure BEFORE we handed the stream to the caller — unwind the
       // beginRun transition ourselves. Evict the container because the
@@ -1315,6 +1347,10 @@ export class AgentRouter {
     sessionId: string,
     agent: AgentConfig,
     session: Session,
+    opts?: {
+      modelOverride?: string;
+      thinkingLevel?: string;
+    },
   ): SpawnOptions {
     const hostMount: Mount = {
       hostPath: `${this.cfg.hostStateRoot}/${agent.agentId}/sessions/${sessionId}`,
@@ -1358,13 +1394,15 @@ export class AgentRouter {
       : undefined;
 
     const runtimeModel = normalizeModelForRuntime(
-      agent.model,
+      opts?.modelOverride ?? agent.model,
       this.cfg.passthroughEnv,
     );
+    const runtimeThinkingLevel = opts?.thinkingLevel ?? agent.thinkingLevel;
     const env: Record<string, string> = {
       ...this.cfg.passthroughEnv,
       OPENCLAW_AGENT_ID: "main",
       OPENCLAW_MODEL: runtimeModel,
+      OPENCLAW_THINKING_LEVEL: runtimeThinkingLevel,
       OPENCLAW_TOOLS: agent.tools.join(","),
       OPENCLAW_INSTRUCTIONS: effectiveInstructions,
       OPENCLAW_STATE_DIR: "/workspace",
@@ -1372,12 +1410,10 @@ export class AgentRouter {
       OPENCLAW_ORCHESTRATOR_URL: this.cfg.orchestratorUrl,
       OPENCLAW_ORCHESTRATOR_TOKEN: parentToken,
     };
-    // NOTE on thinkingLevel: openclaw's config schema rejects thinkingLevel
-    // in both `agents.list[].thinkingLevel` and `agents.defaults.thinkingLevel`
-    // paths — it's a *runtime* session field set via WS sessions.patch
-    // (same channel model override takes). executeInBackground + streamEvent
-    // patch it before every turn based on agent.thinkingLevel + per-event
-    // override, so no env var is needed here.
+    // OPENCLAW_THINKING_LEVEL is baked into the generated openclaw.json so
+    // the very first turn uses the template or per-event thinking budget.
+    // Later turns still patch the Pi session field below because it is
+    // session-scoped once the key exists.
     if (envConfig?.packages) {
       env.OPENCLAW_PACKAGES_JSON = JSON.stringify(envConfig.packages);
     }
@@ -1435,10 +1471,16 @@ export class AgentRouter {
       this.evictIfCredentialsStale(sessionId, currentSession.vaultId);
     }
 
+    const effectiveThinking = thinkingLevelOverride ?? agent.thinkingLevel;
+    const isFirstTurn = currentSession ? currentSession.turns <= 1 : true;
     const spawnOptions = this.buildSpawnOptions(
       sessionId,
       agent,
       currentSession ?? { remainingSubagentDepth: 0, environmentId: null } as Session,
+      {
+        modelOverride: isFirstTurn ? modelOverride : undefined,
+        thinkingLevel: isFirstTurn ? effectiveThinking : agent.thinkingLevel,
+      },
     );
     Object.assign(timings, tick("build_spawn_options", cursor));
     cursor = Date.now();
@@ -1451,7 +1493,7 @@ export class AgentRouter {
     // the user message in the session log).
     const container = await this.acquireWithRetry(
       sessionId, agent, spawnOptions, currentSession,
-      modelOverride, thinkingLevelOverride, timings,
+      modelOverride, effectiveThinking, timings,
     );
     Object.assign(timings, tick("acquire_total", cursor));
     cursor = Date.now();
@@ -1641,17 +1683,19 @@ export class AgentRouter {
       // previous process had committed to but not dispatched. One event
       // is enough — runEvent will chain the rest via the normal
       // queue-drain path.
-      const next = this.queue.shift(sessionId);
+      const next = this.queue.peek(sessionId);
       if (next) {
         void this.runEvent({
           sessionId,
           content: next.content,
           model: next.model,
           thinkingLevel: next.thinkingLevel,
+        }).then(() => {
+          this.queue.shift(sessionId);
         }).catch((err) => {
           log.warn(
             { err, session_id: sessionId },
-            "post-adopt queue drain failed",
+            "post-adopt queue drain failed; queued head remains",
           );
         });
       }
@@ -1808,9 +1852,9 @@ export class AgentRouter {
         const needsPatch = Boolean(modelOverride) || effectiveThinking !== "off";
         // Pi creates the session key on the first HTTP POST. Before that,
         // sessions.patch can't find the key and times out (10s wasted).
-        // Skip the patch on the first turn — Pi will use the model's
-        // default thinking level. Subsequent turns have a key and patch
-        // instantly.
+        // Skip the patch on the first turn; buildSpawnOptions already
+        // baked first-turn model/thinking into openclaw.json. Subsequent
+        // turns have a key and patch instantly.
         const isFirstTurn = currentSession ? currentSession.turns <= 1 : true;
         if (needsPatch && !isFirstTurn) {
           const wsClient = this.pool.getWsClient(sessionId);

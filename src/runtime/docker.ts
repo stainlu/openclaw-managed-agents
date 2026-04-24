@@ -12,8 +12,9 @@ import type { Container, ContainerRuntime, SpawnOptions } from "./container.js";
 export type ManagedContainerInfo = {
   id: string;
   name: string;
-  baseUrl: string;
-  token: string;
+  role: "agent" | "egress-proxy" | "unknown";
+  baseUrl?: string;
+  token?: string;
   sessionId: string | undefined;
   agentId: string | undefined;
   running: boolean;
@@ -256,7 +257,16 @@ export class DockerContainerRuntime implements ContainerRuntime {
     const existing = await this.docker.listNetworks({
       filters: { name: [target] },
     });
-    if (existing.some((n) => n.Name === target)) return;
+    const exact = existing.find((n) => n.Name === target);
+    if (exact) {
+      const inspect = await this.docker.getNetwork(exact.Id).inspect();
+      if (Boolean(inspect.Internal) !== internal) {
+        throw new Error(
+          `docker network ${target} already exists with Internal=${Boolean(inspect.Internal)}, expected Internal=${internal}`,
+        );
+      }
+      return;
+    }
     await this.docker.createNetwork({
       Name: target,
       Driver: "bridge",
@@ -329,6 +339,7 @@ export class DockerContainerRuntime implements ContainerRuntime {
       try {
         const inspect = await this.docker.getContainer(info.Id).inspect();
         const env = inspect.Config?.Env ?? [];
+        const labels = inspect.Config?.Labels ?? info.Labels ?? {};
         const getEnv = (k: string): string | undefined => {
           const prefix = `${k}=`;
           const found = env.find((e) => e.startsWith(prefix));
@@ -337,16 +348,24 @@ export class DockerContainerRuntime implements ContainerRuntime {
         const token = getEnv("OPENCLAW_GATEWAY_TOKEN");
         const portStr = getEnv("OPENCLAW_GATEWAY_PORT");
         const name = (info.Names[0] ?? "").replace(/^\//, "");
-        if (!token || !name || !portStr) continue;
-        const port = Number.parseInt(portStr, 10);
-        if (!Number.isFinite(port)) continue;
+        if (!name) continue;
+        const role =
+          labels["openclaw-role"] === "egress-proxy"
+            ? "egress-proxy"
+            : token && portStr
+              ? "agent"
+              : "unknown";
+        const port = portStr ? Number.parseInt(portStr, 10) : NaN;
         out.push({
           id: info.Id,
           name,
-          baseUrl: `http://${name}:${port}`,
+          role,
+          baseUrl: Number.isFinite(port) ? `http://${name}:${port}` : undefined,
           token,
-          sessionId: info.Labels?.["orchestrator-session-id"],
-          agentId: info.Labels?.["orchestrator-agent-id"],
+          sessionId:
+            labels["orchestrator-session-id"] ??
+            labels["openclaw-session-id"],
+          agentId: labels["orchestrator-agent-id"],
           running: info.State === "running",
         });
       } catch {

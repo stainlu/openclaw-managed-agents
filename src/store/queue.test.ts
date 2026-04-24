@@ -65,6 +65,28 @@ function sharedQueueSuite(label: string, build: () => QueueStore) {
       expect(out?.enqueuedAt).toBe(42);
     });
 
+    it("preserves the optional thinking override round-trip", () => {
+      const q = build();
+      q.enqueue("ses_x", {
+        content: "think harder",
+        thinkingLevel: "high",
+        enqueuedAt: 43,
+      });
+      const out = q.shift("ses_x");
+      expect(out?.content).toBe("think harder");
+      expect(out?.thinkingLevel).toBe("high");
+    });
+
+    it("peeks without removing the head event", () => {
+      const q = build();
+      q.enqueue("ses_x", { content: "a", enqueuedAt: 1 });
+      q.enqueue("ses_x", { content: "b", enqueuedAt: 2 });
+      expect(q.peek("ses_x")?.content).toBe("a");
+      expect(q.peek("ses_x")?.content).toBe("a");
+      expect(q.size("ses_x")).toBe(2);
+      expect(q.shift("ses_x")?.content).toBe("a");
+    });
+
     it("listSessionsWithQueued reports sessions with non-empty queues only", () => {
       const q = build();
       expect(q.listSessionsWithQueued()).toEqual([]);
@@ -103,6 +125,7 @@ describe("SqliteQueueStore — durability", () => {
     first.queue.enqueue("ses_restart", {
       content: "survive me",
       model: "moonshot/kimi-k2.5",
+      thinkingLevel: "medium",
       enqueuedAt: 1234,
     });
     first.queue.enqueue("ses_restart", { content: "me too", enqueuedAt: 1235 });
@@ -119,6 +142,7 @@ describe("SqliteQueueStore — durability", () => {
     const first_ = second.queue.shift("ses_restart");
     expect(first_?.content).toBe("survive me");
     expect(first_?.model).toBe("moonshot/kimi-k2.5");
+    expect(first_?.thinkingLevel).toBe("medium");
     expect(first_?.enqueuedAt).toBe(1234);
 
     const second_ = second.queue.shift("ses_restart");

@@ -327,6 +327,11 @@ class InMemoryQueueStore implements QueueStore {
     }
   }
 
+  peek(sessionId: string): QueuedEvent | undefined {
+    const next = this.bySession.get(sessionId)?.[0];
+    return next ? { ...next } : undefined;
+  }
+
   shift(sessionId: string): QueuedEvent | undefined {
     const queue = this.bySession.get(sessionId);
     if (!queue || queue.length === 0) return undefined;

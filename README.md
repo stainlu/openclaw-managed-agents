@@ -254,9 +254,7 @@ POST events accepts two event types:
 - `{"content":"...","model":"...","thinkingLevel":"medium"}` — user message (triggers agent loop, optional session-scoped model/thinking override)
 - `{"type":"user.tool_confirmation","toolUseId":"<approval_id>","result":"allow"}` — resolve a pending tool confirmation (`toolUseId` is a legacy field name; pass the `approval_id` from the SSE event)
 
-Known limitations:
-- Model and thinking overrides are applied through OpenClaw's WebSocket `sessions.patch` after a Pi session key exists. On the first turn of a brand-new session, OpenClaw uses the agent template's boot-time model and default thinking behavior.
-- `thinkingLevel` is currently dropped by the SQLite-backed queue when a message arrives while the session is busy; serialize those turns if the override matters.
+Model and thinking overrides are baked into the container boot config for the first turn, then applied through OpenClaw's WebSocket `sessions.patch` on later turns once the Pi session key exists. Busy-session queue entries persist both overrides on the SQLite backend.
 
 **OpenAI compatibility**
 
@@ -266,9 +264,8 @@ POST   /v1/chat/completions              # OpenAI SDK drop-in (x-openclaw-agent-
 
 Real per-token SSE streaming when `stream: true`. Busy sessions return `HTTP 409 session_busy` so streams don't interleave with the event queue.
 
-Known limitations:
-- Non-streaming calls on a sticky session use the normal queued-event path and return the newest `agent.message` after the session drains. Do not issue concurrent non-streaming calls against the same sticky session key unless your caller serializes them. Streaming calls fail fast with `HTTP 409 session_busy`.
-- A streaming client disconnect before upstream `[DONE]` can leave the backing session in `running`; use `POST /v1/sessions/:id/cancel` for deliberate aborts until this path is fixed.
+Concurrency:
+- Sticky-session calls, streaming or non-streaming, return `HTTP 409 session_busy` when a run is already in flight. Serialize requests per sticky session key or retry after the current run completes.
 
 **Auth helpers**
 
@@ -333,7 +330,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Delegated subagents.** An agent can delegate tasks to other agents via the `openclaw-call-agent` CLI. Children are first-class sessions — fully inspectable through the same API. Allowlists, depth caps, and HMAC-signed tokens enforce who can call whom. Subagent transcripts are not hidden behind an opaque tool result.
 
-**Real token-level streaming on `POST /v1/chat/completions`.** `stream: true` pipes the container's real SSE chunks byte-for-byte to the caller — OpenAI-compatible `ChatCompletionChunk` frames with `[DONE]` terminator. A busy session returns `HTTP 409 session_busy` so streams don't interleave with the event queue. Known limitation: disconnecting before upstream `[DONE]` can leave the backing managed session in `running`; use explicit session cancellation for deliberate aborts until the stream finalizer is made correlation-safe.
+**Real token-level streaming on `POST /v1/chat/completions`.** `stream: true` pipes the container's real SSE chunks byte-for-byte to the caller — OpenAI-compatible `ChatCompletionChunk` frames with `[DONE]` terminator. A busy session returns `HTTP 409 session_busy` so streams don't interleave with the event queue. If the client disconnects before upstream `[DONE]`, the orchestrator aborts the upstream reader and marks the managed run failed instead of leaving the session running.
 
 **Restart safety.** Four invariants that survive orchestrator crash or deploy:
 1. Parent-token HMAC secret persisted to SQLite — outstanding subagent delegation tokens stay valid across restarts.

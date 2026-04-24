@@ -89,9 +89,7 @@ Auth is the same `OPENCLAW_GATEWAY_TOKEN` the orchestrator uses on HTTP. The `da
 
 Durable per-session FIFO. When `POST /v1/sessions/:id/events` arrives while the session is already `running`, the event is enqueued instead of returning 409. The router's `executeInBackground` success path shifts the next queued event and recursively starts the next run without flipping status to `idle` — polling clients never observe a brief idle window between queued runs.
 
-On the default SQLite backend, the queue survives orchestrator restart. The in-memory backend drops it, which is acceptable because `memory` is test-only.
-
-Known limitation: `QueuedEvent` includes `thinkingLevel`, but the current SQLite queue schema persists only `content`, `model`, and `enqueued_at`. A thinking override posted while the session is busy is lost on the default backend until the queue schema gets a `thinking_level` column and matching insert/select wiring.
+On the default SQLite backend, the queue survives orchestrator restart and persists `content`, `model`, `thinkingLevel`, and `enqueued_at`. The in-memory backend drops it, which is acceptable because `memory` is test-only.
 
 ### AgentRouter (`src/orchestrator/router.ts`)
 
@@ -100,7 +98,7 @@ The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the 
 - **`createSession(agentId, opts?)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. Validates the agent is not archived. The container is only spawned when the first event arrives (or earlier via warm-up).
 - **`warmSession(sessionId)`** — proactively boots template-level warmth for a session so the first event can claim a ready container. Sessions with dedicated container config (`vaultId`, `networking: limited`, package installs) bypass this path and cold-spawn.
 - **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a compatible session. **Skipped for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`). `buildSpawnOptions` bakes the sessionId into both Docker labels and the signed `OPENCLAW_ORCHESTRATOR_TOKEN` env var, and Docker env is immutable post-create; a warm container built with the `__warm__` placeholder would carry that placeholder into every subagent spawn the claimed session later hosts, producing wrong token lineage (the orchestrator doesn't currently verify `parentSessionId` against the session store, so the failure would be silent rather than a crash). Skipping the warm pool for delegating agents preserves the latency benefit for the common non-delegating case without the identity smear.
-- **`runEvent({sessionId, content, model?, thinkingLevel?})`** — idle path starts a background run (`beginRun` -> session status `starting` -> fire-and-forget `executeInBackground`); `starting` or `running` path enqueues. Returns `{session, queued}`. Known limitation: model and thinking overrides are applied through the gateway `sessions.patch` path, so first-turn overrides can be skipped before OpenClaw has created the Pi session key. Template defaults still apply at spawn time; later turns can be patched.
+- **`runEvent({sessionId, content, model?, thinkingLevel?, rejectIfBusy?})`** — idle path starts a background run (`beginRun` -> session status `starting` -> fire-and-forget `executeInBackground`); `starting` or `running` path enqueues unless `rejectIfBusy` is set, in which case it returns `session_busy` for callers that cannot correlate queued replies. Returns `{session, queued}`. Model and thinking overrides are baked into the first-turn container config and patched through the gateway `sessions.patch` path on later turns once OpenClaw has created the Pi session key.
 - **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled`. Cancellation is a deliberate stop, not an agent failure.
 - **`confirmTool(sessionId, approvalId, decision)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
 - **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model/thinking overrides when a Pi session key already exists, installs one approval subscription set per session, rehydrates pending approvals from `plugin.approval.list`, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
@@ -117,7 +115,7 @@ The Hono app. Every route in the API section of the README registers here. Notab
 - **Vault routes** — CRUD for per-end-user credential bundles plus credential add/list/delete. Secret values are accepted on write and never returned from reads; vault-bound sessions bypass the warm pool because credentials are spawn-time container configuration.
 - **Auth routes** — `/auth/anonymous` and GitHub OAuth helpers mint `tok_...` user tokens for the portal. Current user tokens scope some session listing behavior but are not a complete resource-ownership model; the admin bearer token remains the deployment boundary.
 - **SSE streaming** — `GET /v1/sessions/:id/events?stream=true` uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`. Emits an initial `session.status_*` event on connect, checks for status transitions on every yielded event and on every 15 s heartbeat tick, and emits a final status event when the follow loop ends.
-- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap and treat both `starting` and `running` as in-flight states. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session. Known limitations: concurrent non-streaming calls on the same sticky session can queue and then all read the final queued assistant message; streaming client disconnect before upstream `[DONE]` can currently leave the backing session in `running`.
+- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap and treat both `starting` and `running` as in-flight states. Both streaming and non-streaming sticky-session calls return `409 session_busy` if a run is already in flight, because OpenAI blocking responses need one request to map to one assistant reply. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte; disconnect before upstream `[DONE]` aborts the upstream reader and marks the managed run failed so it cannot strand the session in `running`.
 
 ### Delegated subagents (`src/runtime/parent-token.ts` + `docker/call-agent.mjs`)
 
@@ -364,11 +362,11 @@ For the MVP the JSONL files live on a local Docker bind mount. A future item rep
                     lastUsedAt stamped.
                     On successful claim, sessions.markRunning(sessionId)
                     flips the session from starting → running.
-                (b) If modelOverride or thinkingLevel was supplied and the
-                    Pi session key already exists, calls wsClient.patch(
-                    canonicalKey, { model, thinkingLevel }) via the gateway
-                    WS. Known limitation: this can be skipped on the first
-                    turn before OpenClaw has created the key.
+                (b) If modelOverride or thinkingLevel was supplied, the
+                    first turn gets it through openclaw.json boot config.
+                    Once the Pi session key exists, later turns also call
+                    wsClient.patch(canonicalKey, { model, thinkingLevel })
+                    via the gateway WS.
                 (c) invokeChatCompletions — POST http://<container>/v1/chat/completions
                     with Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>,
                     x-openclaw-agent-id: main, x-openclaw-session-key:
@@ -416,9 +414,8 @@ runEvent sees session.status === "running"
   "running" for the whole chain so polling clients never observe a
   brief idle window between queued runs.
 
-  Known limitation: the SQLite queue currently drops thinkingLevel on
-  persistence, so busy-session thinking overrides do not survive on the
-  default backend.
+  SQLite persists both model and thinkingLevel overrides, so queued
+  turns keep the requested runtime settings across restart.
 ```
 
 ### Cancel path (`POST /v1/sessions/:id/cancel`)
@@ -453,9 +450,9 @@ in the pool for the next event.
           missing  → create with that key, non-ephemeral
       - If absent → create with generated id, ephemeral=true
 5.  Stale-detection snapshot: beforeEventId = events.latestAgentMessage?.eventId
-6.  router.runEvent({sessionId, content}) — idle path starts a run,
-    running path queues. Non-streaming callers currently accept the
-    queued path; streaming callers return 409 when the session is busy.
+6.  router.runEvent({sessionId, content, rejectIfBusy: true}) — idle path
+    starts a run. If another run is already in flight, returns
+    `409 session_busy` instead of entering the native queued-event path.
 7.  Poll sessions.get(sessionId) every 500 ms, 600 s cap:
       status === "failed" → cleanup-if-ephemeral + 500
       timeout              → cleanup-if-ephemeral + 504
@@ -474,20 +471,9 @@ in the pool for the next event.
 10. If body.stream === true, proxy the container's real SSE response
     byte-for-byte (OpenAI-compatible `ChatCompletionChunk` frames,
     terminated by `data: [DONE]`). If another run is in flight for
-    the same sticky session, return `409 session_busy`.
-
-Known limitations:
-- If two or more non-streaming OpenAI calls queue behind the same sticky
-  session, each waits for the session to become idle and then reads the
-  newest assistant message. Multiple callers can therefore receive the
-  final queued reply rather than the reply to their own request. Callers
-  should serialize non-streaming requests per sticky session or use
-  `stream: true`, which fails fast with `409 session_busy`.
-- If a streaming OpenAI client disconnects before upstream emits
-  `data: [DONE]`, the handler can currently finalize early and leave the
-  backing session in `running` if no final assistant message was written.
-  Use explicit session cancellation for deliberate aborts until the
-  stream finalizer is made correlation-safe.
+    the same sticky session, return `409 session_busy`. If the client
+    disconnects before `[DONE]`, abort the upstream reader and finalize
+    the managed run as failed.
 ```
 
 ### Live event streaming (`GET /v1/sessions/:id/events?stream=true`)
