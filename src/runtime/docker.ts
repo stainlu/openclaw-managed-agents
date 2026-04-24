@@ -32,12 +32,14 @@ export type ManagedContainerInfo = {
 export class DockerContainerRuntime implements ContainerRuntime {
   private readonly docker: Docker;
   private readonly defaultNetwork: string;
+  private readonly spawnTimeoutMs: number;
 
-  constructor(opts: { socketPath?: string; network?: string } = {}) {
+  constructor(opts: { socketPath?: string; network?: string; spawnTimeoutMs?: number } = {}) {
     this.docker = new Docker(
       opts.socketPath ? { socketPath: opts.socketPath } : {},
     );
     this.defaultNetwork = opts.network ?? "openclaw-net";
+    this.spawnTimeoutMs = opts.spawnTimeoutMs ?? 60_000;
   }
 
   async spawn(opts: SpawnOptions): Promise<Container> {
@@ -67,60 +69,89 @@ export class DockerContainerRuntime implements ContainerRuntime {
       ...(opts.labels ?? {}),
     };
 
-    const container = await this.docker.createContainer({
-      name,
-      Image: opts.image,
-      Env: envArray,
-      Labels: labels,
-      ExposedPorts: { [`${opts.containerPort}/tcp`]: {} },
-      HostConfig: {
-        Binds: binds,
-        // Don't publish ports to the host — the orchestrator reaches containers
-        // over the shared Docker network by name.
-        RestartPolicy: { Name: "no" },
-        // Sensible resource limits for a single agent worker.
-        Memory: 2 * 1024 * 1024 * 1024, // 2 GB
-        PidsLimit: 512,
-        // Override the container's /etc/resolv.conf when dns is supplied.
-        // Used by networking: limited agents to route all DNS through the
-        // egress-proxy sidecar's UDP 53 filter. Only the sidecar's IP
-        // ends up here — Docker does NOT also append its embedded resolver
-        // (127.0.0.11) when Dns is set, which is what we want: every
-        // hostname lookup from inside the agent goes through the filter.
-        Dns: opts.dns,
-      },
-      NetworkingConfig: {
-        EndpointsConfig: {
-          [network]: { Aliases: [name] },
-        },
-      },
-    });
+    try {
+      const container = await this.withSpawnTimeout(
+        "create",
+        this.docker.createContainer({
+          name,
+          Image: opts.image,
+          Env: envArray,
+          Labels: labels,
+          ExposedPorts: { [`${opts.containerPort}/tcp`]: {} },
+          HostConfig: {
+            Binds: binds,
+            // Don't publish ports to the host — the orchestrator reaches containers
+            // over the shared Docker network by name.
+            RestartPolicy: { Name: "no" },
+            // Sensible resource limits for a single agent worker.
+            Memory: 2 * 1024 * 1024 * 1024, // 2 GB
+            PidsLimit: 512,
+            // Override the container's /etc/resolv.conf when dns is supplied.
+            // Used by networking: limited agents to route all DNS through the
+            // egress-proxy sidecar's UDP 53 filter. Only the sidecar's IP
+            // ends up here — Docker does NOT also append its embedded resolver
+            // (127.0.0.11) when Dns is set, which is what we want: every
+            // hostname lookup from inside the agent goes through the filter.
+            Dns: opts.dns,
+          },
+          NetworkingConfig: {
+            EndpointsConfig: {
+              [network]: { Aliases: [name] },
+            },
+          },
+        }),
+      );
 
-    await container.start();
+      await this.withSpawnTimeout("start", container.start());
 
-    // Attach additional networks after boot — Docker's CreateContainer
-    // only accepts one primary NetworkMode at a time. For limited-
-    // networking sessions the agent joins confined+control-plane, and
-    // the sidecar joins confined+egress; the second network on each is
-    // wired here.
-    if (opts.additionalNetworks && opts.additionalNetworks.length > 0) {
-      for (const n of opts.additionalNetworks) {
-        await this.docker.getNetwork(n).connect({
-          Container: container.id,
-          EndpointConfig: { Aliases: [name] },
-        });
+      // Attach additional networks after boot — Docker's CreateContainer
+      // only accepts one primary NetworkMode at a time. For limited-
+      // networking sessions the agent joins confined+control-plane, and
+      // the sidecar joins confined+egress; the second network on each is
+      // wired here.
+      if (opts.additionalNetworks && opts.additionalNetworks.length > 0) {
+        for (const n of opts.additionalNetworks) {
+          await this.withSpawnTimeout(
+            `connect:${n}`,
+            this.docker.getNetwork(n).connect({
+              Container: container.id,
+              EndpointConfig: { Aliases: [name] },
+            }),
+          );
+        }
       }
+
+      const networks = await this.withSpawnTimeout(
+        "inspect",
+        this.readNetworkIps(container.id),
+      );
+
+      const baseUrl = `http://${name}:${opts.containerPort}`;
+      return { id: container.id, name, baseUrl, token, networks };
+    } catch (err) {
+      await this.stop(name).catch(() => {
+        /* best-effort */
+      });
+      throw err;
     }
+  }
 
-    // Inspect once post-connect so the caller can read per-network IPs
-    // (needed for Dns wiring on limited-networking sessions — the pool
-    // queries the sidecar's confined-network IP and passes it to the
-    // agent's Dns option).
-    const networks = await this.readNetworkIps(container.id);
-
-    // The container is reachable over the Docker network by its name.
-    const baseUrl = `http://${name}:${opts.containerPort}`;
-    return { id: container.id, name, baseUrl, token, networks };
+  private async withSpawnTimeout<T>(stage: string, promise: Promise<T>): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(`docker spawn timed out during ${stage} after ${this.spawnTimeoutMs}ms`),
+            );
+          }, this.spawnTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async readNetworkIps(

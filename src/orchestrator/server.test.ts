@@ -77,6 +77,7 @@ function makeApp() {
       if (!started) {
         throw new RouterError("session_not_found", `session ${args.sessionId} does not exist`);
       }
+      store.sessions.markRunning(args.sessionId);
       const now = Date.now();
       latestBySession.set(args.sessionId, {
         eventId: `evt_${args.sessionId}_${now}`,
@@ -154,6 +155,7 @@ function makeApp() {
     sessionContainers: store.sessionContainers,
     startTs: Date.now(),
     maxWarmContainers: 0,
+    maxActiveContainers: 0,
   };
 
   return {
@@ -294,6 +296,7 @@ describe("session ownership in the HTTP API", () => {
       userId: null,
     });
     store.sessions.beginRun(session.sessionId);
+    store.sessions.markRunning(session.sessionId);
     store.sessionContainers.put({
       sessionId: session.sessionId,
       agentId: agent.agentId,

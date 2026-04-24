@@ -276,7 +276,18 @@ export interface SessionStore {
   list(): Session[];
   listByParent(parentSessionId: string): Session[];
   delete(sessionId: string): boolean;
+  /**
+   * Mark the session as inflight before a live container exists. Used for the
+   * acquire phase so the orchestrator can distinguish "still booting" from
+   * "already dispatched to the runtime".
+   */
   beginRun(sessionId: string): Session | undefined;
+  /**
+   * Transition a session from acquire/boot into an actively running turn.
+   * Called immediately before the orchestrator dispatches the user's message
+   * to the container.
+   */
+  markRunning(sessionId: string): Session | undefined;
   endRunSuccess(sessionId: string, usage: RunUsage): Session | undefined;
   endRunFailure(sessionId: string, error: string): Session | undefined;
   /**
@@ -297,11 +308,12 @@ export interface SessionStore {
   addUsage(sessionId: string, usage: RunUsage): Session | undefined;
   bumpTurns(sessionId: string): Session | undefined;
   /**
-   * Transition every session currently in "running" state to "failed" with
-   * the given error. Intended for post-restart rehydration: any run that was
-   * mid-flight when the orchestrator died is by definition orphaned (its
-   * container was either torn down on restart or is no longer tracked by
-   * this process). Returns the number of sessions that were transitioned.
+   * Transition every session currently in an inflight state ("starting" or
+   * "running") to "failed" with the given error. Intended for post-restart
+   * rehydration: any run that was mid-flight when the orchestrator died is by
+   * definition orphaned (its container was either torn down on restart or is
+   * no longer tracked by this process). Returns the number of sessions that
+   * were transitioned.
    */
   failRunningSessions(reason: string): number;
 }

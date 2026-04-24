@@ -275,11 +275,12 @@ export type EnvironmentConfig = {
 // ---------- Session (long-lived, one per conversation) ----------
 
 // Sessions are durable and outlive individual turns. A session is idle when
-// no run is in flight, running while a container is processing an event, and
-// failed only when a run hit an unrecoverable error. A session never enters
-// a terminal "completed" state; individual events can complete, the session
-// stays open.
-export type SessionStatus = "idle" | "running" | "failed";
+// no run is in flight, starting while the orchestrator is still acquiring a
+// live container, running once the turn has actually been dispatched to that
+// container, and failed only when a run hit an unrecoverable error. A session
+// never enters a terminal "completed" state; individual events can complete,
+// the session stays open.
+export type SessionStatus = "idle" | "starting" | "running" | "failed";
 
 export type Session = {
   sessionId: string;

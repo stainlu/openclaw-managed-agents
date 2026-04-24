@@ -14,7 +14,7 @@ import type {
 } from "../runtime/container.js";
 import { GatewayWebSocketClient, GatewayWsError } from "../runtime/gateway-ws.js";
 import type { ParentTokenMinter } from "../runtime/parent-token.js";
-import type { SessionContainerPool } from "../runtime/pool.js";
+import { PoolCapacityError, type SessionContainerPool } from "../runtime/pool.js";
 import type { PiJsonlEventReader } from "../store/pi-jsonl.js";
 import type {
   AgentStore,
@@ -39,6 +39,10 @@ const log = getLogger("router");
 // directory on the orchestrator's in-process mount view and chown it to
 // this UID. On macOS the chown is a harmless no-op.
 const AGENT_CONTAINER_UID = 999;
+
+function isSessionInflight(session: Session | undefined): boolean {
+  return session?.status === "starting" || session?.status === "running";
+}
 
 export function normalizeModelForRuntime(
   model: string,
@@ -534,7 +538,7 @@ export class AgentRouter {
     // to even enqueue a run for a session that's already out of budget.
     this.assertQuota(session, agent);
 
-    if (session.status === "running") {
+    if (isSessionInflight(session)) {
       this.queue.enqueue(args.sessionId, {
         content: args.content,
         model: args.model,
@@ -597,7 +601,7 @@ export class AgentRouter {
         `agent ${session.agentId} does not exist`,
       );
     }
-    if (session.status === "running") {
+    if (isSessionInflight(session)) {
       throw new RouterError(
         "session_busy",
         `session ${args.sessionId} is busy; wait for the current run to complete before streaming`,
@@ -656,6 +660,7 @@ export class AgentRouter {
         }
       }
 
+      this.sessions.markRunning(args.sessionId);
       const beforeTurn = this.snapshotTurnProgress(agent.agentId, args.sessionId);
 
       const canonicalSessionKey = `agent:main:${args.sessionId}`;
@@ -741,7 +746,7 @@ export class AgentRouter {
         // External-cancel race guard: another path may have already flipped
         // status (cancel + drain). Don't overwrite that with our outcome.
         const current = router.sessions.get(args.sessionId);
-        if (current?.status !== "running") return;
+        if (!isSessionInflight(current)) return;
         if (outcome.ok) {
           const latest = router.assertTurnAdvanced(
             agent.agentId,
@@ -810,7 +815,7 @@ export class AgentRouter {
         `session ${sessionId} does not exist`,
       );
     }
-    if (session.status === "running") {
+    if (isSessionInflight(session)) {
       throw new RouterError(
         "session_busy",
         `session ${sessionId} is running; wait for it to finish before compacting`,
@@ -1204,7 +1209,7 @@ export class AgentRouter {
         `session ${sessionId} does not exist`,
       );
     }
-    if (session.status !== "running") {
+    if (!isSessionInflight(session)) {
       throw new RouterError(
         "session_not_running",
         `session ${sessionId} is not currently running`,
@@ -1456,6 +1461,7 @@ export class AgentRouter {
       { session_id: sessionId, total_pre_llm_ms: cursor - t0, ...timings },
       "turn pre-LLM timings (receipt → chat.completions dispatch)",
     );
+    this.sessions.markRunning(sessionId);
     const beforeTurn = this.snapshotTurnProgress(agent.agentId, sessionId);
 
     // Phase 2: Invoke chat completions. NOT retryable — Pi writes
@@ -1544,7 +1550,8 @@ export class AgentRouter {
    */
   async observeAdoptedSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session || session.status !== "running") return;
+    if (!isSessionInflight(session)) return;
+    if (!session) return;
     const agent = this.agents.get(session.agentId);
     if (!agent) return;
 
@@ -1612,7 +1619,7 @@ export class AgentRouter {
     // session out of running (e.g., a client posted a cancel during
     // startup), don't overwrite.
     const current = this.sessions.get(sessionId);
-    if (current?.status !== "running") return;
+    if (!isSessionInflight(current)) return;
 
     if (outcome.ok) {
       const latest = this.events.latestAgentMessage(agent.agentId, sessionId);
@@ -1709,7 +1716,7 @@ export class AgentRouter {
   private handleBackgroundFailure(sessionId: string, err: unknown): void {
     this.cancelledDuringAcquire.delete(sessionId);
     const current = this.sessions.get(sessionId);
-    if (current?.status !== "running") {
+    if (!isSessionInflight(current)) {
       return;
     }
     // Drop any queued events and pending approvals.
@@ -1810,6 +1817,9 @@ export class AgentRouter {
       } catch (err) {
         lastError = err;
         await this.pool.evictSession(sessionId).catch(() => {});
+        if (err instanceof PoolCapacityError) {
+          throw new RouterError("capacity_exceeded", err.message);
+        }
         if (attempt < MAX_INFRA_RETRIES - 1) {
           log.warn(
             { session_id: sessionId, attempt, err },
@@ -1956,6 +1966,7 @@ export type RouterErrorCode =
   | "session_not_found"
   | "session_busy"
   | "session_not_running"
+  | "capacity_exceeded"
   | "no_active_container"
   | "chat_completions_failed"
   | "cancel_failed"

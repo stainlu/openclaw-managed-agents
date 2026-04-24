@@ -223,6 +223,15 @@ class InMemorySessionStore implements SessionStore {
   beginRun(sessionId: string): Session | undefined {
     const s = this.sessions.get(sessionId);
     if (!s) return undefined;
+    s.status = "starting";
+    s.error = null;
+    s.lastEventAt = Date.now();
+    return s;
+  }
+
+  markRunning(sessionId: string): Session | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
     s.status = "running";
     s.error = null;
     s.lastEventAt = Date.now();
@@ -279,7 +288,7 @@ class InMemorySessionStore implements SessionStore {
   failRunningSessions(reason: string): number {
     let count = 0;
     for (const s of this.sessions.values()) {
-      if (s.status === "running") {
+      if (s.status === "starting" || s.status === "running") {
         s.status = "failed";
         s.error = reason;
         s.lastEventAt = Date.now();

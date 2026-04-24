@@ -364,6 +364,45 @@ describe("SessionContainerPool.acquireForSession", () => {
     expect(runtime.stopped.has("cnt_1")).toBe(true);
     await pool.shutdown();
   });
+
+  it("evicts the oldest idle active session when maxActiveContainers is full", async () => {
+    const { pool, runtime } = makePool({ maxActiveContainers: 1 });
+    const first = await pool.acquireForSession({
+      sessionId: "ses_1",
+      spawnOptions: baseSpawnOptions(),
+    });
+
+    const second = await pool.acquireForSession({
+      sessionId: "ses_2",
+      spawnOptions: baseSpawnOptions(),
+    });
+
+    expect(second.id).not.toBe(first.id);
+    expect(runtime.stopped.has(first.id)).toBe(true);
+    expect(pool.snapshot().map((entry) => entry.sessionId)).toEqual(["ses_2"]);
+    await pool.shutdown();
+  });
+
+  it("fails fast when maxActiveContainers is full and every live session is busy", async () => {
+    const busy = new Set(["ses_1"]);
+    const { pool } = makePool({
+      maxActiveContainers: 1,
+      isBusy: (sessionId) => busy.has(sessionId),
+    });
+    await pool.acquireForSession({
+      sessionId: "ses_1",
+      spawnOptions: baseSpawnOptions(),
+    });
+
+    await expect(
+      pool.acquireForSession({
+        sessionId: "ses_2",
+        spawnOptions: baseSpawnOptions(),
+      }),
+    ).rejects.toThrow(/active container limit/);
+
+    await pool.shutdown();
+  });
 });
 
 describe("SessionContainerPool.warmForAgent", () => {

@@ -634,6 +634,7 @@ class SqliteSessionStore implements SessionStore {
   private readonly listStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
   private readonly beginRunStmt: Database.Statement;
+  private readonly markRunningStmt: Database.Statement;
   private readonly endSuccessStmt: Database.Statement;
   private readonly endFailureStmt: Database.Statement;
   private readonly endCancelledStmt: Database.Statement;
@@ -660,6 +661,11 @@ class SqliteSessionStore implements SessionStore {
     this.listByParentStmt = db.prepare(`SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY created_at ASC`);
     this.deleteStmt = db.prepare(`DELETE FROM sessions WHERE session_id = ?`);
     this.beginRunStmt = db.prepare(
+      `UPDATE sessions
+       SET status = 'starting', error = NULL, last_event_at = @now
+       WHERE session_id = @session_id`,
+    );
+    this.markRunningStmt = db.prepare(
       `UPDATE sessions
        SET status = 'running', error = NULL, last_event_at = @now
        WHERE session_id = @session_id`,
@@ -699,7 +705,7 @@ class SqliteSessionStore implements SessionStore {
     this.failRunningStmt = db.prepare(
       `UPDATE sessions
        SET status = 'failed', error = @reason, last_event_at = @now
-       WHERE status = 'running'`,
+       WHERE status IN ('starting', 'running')`,
     );
   }
 
@@ -774,6 +780,12 @@ class SqliteSessionStore implements SessionStore {
 
   beginRun(sessionId: string): Session | undefined {
     const info = this.beginRunStmt.run({ session_id: sessionId, now: Date.now() });
+    if (info.changes === 0) return undefined;
+    return this.get(sessionId);
+  }
+
+  markRunning(sessionId: string): Session | undefined {
+    const info = this.markRunningStmt.run({ session_id: sessionId, now: Date.now() });
     if (info.changes === 0) return undefined;
     return this.get(sessionId);
   }

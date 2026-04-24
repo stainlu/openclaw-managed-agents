@@ -52,13 +52,14 @@ Parses OpenClaw's per-session JSONL at query time. Resolves our `session_id` →
 
 Two pools in one: an **active** pool (per-session, reused across turns) and a **warm** pool (per-agent, pre-booted). When an agent is created, a container boots in the background and waits in the warm bucket. The first session on that agent claims the pre-warmed container instead of cold-spawning (near-zero latency). Subsequent events reuse the active container (~100 ms overhead).
 
-An unref'd `setInterval` sweeper reaps idle containers on both halves:
+An unref'd `setInterval` sweeper reaps idle containers on both halves, and the
+active side is additionally bounded by an admission cap:
 
-- **Active containers** are reaped after `OPENCLAW_IDLE_TIMEOUT_MS` (default 10 min) of no use. `isBusy(sessionId)` is checked first so a session with a run in flight is never evicted mid-turn.
+- **Active containers** stay resident between turns for normal sessions, but the pool is capped by `OPENCLAW_MAX_ACTIVE_CONTAINERS`. When a new acquire would exceed that cap, the oldest idle session container is evicted first; if every live session is busy, the acquire fails fast instead of overcommitting the host. Only sessions whose caller marks them reapable (`shouldReapSession`) are eligible for idle reap via `OPENCLAW_IDLE_TIMEOUT_MS`. `isBusy(sessionId)` is checked first so a session with a run in flight is never evicted mid-turn.
 - **Warm containers** are reaped after `OPENCLAW_WARM_IDLE_TIMEOUT_MS` (default: same as active idle timeout) without being claimed, and the warm pool is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` (default 5). When a new `warmForAgent` would exceed the cap, the oldest-spawned warm entry is reaped first. This keeps a host with many distinct agent templates from accumulating one persistent 2 GiB container per template.
 
 - **`warmForAgent(agentId, spawnOptions)`** — pre-boots a container (spawn + `/readyz` + WS handshake) and stores it in the warm bucket keyed by agentId. Called by the server after `POST /v1/agents`. No-ops if a warm container already exists for this agent. Evicts the oldest warm entry first when the pool is at `OPENCLAW_MAX_WARM_CONTAINERS`. **The router skips this call entirely for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`) — see the note under AgentRouter.warmForAgent for why.
-- **`acquireForSession({sessionId, spawnOptions, agentId?})`** — returns a live `Container` for the session. Checks three sources in order: (1) existing active container, (2) pre-warmed container matching the agentId, (3) fresh spawn. When claiming from the warm pool, auto-replenishes in the background. Bumps `lastUsedAt` on reuse.
+- **`acquireForSession({sessionId, spawnOptions, agentId?})`** — returns a live `Container` for the session. Checks three sources in order: (1) existing active container, (2) pre-warmed container matching the agentId, (3) fresh spawn. When claiming from the warm pool, auto-replenishes in the background. Bumps `lastUsedAt` on reuse and enforces the active-cap admission policy before any new cold spawn.
 - **`getWsClient(sessionId)`** — lookup used by the router for cancel (`sessions.abort`) and per-event model override (`sessions.patch`).
 - **`evictSession(sessionId)`** — manual teardown (closes WS, stops container). Called by `DELETE /v1/sessions/:id` and the router's infra-failure path.
 - **`shutdown()`** — SIGTERM path. Clears the sweeper, closes every WS, stops every container. Best-effort (errors are swallowed so one stuck stop doesn't block the process).
@@ -161,9 +162,11 @@ The orchestrator process itself reads a small set of env vars at startup. Everyt
 | `OPENCLAW_RUNTIME_IMAGE` | Docker image reference the orchestrator spawns per session | `openclaw-managed-agents/agent:latest` |
 | `OPENCLAW_DOCKER_NETWORK` | Docker bridge network the orchestrator and agent containers share | `openclaw-net` |
 | `OPENCLAW_GATEWAY_PORT` | Port exposed inside each agent container for its gateway | `18789` |
+| `OPENCLAW_SPAWN_TIMEOUT_MS` | Hard timeout for Docker create/start/network-connect/inspect during session acquire | `60000` (60 s) |
 | `OPENCLAW_READY_TIMEOUT_MS` | Max wait for a newly-spawned container's `/readyz` to respond | `60000` (60 s); `600000` (10 min) in `docker-compose.yml` to accommodate Lightsail's burstable-disk first-boot |
 | `OPENCLAW_RUN_TIMEOUT_MS` | Max end-to-end time for a single turn's `/v1/chat/completions` call | `600000` (10 min) |
-| `OPENCLAW_IDLE_TIMEOUT_MS` | Active-pool idle timeout before the sweeper reaps a session container | `600000` (10 min) |
+| `OPENCLAW_IDLE_TIMEOUT_MS` | Idle-reap threshold for sessions the caller explicitly marks reapable (for example ephemeral one-shot sessions) | `600000` (10 min) |
+| `OPENCLAW_MAX_ACTIVE_CONTAINERS` | Cap on live session-owned containers. Oldest idle session is evicted first when exceeded | `5` in library defaults; `3` in `docker-compose.yml` |
 | `OPENCLAW_SWEEP_INTERVAL_MS` | How often the pool sweeper runs | `60000` (60 s) |
 | `OPENCLAW_MAX_WARM_CONTAINERS` | Cap on pre-warmed containers. Oldest-first eviction when exceeded | `5` |
 | `OPENCLAW_WARM_IDLE_TIMEOUT_MS` | Unclaimed-warm reap threshold | same as `OPENCLAW_IDLE_TIMEOUT_MS` |

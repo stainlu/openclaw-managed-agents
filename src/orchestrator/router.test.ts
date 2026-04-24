@@ -70,10 +70,11 @@ async function waitForSessionToStopRunning(
 ): Promise<void> {
   const deadline = Date.now() + 500;
   while (Date.now() < deadline) {
-    if (store.sessions.get(sessionId)?.status !== "running") return;
+    const status = store.sessions.get(sessionId)?.status;
+    if (status !== "starting" && status !== "running") return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error(`session ${sessionId} stayed running`);
+  throw new Error(`session ${sessionId} stayed inflight`);
 }
 
 describe("AgentRouter.createSession", () => {
@@ -293,15 +294,15 @@ describe("AgentRouter.streamEvent — pre-container decision tree", () => {
       maxSubagentDepth: 0,
     });
     const session = router.createSession(agent.agentId);
-    // Flip to running directly to simulate a turn in flight.
+    // Flip to starting directly to simulate a turn already inflight.
     store.sessions.beginRun(session.sessionId);
     await expect(
       router.streamEvent({ sessionId: session.sessionId, content: "hi" }),
     ).rejects.toMatchObject({ name: "RouterError", code: "session_busy" });
-    // Session must still be running — a rejection must NOT inadvertently
+    // Session must still be inflight — a rejection must NOT inadvertently
     // transition state (a bug where we beginRun before checking status
-    // would leave it "running" forever on the rejection path).
-    expect(store.sessions.get(session.sessionId)?.status).toBe("running");
+    // would leave it inflight forever on the rejection path).
+    expect(store.sessions.get(session.sessionId)?.status).toBe("starting");
   });
 
   it("rejects when the agent template was deleted after session creation", async () => {
@@ -437,14 +438,14 @@ describe("AgentRouter.runEvent — decision tree", () => {
     const session = router.createSession(agent.agentId);
     // Simulate a run already in flight.
     store.sessions.beginRun(session.sessionId);
-    expect(store.sessions.get(session.sessionId)?.status).toBe("running");
+    expect(store.sessions.get(session.sessionId)?.status).toBe("starting");
 
     const result = await router.runEvent({
       sessionId: session.sessionId,
       content: "second message while first is running",
     });
     expect(result.queued).toBe(true);
-    expect(result.session.status).toBe("running");
+    expect(result.session.status).toBe("starting");
     // Queue now has the one event we pushed.
     const next = queue.shift(session.sessionId);
     expect(next?.content).toBe("second message while first is running");

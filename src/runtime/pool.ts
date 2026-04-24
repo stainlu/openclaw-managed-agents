@@ -21,12 +21,11 @@ const log = getLogger("pool");
 // Before Item 4, every event spawned a fresh container and tore it down at
 // the end of the run — a ~15s startup tax on every turn. This pool keeps the
 // container alive between turns for the same session, so only the first
-// event pays spawn time. Session-owned containers are now sticky by default:
-// they stay alive until explicit teardown (delete / cancel failure / restart
-// recovery) instead of being treated as disposable cache entries. The idle
-// sweeper only reaps sessions the caller explicitly marks as auto-reapable
-// (for example one-shot ephemeral sessions), while speculative warm
-// containers still age out by TTL.
+// event pays spawn time. Session-owned containers are sticky by default, but
+// NOT immortal: they can still be pressure-evicted when the active pool hits
+// its configured cap. The idle sweeper only reaps sessions the caller
+// explicitly marks as auto-reapable (for example one-shot ephemeral
+// sessions), while speculative warm containers still age out by TTL.
 //
 // Item 7 added a GatewayWebSocketClient to each live container. After the
 // HTTP /readyz check succeeds, the pool also opens a WebSocket to the
@@ -41,6 +40,14 @@ const log = getLogger("pool");
 export type PoolConfig = {
   /** Milliseconds a container may sit unused before the sweeper reaps it. */
   idleTimeoutMs: number;
+  /**
+   * Max number of session-owned containers that may stay attached at once.
+   * Zero or undefined means unbounded. When the pool is full and a new
+   * session needs a container, the oldest idle session container is evicted
+   * first. If every live session is busy, the acquire fails fast instead of
+   * overcommitting the host and hanging in Docker spawn.
+   */
+  maxActiveContainers?: number;
   /** Max time to wait for container /readyz on spawn. */
   readyTimeoutMs: number;
   /** How often the sweeper runs. Should be less than idleTimeoutMs / 2. */
@@ -254,6 +261,13 @@ export function buildContainerConfigSignature(args: {
     .slice(0, 16);
 }
 
+export class PoolCapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PoolCapacityError";
+  }
+}
+
 export class SessionContainerPool {
   private readonly active = new Map<string, ActiveContainer>();
   private readonly pending = new Map<string, Promise<Container>>();
@@ -272,6 +286,8 @@ export class SessionContainerPool {
     { configSignature: string; promise: Promise<void> }
   >();
   private readonly desiredWarmSignature = new Map<string, string>();
+  private readonly activeReservations = new Set<string>();
+  private activeAdmissionChain: Promise<void> = Promise.resolve();
   private warmAdmissionChain: Promise<void> = Promise.resolve();
   private sweeperHandle: NodeJS.Timeout | undefined;
   private shuttingDown = false;
@@ -476,6 +492,76 @@ export class SessionContainerPool {
     }
   }
 
+  private async withActiveAdmissionLock<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.activeAdmissionChain;
+    let release!: () => void;
+    this.activeAdmissionChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  private async reserveActiveSlot(sessionId: string): Promise<void> {
+    const maxActive = this.cfg.maxActiveContainers ?? 0;
+    if (maxActive <= 0) return;
+    await this.withActiveAdmissionLock(async () => {
+      if (this.activeReservations.has(sessionId) || this.active.has(sessionId)) return;
+      while (this.activeCountWithReservations(sessionId) >= maxActive) {
+        const victim = this.pickCapacityVictim(sessionId);
+        if (!victim) {
+          log.warn(
+            { session_id: sessionId, max_active: maxActive },
+            "active container limit reached with no idle victim",
+          );
+          throw new PoolCapacityError(
+            `active container limit (${maxActive}) reached and no idle session could be evicted`,
+          );
+        }
+        log.info(
+          {
+            session_id: sessionId,
+            victim_session_id: victim.sessionId,
+            victim_container_id: victim.container.id,
+            max_active: maxActive,
+          },
+          "evicting idle session to free active capacity",
+        );
+        await this.evictSession(victim.sessionId);
+      }
+      this.activeReservations.add(sessionId);
+    });
+  }
+
+  private releaseActiveReservation(sessionId: string): void {
+    this.activeReservations.delete(sessionId);
+  }
+
+  private activeCountWithReservations(excludeSessionId?: string): number {
+    let reserved = 0;
+    for (const sessionId of this.activeReservations) {
+      if (sessionId === excludeSessionId) continue;
+      reserved += 1;
+    }
+    return this.active.size + reserved;
+  }
+
+  private pickCapacityVictim(excludeSessionId?: string): ActiveContainer | undefined {
+    let oldest: ActiveContainer | undefined;
+    for (const entry of this.active.values()) {
+      if (entry.sessionId === excludeSessionId) continue;
+      if (this.cfg.isBusy(entry.sessionId)) continue;
+      if (!oldest || entry.lastUsedAt < oldest.lastUsedAt) {
+        oldest = entry;
+      }
+    }
+    return oldest;
+  }
+
   /**
    * Get a ready container for the given session. Checks three sources in
    * order: (1) existing active container for this session, (2) pre-warmed
@@ -504,6 +590,9 @@ export class SessionContainerPool {
      */
     bypassWarmPool?: boolean;
   }): Promise<Container> {
+    if (this.shuttingDown) {
+      throw new Error("container pool is shutting down");
+    }
     const configSignature = buildContainerConfigSignature({
       spawnOptions: args.spawnOptions,
       networking: args.networking,
@@ -545,121 +634,131 @@ export class SessionContainerPool {
       }
     }
 
-    // Limited networking forks off to its own spawn path — warm pool
-    // reuse doesn't apply (the per-session confined network + sidecar
-    // are minted fresh per session).
-    if (args.networking?.type === "limited") {
-      return await this.doLimitedSpawn({
-        sessionId: args.sessionId,
-        spawnOptions: args.spawnOptions,
-        allowedHosts: args.networking.allowedHosts,
-        allowMcpServers: args.networking.allowMcpServers,
-        allowPackageManagers: args.networking.allowPackageManagers,
-      });
-    }
-
-    // IMPORTANT: do NOT wait for an inflight warm spawn here.
-    //
-    // Warming is speculative. Session-create, agent-create, and startup
-    // all kick warmForAgent() in the background with the documented
-    // promise that failure is non-fatal and the first real event can
-    // still cold-spawn. Waiting here breaks that contract and turns a
-    // broken/speculative warm into head-of-line blocking for the user's
-    // first turn (up to readyTimeoutMs, which is 10 minutes in prod).
-    //
-    // Correct behavior:
-    //   - if a ready warm container already exists, claim it below
-    //   - otherwise ignore any inflight warm and cold-spawn now
-    //
-    // The warm promise is still useful for deduping warmForAgent() calls
-    // with each other; it just must not sit on the critical path of a
-    // real session acquire.
-
-    // Check the warm pool for a matching pre-warmed container — but
-    // only if the caller is willing to claim one. Sessions with
-    // session-specific env (for example vault-bound MCP credentials or
-    // environment package preinstalls) cannot safely reuse a generic
-    // template warm built with placeholder "__warm__" context.
-    if (args.agentId && !args.bypassWarmPool) {
-      const warmEntry = this.warm.get(args.agentId);
-      if (warmEntry) {
-        if (warmEntry.configSignature !== configSignature) {
-          this.warm.delete(args.agentId);
-          poolWarmContainers.set(this.warm.size);
-          await warmEntry.wsClient.close().catch(() => {
-            /* best-effort */
-          });
-          await this.runtime.stop(warmEntry.container.id).catch((err) => {
-            log.warn(
-              { err, container_id: warmEntry.container.id, agent_id: args.agentId },
-              "stale warm stop failed during claim",
-            );
-          });
-        } else {
-          const healthy = await this.ensureReusableEntryHealthy(
-            warmEntry,
-            { agent_id: args.agentId, source: "warm-claim" },
-          );
-          if (!healthy) {
-            await this.reapWarmEntry(warmEntry, "deleted");
-            void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((err) => {
-              log.warn({ err, agent_id: args.agentId }, "warm-pool replenish after failed claim failed");
-            });
-          } else {
-            this.warm.delete(args.agentId);
-            poolWarmContainers.set(this.warm.size);
-            const warmHostPath = warmEntry.spawnOptions.mounts[0]?.hostPath;
-            if (warmHostPath && this.cfg.renameWorkspaceOnClaim) {
-              this.cfg.renameWorkspaceOnClaim(warmHostPath, args.sessionId);
-            }
-            const now = Date.now();
-            this.active.set(args.sessionId, {
-              sessionId: args.sessionId,
-              container: warmEntry.container,
-              wsClient: warmEntry.wsClient,
-              configSignature,
-              spawnedAt: warmEntry.spawnedAt,
-              lastUsedAt: now,
-            });
-            poolActiveContainers.set(this.active.size);
-            poolAcquireTotal.labels({ source: "warm" }).inc();
-            this.cfg.onContainerClaimed?.({
-              sessionId: args.sessionId,
-              agentId: args.agentId,
-              container: warmEntry.container,
-              source: "warm",
-              // Warm-reuse is instant from the session's perspective. The
-              // container was fully booted before this session existed;
-              // reporting its original spawn duration would mis-represent
-              // the perceived latency of this session's first event.
-              bootMs: 0,
-            });
-            log.info(
-              { session_id: args.sessionId, agent_id: args.agentId },
-              "claimed pre-warmed container",
-            );
-            // Replenish the warm pool in the background.
-            void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((err) => {
-              log.warn({ err, agent_id: args.agentId }, "warm-pool replenish failed");
-            });
-            return warmEntry.container;
-          }
-        }
-      }
-    }
-
-    // Deduplicate concurrent acquires for the same session. This covers
-    // duplicate client submits / retries on the same session, not the
-    // speculative warm path above (which has its own per-agent map).
     const inflight = this.pending.get(args.sessionId);
     if (inflight) return inflight;
 
-    const spawnPromise = this.doSpawn(args, configSignature);
-    this.pending.set(args.sessionId, spawnPromise);
+    const acquirePromise = this.acquireFresh(args, configSignature);
+    this.pending.set(args.sessionId, acquirePromise);
     try {
-      return await spawnPromise;
+      return await acquirePromise;
     } finally {
       this.pending.delete(args.sessionId);
+    }
+  }
+
+  private async acquireFresh(
+    args: {
+      sessionId: string;
+      spawnOptions: SpawnOptions;
+      agentId?: string;
+      networking?: NetworkingSpec;
+      bypassWarmPool?: boolean;
+    },
+    configSignature: string,
+  ): Promise<Container> {
+    await this.reserveActiveSlot(args.sessionId);
+    try {
+      // Limited networking forks off to its own spawn path — warm pool
+      // reuse doesn't apply (the per-session confined network + sidecar
+      // are minted fresh per session).
+      if (args.networking?.type === "limited") {
+        return await this.doLimitedSpawn({
+          sessionId: args.sessionId,
+          spawnOptions: args.spawnOptions,
+          allowedHosts: args.networking.allowedHosts,
+          allowMcpServers: args.networking.allowMcpServers,
+          allowPackageManagers: args.networking.allowPackageManagers,
+        });
+      }
+
+      // IMPORTANT: do NOT wait for an inflight warm spawn here.
+      //
+      // Warming is speculative. Session-create, agent-create, and startup
+      // all kick warmForAgent() in the background with the documented
+      // promise that failure is non-fatal and the first real event can
+      // still cold-spawn. Waiting here breaks that contract and turns a
+      // broken/speculative warm into head-of-line blocking for the user's
+      // first turn (up to readyTimeoutMs, which is 10 minutes in prod).
+      //
+      // Correct behavior:
+      //   - if a ready warm container already exists, claim it below
+      //   - otherwise ignore any inflight warm and cold-spawn now
+      //
+      // The warm promise is still useful for deduping warmForAgent() calls
+      // with each other; it just must not sit on the critical path of a
+      // real session acquire.
+
+      // Check the warm pool for a matching pre-warmed container — but
+      // only if the caller is willing to claim one. Sessions with
+      // session-specific env (for example vault-bound MCP credentials or
+      // environment package preinstalls) cannot safely reuse a generic
+      // template warm built with placeholder "__warm__" context.
+      if (args.agentId && !args.bypassWarmPool) {
+        const warmEntry = this.warm.get(args.agentId);
+        if (warmEntry) {
+          if (warmEntry.configSignature !== configSignature) {
+            this.warm.delete(args.agentId);
+            poolWarmContainers.set(this.warm.size);
+            await warmEntry.wsClient.close().catch(() => {
+              /* best-effort */
+            });
+            await this.runtime.stop(warmEntry.container.id).catch((err) => {
+              log.warn(
+                { err, container_id: warmEntry.container.id, agent_id: args.agentId },
+                "stale warm stop failed during claim",
+              );
+            });
+          } else {
+            const healthy = await this.ensureReusableEntryHealthy(
+              warmEntry,
+              { agent_id: args.agentId, source: "warm-claim" },
+            );
+            if (!healthy) {
+              await this.reapWarmEntry(warmEntry, "deleted");
+              void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((err) => {
+                log.warn({ err, agent_id: args.agentId }, "warm-pool replenish after failed claim failed");
+              });
+            } else {
+              this.warm.delete(args.agentId);
+              poolWarmContainers.set(this.warm.size);
+              const warmHostPath = warmEntry.spawnOptions.mounts[0]?.hostPath;
+              if (warmHostPath && this.cfg.renameWorkspaceOnClaim) {
+                this.cfg.renameWorkspaceOnClaim(warmHostPath, args.sessionId);
+              }
+              const now = Date.now();
+              this.active.set(args.sessionId, {
+                sessionId: args.sessionId,
+                container: warmEntry.container,
+                wsClient: warmEntry.wsClient,
+                configSignature,
+                spawnedAt: warmEntry.spawnedAt,
+                lastUsedAt: now,
+              });
+              poolActiveContainers.set(this.active.size);
+              poolAcquireTotal.labels({ source: "warm" }).inc();
+              this.cfg.onContainerClaimed?.({
+                sessionId: args.sessionId,
+                agentId: args.agentId,
+                container: warmEntry.container,
+                source: "warm",
+                bootMs: 0,
+              });
+              log.info(
+                { session_id: args.sessionId, agent_id: args.agentId },
+                "claimed pre-warmed container",
+              );
+              void this.warmForAgent(args.agentId, warmEntry.spawnOptions).catch((err) => {
+                log.warn({ err, agent_id: args.agentId }, "warm-pool replenish failed");
+              });
+              return warmEntry.container;
+            }
+          }
+        }
+      }
+
+      return await this.doSpawn(args, configSignature);
+    } finally {
+      this.releaseActiveReservation(args.sessionId);
     }
   }
 
@@ -1100,21 +1199,12 @@ export class SessionContainerPool {
     });
     poolActiveContainers.set(this.active.size);
     poolAcquireTotal.labels({ source: "adopt" }).inc();
-    // Re-assert the session↔container mapping after adoption. If the
-    // mapping was already in SQLite this is a no-op; if not (e.g.,
-    // container pre-dates this feature), it recovers it so subsequent
-    // restarts also reattach cleanly. Agent id is looked up from the
-    // caller's args via spawnOptions is unavailable here, so read it
-    // from the adopted session's store entry.
     if (args.agentId) {
       this.cfg.onContainerClaimed?.({
         sessionId: args.sessionId,
         agentId: args.agentId,
         container: args.container,
         source: "adopt",
-        // Adoption means this orchestrator process didn't spawn the
-        // container — recording a bootMs here would be a fabricated
-        // wallclock. Preserve null so the UI can render "—".
         bootMs: null,
       });
     }
@@ -1144,8 +1234,9 @@ export class SessionContainerPool {
       this.sweeperHandle = undefined;
     }
     this.desiredWarmSignature.clear();
+    const inflightAcquirePromises = Array.from(this.pending.values());
     const inflightWarmPromises = Array.from(this.pendingByAgent.values()).map((entry) => entry.promise);
-    await Promise.allSettled(inflightWarmPromises);
+    await Promise.allSettled([...inflightAcquirePromises, ...inflightWarmPromises]);
     const entries = Array.from(this.active.values());
     const warmEntries = Array.from(this.warm.values());
     this.active.clear();

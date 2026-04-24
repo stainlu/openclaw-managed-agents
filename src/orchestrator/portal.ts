@@ -884,7 +884,10 @@ function renderSessions() {
     const el = document.createElement("div");
     el.className = "list-item" + (s.session_id === S.selectedSessionId ? " selected" : "");
     const statusCls = "status-" + (s.status || "idle");
-    const spinner = s.status === "running" ? '<span class="spinner"></span>' : "";
+    const spinner =
+      s.status === "starting" || s.status === "running"
+        ? '<span class="spinner"></span>'
+        : "";
     el.innerHTML = \`
       <div class="primary">\${s.session_id}</div>
       <div class="secondary">
@@ -926,7 +929,8 @@ function renderDetail(session, events) {
   const pane = document.getElementById("detail-pane");
   if (!session) return;
   const statusCls = "status-" + (session.status || "idle");
-  const isRunning = session.status === "running";
+  const isRunning =
+    session.status === "starting" || session.status === "running";
 
   // Combine agent.tool_use + agent.tool_result pairs into a single row,
   // matched by tool_call_id. Orphan tool_use (result pending) shows a
@@ -1472,7 +1476,8 @@ function buildEventRows(events, session = null) {
   //     at the last recorded event; duration = last.ts - this_user.ts.
   const now = Date.now();
   const lastTs = rows.length > 0 ? (rows[rows.length - 1]?.e?.created_at) : undefined;
-  const running = session?.status === "running";
+  const running =
+    session?.status === "starting" || session?.status === "running";
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (r.kind !== "user") continue;
@@ -1792,7 +1797,11 @@ function startPolling() {
     if (!S.selectedSessionId) return;
     try {
       const s = await api("/v1/sessions/" + S.selectedSessionId);
-      if (s.status === "running" || s.status !== (S._lastDetailStatus || null)) {
+      if (
+        s.status === "starting" ||
+        s.status === "running" ||
+        s.status !== (S._lastDetailStatus || null)
+      ) {
         S._lastDetailStatus = s.status;
         await refreshDetail();
       }

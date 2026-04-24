@@ -156,6 +156,12 @@ export type ServerDeps = {
    * laptop without guessing. Zero means warm pooling is opted out.
    */
   maxWarmContainers: number;
+  /**
+   * Pool active-container cap — `OPENCLAW_MAX_ACTIVE_CONTAINERS`
+   * resolved at process start. Surfaced on /healthz for operator
+   * visibility when diagnosing cold-spawn pressure.
+   */
+  maxActiveContainers: number;
 };
 
 function agentResponse(agent: AgentConfig) {
@@ -305,6 +311,9 @@ function handleRouterError(err: unknown, c: Context): Response {
     }
     if (err.code === "session_busy" || err.code === "session_not_running") {
       return c.json({ error: err.code, message: err.message }, 409);
+    }
+    if (err.code === "capacity_exceeded") {
+      return c.json({ error: err.code, message: err.message }, 503);
     }
     if (err.code === "invalid_path") {
       return c.json({ error: err.code, message: err.message }, 400);
@@ -530,6 +539,7 @@ export function buildApp(deps: ServerDeps): Hono {
       start_ts: deps.startTs,
       uptime_ms: now - deps.startTs,
       max_warm: deps.maxWarmContainers,
+      max_active: deps.maxActiveContainers,
     });
   });
 
@@ -1355,7 +1365,10 @@ export function buildApp(deps: ServerDeps): Hono {
             {
               signal: abort.signal,
               isSessionRunning: () =>
-                deps.sessions.get(sessionId)?.status === "running",
+                (() => {
+                  const status = deps.sessions.get(sessionId)?.status;
+                  return status === "starting" || status === "running";
+                })(),
               afterEventId,
             },
           )) {
@@ -1704,7 +1717,7 @@ export function buildApp(deps: ServerDeps): Hono {
           500,
         );
       }
-      if (current.status !== "running") {
+      if (current.status !== "starting" && current.status !== "running") {
         finalSession = current;
         break;
       }

@@ -724,7 +724,10 @@ function asDesignAgent(a, sessionCountById) {
 function asDesignSession(s, agentById, environmentById) {
   const agent = agentById[s.agent_id];
   const env = s.environment_id ? environmentById?.[s.environment_id] : undefined;
-  const nowOrLast = s.status === 'running' ? Date.now() : (s.last_event_at || s.created_at);
+  const nowOrLast =
+    (s.status === 'starting' || s.status === 'running')
+      ? Date.now()
+      : (s.last_event_at || s.created_at);
   let status = s.status;
   if (s.status === 'failed' && typeof s.error === 'string' && /quota_exceeded|maxCostUsdPerSession|maxTokensPerSession|maxWallDurationMs/i.test(s.error)) {
     status = 'quota';
@@ -790,7 +793,11 @@ function poolLabelFromRaw(status, poolSource) {
         ? 'limited'
         : poolSource === 'adopt'
           ? 'adopted'
-          : status === 'running' ? 'booting...' : 'no container';
+          : status === 'starting'
+            ? 'booting...'
+            : status === 'running'
+              ? 'dispatching...'
+              : 'no container';
 }
 
 function asDesignEvent(e, anchorTs) {
@@ -880,6 +887,27 @@ function syncSessionDerived(session) {
   return session;
 }
 
+function isInflightStatus(status) {
+  return status === 'starting' || status === 'running';
+}
+
+function hasLiveContainer(session) {
+  return !!(session?.containerId || session?.containerName || session?.poolSource);
+}
+
+function matchesSessionFilter(session, filter) {
+  if (filter === 'running') return isInflightStatus(session.status);
+  return session.status === filter;
+}
+
+function formatContainerSub(session) {
+  const bootLabel =
+    typeof session?.bootMs === 'number'
+      ? `boot ${(session.bootMs / 1000).toFixed(1)}s`
+      : 'boot —';
+  return `${bootLabel} · ${session?.pool || 'no container'}`;
+}
+
 function patchLiveSession(sessionId, patch) {
   const idx = SESSIONS.findIndex((s) => s.id === sessionId);
   if (idx === -1) return;
@@ -942,7 +970,7 @@ async function pumpSessions() {
       });
     SESSIONS.length = 0;
     for (const s of next) SESSIONS.push(s);
-    const running = next.filter((s) => s.status === 'running').length;
+    const running = next.filter((s) => isInflightStatus(s.status)).length;
     // Honest rolling window. A session counts toward "last 24h" iff its
     // last_event_at falls in that window. This overcounts slightly
     // (the session's LIFETIME tokens get included even if only one
@@ -1052,6 +1080,7 @@ async function pumpEventsPoll() {
 // carry no conversational content, so we intentionally skip registering
 // for them rather than let them clutter the rendered timeline.
 const SSE_EVENT_TYPES = [
+  'session.status_starting',
   'session.status_idle',
   'session.status_running',
   'session.status_failed',
@@ -1117,13 +1146,6 @@ function openEventStream(sid) {
     }
     if (eid && SEEN_EVENT_IDS.has(eid)) return;
     if (eid) SEEN_EVENT_IDS.add(eid);
-    // Dedup status events by type — heartbeat can re-emit the same
-    // status (e.g. session.status_failed) on every cycle. Only keep
-    // the first one; subsequent emissions with the same type are
-    // silently dropped.
-    if (data.type && data.type.startsWith('session.status_')) {
-      if (EVENTS.some(e => e.type === data.type)) return;
-    }
     if (LIVE_EVENT_ANCHOR == null) LIVE_EVENT_ANCHOR = data.created_at;
     EVENTS.push(asDesignEvent(data, LIVE_EVENT_ANCHOR));
     if (data.type === 'user.message' && _onUserMessageEvent) _onUserMessageEvent(sid, data);
@@ -1462,7 +1484,7 @@ function Sidebar({ route, setRoute }) {
   // indicator on Sessions pulses only while there's at least one
   // running session, so the UI stops pretending everything is hot
   // when nothing's actually running.
-  const runningCount = SESSIONS.filter((s) => s.status === 'running').length;
+  const runningCount = SESSIONS.filter((s) => isInflightStatus(s.status)).length;
   const items = [
     { id: 'overview',    label: 'Overview',     count: null,              icon: 'home' },
     { id: 'agents',      label: 'Agents',       count: AGENTS.length,     icon: 'agents' },
@@ -1569,6 +1591,7 @@ Object.assign(window, { Topbar, Sidebar });
 const { useState: useStateSessions, useMemo: useMemoSessions } = React;
 
 function StatusBadge({ s }) {
+  if (s === 'starting') return <Badge tone="soft">Booting</Badge>;
   if (s === 'running') return <Badge tone="live">Running</Badge>;
   if (s === 'awaiting') return <Badge tone="soft">Awaits approval</Badge>;
   if (s === 'idle') return <Badge tone="neutral">Idle</Badge>;
@@ -1597,7 +1620,7 @@ function Meter({ value, cap, unit = '', tone = 'ink', style }) {
 }
 
 function SessionsList({ selectedId, onSelect, filter, setFilter }) {
-  const filtered = filter === 'all' ? SESSIONS : SESSIONS.filter(s => s.status === filter);
+  const filtered = filter === 'all' ? SESSIONS : SESSIONS.filter(s => matchesSessionFilter(s, filter));
   const isNew = selectedId === '__new';
   return (
     <div className="oc-sessions-list" style={{
@@ -1619,7 +1642,7 @@ function SessionsList({ selectedId, onSelect, filter, setFilter }) {
         </div>
         <div style={{ display: 'flex', gap: 14, marginTop: 12, flexWrap: 'wrap' }}>
           {(() => {
-            const tally = (k) => SESSIONS.filter(s => s.status === k).length;
+            const tally = (k) => SESSIONS.filter(s => matchesSessionFilter(s, k)).length;
             return [
               ['all',      'All',    SESSIONS.length],
               ['running',  'Running', tally('running')],
@@ -2164,6 +2187,7 @@ function EventRow({ e, streaming, session }) {
     return null;
   }
   const kindTone = {
+    'session.status_starting': { tag: 'status', c: 'var(--ink-3)' },
     'session.status_running':  { tag: 'status', c: 'var(--ink-3)' },
     'session.status_failed':   { tag: 'status', c: 'var(--lobster)' },
     'session.container_attached': { tag: 'container', c: 'var(--ink-3)' },
@@ -2204,39 +2228,16 @@ function EventRow({ e, streaming, session }) {
     </div>
   );
 
-  if (e.type === 'session.status_running') {
-    // Render the real container + pool + boot numbers if the parent
-    // session is available. On older sessions whose container has
-    // been reaped (pool_source=null on the response) we fall back
-    // to a truthful "no container" note rather than lying.
-    const containerName = session?.containerId
-      ? (session.containerName || session.containerId.slice(0, 12))
-      : null;
-    const bootMs = typeof session?.bootMs === 'number' ? session.bootMs : null;
-    const poolSource = session?.poolSource || null;
-    const poolLabel =
-      poolSource === 'warm' ? 'warm-pool reuse' :
-      poolSource === 'cold' ? 'cold spawn' :
-      poolSource === 'limited' ? 'cold spawn · limited' :
-      poolSource === 'adopt' ? 'adopted on restart' :
-      session?.status === 'running' ? 'booting...' :
-      'no container';
+  if (e.type === 'session.status_starting') {
     return (
       <Row>
         <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-          {containerName ? (
-            <>
-              Container <code>{containerName}</code> attached · {poolLabel}
-              {bootMs != null && bootMs > 0 && <> · {(bootMs / 1000).toFixed(1)}s boot</>}
-              {bootMs === 0 && poolSource === 'warm' && <> · 0.0s boot</>}
-            </>
-          ) : (
-            <>Session state · {poolLabel}</>
-          )}
+          Session state · booting...
         </span>
       </Row>
     );
   }
+  if (e.type === 'session.status_running') return null;
   if (e.type === 'session.container_attached') {
     const containerName = e.containerName || (e.containerId ? e.containerId.slice(0, 12) : '—');
     const poolLabel =
@@ -2437,7 +2438,7 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
   const scrollRef = useRefDetail(null);
   const stickToBottom = useRefDetail(true);
   const s = SESSIONS.find((x) => x.id === sessionId) || SESSIONS[0];
-  const isRunning = s?.status === 'running';
+  const isInflight = isInflightStatus(s?.status);
   useEffectDetail(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -2448,10 +2449,10 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
   useEffectDetail(() => {
-    if ((isRunning || stickToBottom.current) && scrollRef.current) {
+    if ((isInflight || stickToBottom.current) && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [streamLen, isRunning]);
+  }, [streamLen, isInflight]);
 
   // Empty-state guard: the first render after a fresh page load runs
   // before pumpSessions has any data, so `s` is undefined. The design
@@ -2497,7 +2498,7 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
       )
     : EVENTS;
 
-  const showStream = effectiveStatus === 'running';
+  const showStream = effectiveStatus === 'running' && hasLiveContainer(s);
   const partial = STREAMING_TOKENS.slice(0, streamLen || STREAMING_TOKENS.length);
 
   return (
@@ -2519,7 +2520,7 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
           <Stat label="Wall"   value={formatWall(s.wallMs)} />
           <Stat label="Tokens" value={(s.tokens/1000).toFixed(1)+'k'} meter={{v: s.tokens, cap: s.tokensCap, suffix: '/ 50k'}} />
           <Stat label="Cost"   value={'$'+s.cost.toFixed(3)} meter={{v: s.cost, cap: s.costCap, suffix: '/ $'+s.costCap.toFixed(2)}} hot={effectiveStatus==='quota'} />
-          <Stat label="Container" value={s.container} mono sub={`boot ${(s.bootMs/1000).toFixed(1)}s · ${s.pool}`} />
+          <Stat label="Container" value={s.container} mono sub={formatContainerSub(s)} />
         </div>
       </div>
 
@@ -3954,7 +3955,7 @@ function AppProvider({ children }) {
           try {
             const r = await fetch(`/v1/sessions/${encodeURIComponent(sid)}`);
             const s = await r.json();
-            if (s.status !== 'running' || Date.now() > until) {
+            if (!isInflightStatus(s.status) || Date.now() > until) {
               setCancelState('cancelled');
               pushToast({ method: 'event', path: 'session.cancelled', label: `${sid}`, status: 200, ms: Date.now() - startedAt });
               clearInterval(t);
@@ -4577,6 +4578,7 @@ function Composer({ sid, effectiveStatus, orphaned, sessionModel, sessionThinkin
   const hint =
     orphaned ? 'Agent template deleted — this session is read-only.' :
     ctx?.cancelState === 'cancelled' ? 'Session ended — open a new one to continue.' :
+    effectiveStatus === 'starting' ? 'Session is booting — your next message will queue.' :
     effectiveStatus === 'running' ? 'Session is running — your next message will queue.' :
     effectiveStatus === 'awaiting' ? 'Paused on tool approval — resolve above to continue.' :
     effectiveStatus === 'failed' ? 'Session failed — inspect the error above.' :
@@ -4831,7 +4833,7 @@ function SessionHeaderActions({ sid, status }) {
   if (cancelling) {
     return <Button variant="secondary" size="sm" disabled>Cancelling…</Button>;
   }
-  if (status === 'running') {
+  if (status === 'starting' || status === 'running') {
     return <Button variant="secondary" size="sm" icon="pause" onClick={() => ctx.cancelSession(sid)}>Cancel</Button>;
   }
   if (status === 'awaiting') {

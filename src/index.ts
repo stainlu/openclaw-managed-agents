@@ -158,6 +158,7 @@ async function main(): Promise<void> {
   const stateRoot = env("OPENCLAW_STATE_ROOT", "/var/openclaw/sessions");
   const network = env("OPENCLAW_DOCKER_NETWORK", "openclaw-net");
   const gatewayPort = envInt("OPENCLAW_GATEWAY_PORT", 18789);
+  const spawnTimeoutMs = envInt("OPENCLAW_SPAWN_TIMEOUT_MS", 60_000);
   const readyTimeoutMs = envInt("OPENCLAW_READY_TIMEOUT_MS", 60_000);
   const runTimeoutMs = envInt("OPENCLAW_RUN_TIMEOUT_MS", 10 * 60_000);
   // Idle reap now applies only to sessions the caller explicitly marks
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
   // sessions keep their owned container alive between turns until
   // explicit teardown or process restart/adoption.
   const idleTimeoutMs = envInt("OPENCLAW_IDLE_TIMEOUT_MS", 10 * 60_000);
+  const maxActiveContainers = envInt("OPENCLAW_MAX_ACTIVE_CONTAINERS", 5);
   const sweepIntervalMs = envInt("OPENCLAW_SWEEP_INTERVAL_MS", 60_000);
   // Warm pool is bounded so a host with many agent templates does not
   // accumulate one persistent container per template.
@@ -220,7 +222,7 @@ async function main(): Promise<void> {
   // 120-burst); stops blind-loop DoS without hindering real workloads.
   const rateLimitRpm = envInt("OPENCLAW_RATE_LIMIT_RPM", 120);
 
-  const runtime = new DockerContainerRuntime({ network });
+  const runtime = new DockerContainerRuntime({ network, spawnTimeoutMs });
   await runtime.ensureNetwork();
 
   const storeBackendRaw = env("OPENCLAW_STORE", "sqlite");
@@ -251,19 +253,24 @@ async function main(): Promise<void> {
   // Per-session container pool. isBusy closes over the session store so the
   // sweeper can skip containers whose session currently has a run in flight
   // — the pool itself has no store dependency. shouldReapSession marks only
-  // ephemeral sessions as eligible for idle reap; sticky sessions keep their
-  // container until explicit teardown. cleanupOnReap closes over BOTH the
-  // store and the JSONL reader so it can tear down those ephemeral sessions
-  // (auto-created by keyless POST /v1/chat/completions) along with their
-  // container. Called only on the idle-reap path; manual evictSession and
-  // shutdown paths preserve session data.
+  // ephemeral sessions as eligible for idle reap; normal sessions stay alive
+  // between turns but are still bounded by maxActiveContainers and can be
+  // pressure-evicted when the host is full. cleanupOnReap closes over BOTH
+  // the store and the JSONL reader so it can tear down those ephemeral
+  // sessions (auto-created by keyless POST /v1/chat/completions) along with
+  // their container. Called only on the idle-reap path; manual evictSession
+  // and shutdown paths preserve session data.
   const pool = new SessionContainerPool(runtime, {
     idleTimeoutMs,
+    maxActiveContainers,
     readyTimeoutMs,
     sweepIntervalMs,
     maxWarmContainers,
     warmIdleTimeoutMs,
-    isBusy: (sessionId) => store.sessions.get(sessionId)?.status === "running",
+    isBusy: (sessionId) => {
+      const status = store.sessions.get(sessionId)?.status;
+      return status === "starting" || status === "running";
+    },
     shouldReapSession: (sessionId) => store.sessions.get(sessionId)?.ephemeral === true,
     cleanupOnReap: async (sessionId) => {
       const session = store.sessions.get(sessionId);
@@ -503,7 +510,7 @@ async function main(): Promise<void> {
   // JSONL history is intact, so re-posting just continues the conversation.
   let orphanedRunningSessions = 0;
   for (const session of store.sessions.list()) {
-    if (session.status !== "running") continue;
+    if (session.status !== "starting" && session.status !== "running") continue;
     if (adopted.has(session.sessionId)) continue;
     store.sessions.endRunFailure(
       session.sessionId,
@@ -701,6 +708,7 @@ async function main(): Promise<void> {
       startTs: Date.now(),
       commitSha: process.env.OPENCLAW_COMMIT,
       maxWarmContainers,
+      maxActiveContainers,
     },
     { port },
   );
