@@ -753,24 +753,45 @@ async function main(): Promise<void> {
   jsonlSamplerHandle.unref();
 
   // Graceful shutdown: tear down all pool-managed containers (best-effort)
-  // and close the SQLite store so WAL checkpoints flush cleanly. The HTTP
-  // server is not explicitly stopped because Hono's node-server doesn't
-  // expose a close() reference in this codebase yet — in practice the
-  // process.exit() call takes the listener down with it.
+  // and close the SQLite store so WAL checkpoints flush cleanly. A hard
+  // 30-second deadline is set so the process never hangs indefinitely
+  // if a container is stuck — sessions mid-flight will be re-adopted
+  // on the next startup anyway.
   const shutdown = (signal: string): void => {
     log.info({ signal }, "shutting down");
     (async () => {
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      const hardKillTimer = setTimeout(() => {
+        log.error("shutdown deadline exceeded (30s) — forcing process.exit");
+        process.exit(1);
+      }, 30_000);
+      hardKillTimer.unref();
       try {
         await pool.shutdown();
       } catch (err) {
         log.warn({ err }, "pool shutdown error");
       }
-      store.close();
+      try {
+        store.close();
+      } catch (_) { /* ignore */ }
+      clearTimeout(hardKillTimer);
       process.exit(0);
     })();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
+  // Safety net for truly unhandled errors after the server has started.
+  // Without these, an exception thrown in any async callback (WebSocket
+  // panic, broken JSONL write, etc.) silently terminates the process
+  // without draining the pool — losing mid-flight sessions.
+  process.on("uncaughtException", (err) => {
+    log.fatal({ err, stack: err.stack }, "uncaughtException");
+    shutdown("uncaughtException");
+  });
+  process.on("unhandledRejection", (reason) => {
+    log.fatal({ reason }, "unhandledRejection");
+    shutdown("unhandledRejection");
+  });
 }
 
 main().catch((err) => {
