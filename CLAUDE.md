@@ -47,8 +47,8 @@ Read `docs/architecture.md` for the full treatment; the summary below is the min
 
 ### Core invariants
 
-1. **One OpenClaw container per session.** OpenClaw is single-user by design. Multi-user semantics are created externally by the orchestrator's `SessionContainerPool`, not by modifying OpenClaw.
-2. **Container vs session lifetime.** Sessions are durable (SQLite row + JSONL on the host mount). Containers are ephemeral — spawned on first event, reaped after idle. On respawn, Pi's `SessionManager.open()` rebuilds `AgentSession` from the JSONL so history survives. "Cattle for compute; pets for session state."
+1. **One OpenClaw container per active session.** OpenClaw is single-user by design. Multi-user semantics are created externally by the orchestrator's `SessionContainerPool`, not by modifying OpenClaw.
+2. **Container vs session lifetime.** Sessions are durable (SQLite row + JSONL on the host mount). Containers are ephemeral caches for compute — spawned on first event, kept resident between turns while capacity allows, pressure-evicted when `OPENCLAW_MAX_ACTIVE_CONTAINERS` is hit, and idle-reaped only for explicitly-reapable sessions. On respawn, Pi's `SessionManager.open()` rebuilds `AgentSession` from the JSONL so history survives. "Cattle for compute; pets for session state."
 3. **Orchestrator is stateless.** All durable state is in SQLite (agents/environments/sessions) or Pi JSONL files (events). Restart rehydrates: any session still `running` is flipped to `failed` with message `"orchestrator restarted mid-run"`. Orphan containers (labeled `managed-by=openclaw-managed-agents`) are stopped at startup. HMAC secret for parent-tokens regenerates, invalidating outstanding subagent tokens — consistent with the "restart drops ephemeral state" pattern.
 4. **Events live in JSONL, not SQLite.** Never write the orchestrator's notion of events to durable storage; read them at query time via `PiJsonlEventReader` pointed at the mounted state dir.
 
@@ -60,7 +60,7 @@ Read `docs/architecture.md` for the full treatment; the summary below is the min
 | `src/orchestrator/server.ts` | Hono app. All HTTP routes, SSE via `streamSSE`, OpenAI-compat `POST /v1/chat/completions`. `handleRouterError` maps `RouterError` codes → HTTP status. |
 | `src/orchestrator/router.ts` | `AgentRouter`. The brain — owns `runEvent`, `cancel`, `confirmTool`, `executeInBackground`, `warmSession`, `warmForAgent`. |
 | `src/store/{types,sqlite,memory}.ts` | `QueueStore` — per-session FIFO for events posted to a `running` session. SQLite-backed by default, so queued work survives restart. |
-| `src/runtime/pool.ts` | `SessionContainerPool` — two pools in one: active (per-session) + warm (per-agent, pre-booted). Unref'd sweeper reaps idle. `cleanupOnReap` is called **only** from the idle path. |
+| `src/runtime/pool.ts` | `SessionContainerPool` — two pools in one: active (per-session) + warm (per-agent, pre-booted). Active session containers stay resident between turns but are bounded by `OPENCLAW_MAX_ACTIVE_CONTAINERS`; oldest-idle eviction happens under pressure. Idle reap applies only to sessions marked reapable. `cleanupOnReap` is called **only** from the idle path. |
 | `src/runtime/docker.ts` | `DockerContainerRuntime` (dockerode). The only backend today; the interface is the seam for future cloud backends (ECS, Cloud Run, etc.). |
 | `src/runtime/container.ts` | `ContainerRuntime` interface. Implementations live alongside `docker.ts`. |
 | `src/runtime/gateway-ws.ts` | Operator-role WebSocket client to each container's OpenClaw gateway. Backs cancel/steer/patch/approvalResolve/approvalList. Uses `client.id = "openclaw-tui"` (load-bearing — see the comment in `gateway-ws.ts`). |
@@ -70,8 +70,8 @@ Read `docs/architecture.md` for the full treatment; the summary below is the min
 ### Request lifecycle — `POST /v1/sessions/:id/events`
 
 1. Server validates body (user.message or user.tool_confirmation).
-2. `AgentRouter.runEvent` — if session is `idle`: `beginRun` → fire-and-forget `executeInBackground`. If `running`: enqueue on `QueueStore`.
-3. `executeInBackground` → `pool.acquireForSession({sessionId, agentId, spawnOptions})` — three sources checked in order: active, warm (template-compatible only), fresh spawn.
+2. `AgentRouter.runEvent` — if session is `idle`: `beginRun` (status → `starting`) → fire-and-forget `executeInBackground`. If `starting` or `running`: enqueue on `QueueStore`.
+3. `executeInBackground` → `pool.acquireForSession({sessionId, agentId, spawnOptions})` — three sources checked in order: active, warm (template-compatible only), fresh spawn. After claim succeeds, `markRunning`.
 4. Optional WS `patch` for model override.
 5. HTTP call to container's `/v1/chat/completions`.
 6. After completion: read `latestAgentMessage` from JSONL for cost rollup. Drain queue (recursively run next enqueued event) OR `endRunSuccess`.
@@ -92,7 +92,7 @@ Three policies on agent templates:
 
 ### Cost accounting
 
-Per-session rolling `tokens_in`, `tokens_out`, `cost_usd` sourced from the provider's billing data (cache-aware, not a static price sheet). Anthropic / OpenAI / Google / xAI / Mistral / OpenRouter / Bedrock report non-zero cost automatically. Moonshot and DeepSeek direct-provider v4 models currently get real cost via the runtime's `docker/provider-prices.json` patches layered onto the bundled catalog; when upstream ships the same prices and model ids, deleting the local provider block cleanly defers back to upstream.
+Per-session rolling `tokens_in`, `tokens_out`, `cost_usd` are sourced from provider-side billing data. In production deployments with `ZENMUX_API_KEY`, all models normalize through ZenMux and the orchestrator uses ZenMux's live `/models` catalog as the canonical cost fallback when a transcript has tokens but no explicit `usage.cost`. `docker/provider-prices.json` remains fallback-only for direct-provider Moonshot / DeepSeek bootstrap.
 
 ### Observability
 
@@ -118,7 +118,7 @@ For `pnpm dev` (no compose), set both env vars to the same absolute host directo
 
 ## Networking policies
 
-`environment.networking` accepts `"unrestricted"` (default, full network access) and `"limited"` (under active rollout — Linux-only egress-proxy sidecar). Accepting `"limited"` without actually enforcing would be false security, so the schema rejects it until per-container iptables enforcement ships on the platform. See `docs/designs/networking-limited.md` for the rollout plan.
+`environment.networking` accepts `"unrestricted"` (default, full network access) and `"limited"` (Linux-only egress-proxy sidecar + confined Docker topology). `limited` is enforced today: the agent sits on `--internal` networks, outbound HTTP/HTTPS is filtered through the egress proxy, and DNS is filtered at the sidecar too. See `docs/designs/networking-limited.md` for the design record and `test/e2e-networking.sh` for the enforcement proof.
 
 ## SDKs
 

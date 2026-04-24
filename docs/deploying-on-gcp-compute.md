@@ -147,7 +147,11 @@ curl -s -X POST "$ORCH/v1/sessions/$SESSION/events" \
   -d '{"content":"In one sentence, what is 2+2?"}'
 
 # 5. Wait and read the reply
-while [ "$(curl -s $ORCH/v1/sessions/$SESSION | jq -r .status)" = "running" ]; do sleep 2; done
+while :; do
+  STATUS=$(curl -s $ORCH/v1/sessions/$SESSION | jq -r .status)
+  [ "$STATUS" = "starting" ] || [ "$STATUS" = "running" ] || break
+  sleep 2
+done
 curl -s "$ORCH/v1/sessions/$SESSION/events" \
   | jq -r '[.events[]|select(.type=="agent.message")]|last|.content'
 ```

@@ -8,7 +8,7 @@ Built on [OpenClaw](https://github.com/openclaw/openclaw), the most popular open
 
 **The name says it:** `openclaw-managed-agents` = **OpenClaw** (the agent runtime — multi-provider, 53 built-in skills, MCP-native, Pi's durable JSONL event log) + **Managed Agents** (the four-primitive API shape — Agent / Environment / Session / Event — that Claude Managed Agents made standard).
 
-You POST an Agent (model + system prompt + tools + MCP servers), open a Session against it, send Events, stream back Events. Under the hood: one isolated Docker container per session running OpenClaw, SQLite for orchestrator metadata, SSE for streaming, WebSocket control plane for cancel / model-override / tool-confirmation. Deploy anywhere Docker runs.
+You POST an Agent (model + system prompt + tools + MCP servers), open a Session against it, send Events, stream back Events. Under the hood: one isolated Docker container per active session running OpenClaw, SQLite for orchestrator metadata, SSE for streaming, WebSocket control plane for cancel / model-override / tool-confirmation. Session state is durable even if the live container is later evicted and respawned. Deploy anywhere Docker runs.
 
 It's the layer that turns OpenClaw from a personal AI assistant into a programmatic agent service your app can call.
 
@@ -46,7 +46,7 @@ OpenClaw Managed Agents is for when you want to **build a product** with OpenCla
 |---|---|---|
 | Who it's for | One human operator | Developers building programmatic agent products |
 | Access | Browser pairing + SSH CLI | HTTP REST + SSE + WebSocket |
-| Sessions | 1 shared operator pairing | N long-lived API sessions, 1 container each, isolated |
+| Sessions | 1 shared operator pairing | N durable API sessions, each with an isolated live container when active |
 | Channels | WhatsApp / Telegram / Discord / Slack built-in | None — programmatic only |
 | Agent management | Edit `openclaw.json` + restart the gateway | `POST /v1/agents` / `PATCH` / `archive` — versioned with optimistic concurrency, no restart needed |
 | Session isolation | Single workspace | Per-session Docker container with cgroup limits + bind-mounted state |
@@ -65,7 +65,7 @@ Requires Docker and an API key for any [OpenClaw-supported provider](https://ope
 git clone https://github.com/stainlu/openclaw-managed-agents
 cd openclaw-managed-agents
 
-export MOONSHOT_API_KEY=sk-...    # or ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.
+export MOONSHOT_API_KEY=sk-...    # or ZENMUX_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.
 docker compose up --build -d
 ```
 
@@ -89,7 +89,11 @@ curl -s -X POST "http://localhost:8080/v1/sessions/$SESSION/events" \
   -d '{"content":"What is 2+2? Reply with just the number."}'
 
 # Poll until done
-while [ "$(curl -s http://localhost:8080/v1/sessions/$SESSION | jq -r .status)" = "running" ]; do sleep 2; done
+while :; do
+  STATUS=$(curl -s http://localhost:8080/v1/sessions/$SESSION | jq -r .status)
+  [ "$STATUS" = "starting" ] || [ "$STATUS" = "running" ] || break
+  sleep 2
+done
 
 # Read the answer
 curl -s "http://localhost:8080/v1/sessions/$SESSION" | jq .output
@@ -161,7 +165,7 @@ Four primitives, matching Claude Managed Agents' model:
 |---|---|---|
 | **Agent** | Reusable config: model, instructions, tools, MCP servers, permission policy, delegation rules, quotas. Versioned — updates create immutable history. | `POST/GET/PATCH/DELETE /v1/agents` |
 | **Environment** | Container config: packages (pip / apt / npm), networking policy. Composed with agents at session time. | `POST/GET/DELETE /v1/environments` |
-| **Session** | A running agent in an environment. Long-lived, multi-turn, one container per session. | `POST/GET/DELETE /v1/sessions` |
+| **Session** | A durable conversation in an environment. Long-lived, multi-turn, with one isolated live container when active. | `POST/GET/DELETE /v1/sessions` |
 | **Event** | Messages, tool calls, thinking blocks, status changes in and out of a session. SSE streaming. | `POST/GET /v1/sessions/:id/events` |
 
 ## API reference
@@ -213,7 +217,7 @@ Networking modes:
 ```
 POST   /v1/sessions                       # { agentId, environmentId? }
 GET    /v1/sessions                       # list all
-GET    /v1/sessions/:id                   # status, output, rolling tokens, cost_usd
+GET    /v1/sessions/:id                   # status (idle|starting|running|failed), output, rolling tokens, cost_usd
 DELETE /v1/sessions/:id                   # tears down container + data
 POST   /v1/sessions/:id/events            # send message or tool confirmation (see below)
 GET    /v1/sessions/:id/events            # full event history
@@ -260,11 +264,15 @@ Events from `GET /v1/sessions/:id/events` and the SSE stream:
 | `session.model_change` | JSONL | Model switched mid-session |
 | `session.thinking_level_change` | JSONL | Thinking mode toggled |
 | `session.compaction` | JSONL | Context compaction summary |
+| `session.runtime_notice` | JSONL | Runtime/system notice emitted by OpenClaw, not a user turn |
+| `session.status_starting` | SSE only | Session entered container-acquire / boot state |
 | `session.status_idle` | SSE only | Session transitioned to idle |
 | `session.status_running` | SSE only | Session transitioned to running |
 | `session.status_failed` | SSE only | Session transitioned to failed |
+| `session.container_attached` | SSE only | A live container was claimed for the session |
+| `session.container_detached` | SSE only | A live container was evicted or torn down |
 
-The SSE stream emits an initial status event on connect, checks for status transitions on every yielded event + every 15-second heartbeat, and accepts a resume cursor via the `Last-Event-ID` header or `?after=<event_id>` query param so reconnecting clients don't replay history they've already seen.
+The SSE stream emits an initial status event on connect, checks for status transitions on every yielded event + every 15-second heartbeat, emits container attach/detach telemetry, and accepts a resume cursor via the `Last-Event-ID` header or `?after=<event_id>` query param so reconnecting clients don't replay history they've already seen.
 
 ## Key features
 
@@ -292,7 +300,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Cancel + queue.** Cancel aborts the in-flight run via the WebSocket control plane. Events posted to a busy session queue automatically and drain in order.
 
-**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from the provider's own billing data — cache-aware, not a static price sheet. Anthropic, OpenAI, Google, xAI, Mistral, OpenRouter, and Bedrock auto-report non-zero cost with no config. Moonshot and DeepSeek direct-provider v4 models currently get real non-zero cost via the runtime's `provider-prices.json` patches layered onto the bundled catalog; when upstream ships the same prices and model ids, deleting the local provider block cleanly defers back to upstream.
+**Per-turn cost.** Each session tracks rolling `tokens_in`, `tokens_out`, and `cost_usd` from provider-side billing data — cache-aware, not a static spreadsheet. In production deployments with `ZENMUX_API_KEY`, all models route through ZenMux and the orchestrator uses ZenMux's live `/models` catalog as the canonical fallback source when a transcript has tokens but no explicit `usage.cost`. The local `provider-prices.json` table is fallback-only for direct-provider Moonshot / DeepSeek bootstrap, not the primary accounting path in a ZenMux deployment.
 
 **OpenAI SDK drop-in.** Point any OpenAI SDK at `http://<host>:8080/v1` with an `x-openclaw-agent-id` header. Sticky sessions via the `user` field. Real per-token streaming (not emulated) when `stream: true`.
 
@@ -401,7 +409,7 @@ The orchestrator keeps only ephemeral caches in memory; all commitments live in 
 
 ## Test status
 
-**195 tests pass**, covering unit + restart-safety + contract + integration shapes:
+**229 tests pass**, covering unit + restart-safety + contract + integration shapes:
 
 - Session-centric resume (multi-turn memory across turns, across container restart, across orchestrator restart)
 - Cost accounting from provider billing data

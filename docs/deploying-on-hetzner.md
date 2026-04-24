@@ -138,7 +138,11 @@ curl -s -X POST "http://5.75.123.45:8080/v1/sessions/$SESSION/events" \
   -H 'Content-Type: application/json' \
   -d '{"content":"In one sentence, what is OpenClaw?"}'
 
-while [ "$(curl -s http://5.75.123.45:8080/v1/sessions/$SESSION | jq -r .status)" = "running" ]; do sleep 2; done
+while :; do
+  STATUS=$(curl -s http://5.75.123.45:8080/v1/sessions/$SESSION | jq -r .status)
+  [ "$STATUS" = "starting" ] || [ "$STATUS" = "running" ] || break
+  sleep 2
+done
 
 curl -s "http://5.75.123.45:8080/v1/sessions/$SESSION/events" \
   | jq -r '[.events[]|select(.type=="agent.message")]|last|.content'

@@ -3,7 +3,7 @@
 **Date:** 2026-04-15
 **Status:** ⚠️ **SUPERSEDED** — see "Decision" section at the bottom of this document. The implementation plan proposed here (new `SessionFileStore` / `WorkspaceProvisioner` interfaces, Cloud Run adapter, Fargate adapter) was **rejected** in favor of a far simpler multi-provider VPS strategy that uses the existing `DockerContainerRuntime` unchanged.
 
-This document is preserved as an **architectural decision record**. The research findings are intact as evidence behind the decision we ultimately made. **Do not use sections 5–11 as an implementation plan.** Use them to understand why we considered and rejected Cloud Run / Fargate as core backends.
+This document is preserved as an **architectural decision record**. The research findings are intact as evidence behind the decision we ultimately made. **Do not use sections 5–11 as an implementation plan.** Use them to understand why we considered and rejected Cloud Run / Fargate as core backends. References inside this ADR to older runtime behavior (for example unbounded idle-reap assumptions) are historical and may not match the current orchestrator.
 
 **If you are trying to add a new cloud deploy target**, skip to the **Decision** section and see `scripts/deploy-hetzner.sh` as the pattern.
 

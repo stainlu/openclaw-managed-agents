@@ -8,9 +8,9 @@ Provide an API-first managed agent runtime that competes with Claude Managed Age
 
 OpenClaw is fundamentally designed as one instance per user. The config, sessions, credentials, and workspace are all instance-scoped. The obvious "fix" would be to rewrite OpenClaw to be multi-tenant — that is the wrong move, because it would require months of architectural debate upstream and risks breaking every existing deployment.
 
-**The elegant solution: run one OpenClaw container per session.** Each container is single-user. The orchestrator creates multi-user semantics externally by owning a `SessionContainerPool` that spawns a fresh container for each new session's first event, reuses it across subsequent turns on that session, and reaps it after an idle timeout. OpenClaw core stays exactly as it is.
+**The elegant solution: run one OpenClaw container per active session.** Each container is single-user. The orchestrator creates multi-user semantics externally by owning a `SessionContainerPool` that spawns a fresh container for each new session's first event, reuses it across subsequent turns on that session, and can later evict that live container without losing the durable session. OpenClaw core stays exactly as it is.
 
-Container vs. session lifetime: sessions are durable (SQLite row + JSONL on the host mount). Containers are ephemeral (spawned on first event, reaped after idle). When a new container spawns under an existing session, Pi's `SessionManager.open()` rebuilds the `AgentSession` from the JSONL, so the agent sees the full conversation history. "Cattle, not pets" for compute; "pets, not cattle" for session state.
+Container vs. session lifetime: sessions are durable (SQLite row + JSONL on the host mount). Containers are ephemeral compute caches (spawned on first event, kept resident while capacity allows, and later pressure-evicted or explicitly reaped). When a new container spawns under an existing session, Pi's `SessionManager.open()` rebuilds the `AgentSession` from the JSONL, so the agent sees the full conversation history. "Cattle, not pets" for compute; "pets, not cattle" for session state.
 
 This is also how Claude Managed Agents works under the hood — Anthropic's engineering posts describe stateless harnesses with many brains and many hands per session. We just formalized it on top of Pi + OpenClaw instead of building the whole stack ourselves.
 
@@ -98,7 +98,7 @@ The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the 
 - **`createSession(agentId, opts?)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. Validates the agent is not archived. The container is only spawned when the first event arrives (or earlier via warm-up).
 - **`warmSession(sessionId)`** — proactively boots template-level warmth for a session so the first event can claim a ready container. Sessions with dedicated container config (`vaultId`, `networking: limited`, package installs) bypass this path and cold-spawn.
 - **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a compatible session. **Skipped for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`). `buildSpawnOptions` bakes the sessionId into both Docker labels and the signed `OPENCLAW_ORCHESTRATOR_TOKEN` env var, and Docker env is immutable post-create; a warm container built with the `__warm__` placeholder would carry that placeholder into every subagent spawn the claimed session later hosts, producing wrong token lineage (the orchestrator doesn't currently verify `parentSessionId` against the session store, so the failure would be silent rather than a crash). Skipping the warm pool for delegating agents preserves the latency benefit for the common non-delegating case without the identity smear.
-- **`runEvent({sessionId, content, model?})`** — idle path starts a background run (`beginRun` + fire-and-forget `executeInBackground`); running path enqueues. Returns `{session, queued}`.
+- **`runEvent({sessionId, content, model?})`** — idle path starts a background run (`beginRun` → session status `starting` → fire-and-forget `executeInBackground`); `starting` or `running` path enqueues. Returns `{session, queued}`.
 - **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled`. Cancellation is a deliberate stop, not an agent failure.
 - **`confirmTool(sessionId, approvalId, decision)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
 - **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model override, installs one approval subscription set per session, rehydrates pending approvals from `plugin.approval.list`, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
@@ -113,7 +113,7 @@ The Hono app. Every route in the API section of the README registers here. Notab
 - **Environment routes** — CRUD. Deletion rejected (409) while sessions reference the environment.
 - **Session routes** — `POST /v1/sessions` validates environmentId if provided, fires proactive `warmSession` in the background. `POST /v1/sessions/:id/events` dispatches on event type: `user.message` triggers `runEvent`, `user.tool_confirmation` triggers `confirmTool`.
 - **SSE streaming** — `GET /v1/sessions/:id/events?stream=true` uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`. Emits an initial `session.status_*` event on connect, checks for status transitions on every yielded event and on every 15 s heartbeat tick, and emits a final status event when the follow loop ends.
-- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session.
+- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap and treat both `starting` and `running` as in-flight states. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session.
 
 ### Delegated subagents (`src/runtime/parent-token.ts` + `docker/call-agent.mjs`)
 
@@ -265,7 +265,7 @@ Four things in this config are load-bearing and are not obvious from the OpenCla
 
 ### Provider plugin categories
 
-OpenClaw provider plugins fall into two categories, and the entrypoint handles each differently.
+OpenClaw provider plugins fall into two categories, and the entrypoint handles each differently. In production deployments with `ZENMUX_API_KEY`, the runtime first normalizes every model to `zenmux/<raw-provider>/<raw-model>` and materializes `models.providers.zenmux` from ZenMux's live `/models` catalog. The direct-provider categories below still matter for non-ZenMux runs and as fallback bootstrap logic.
 
 **Category A: auto-register their catalog at plugin load time.** Plugins built with `definePluginEntry` + `register(api)` — for example `anthropic`, `openai`, `google`, `xai`, `mistral`, `openrouter`, `amazon-bedrock` — register their full model catalog when the gateway starts. For these, the generated config only needs `plugins.entries.<id>: { enabled: true }` plus the agent block. Everything else works automatically.
 
@@ -332,10 +332,10 @@ For the MVP the JSONL files live on a local Docker bind mount. A future item rep
 ```
 3.  Developer  → POST /v1/sessions/ses_yyy/events { content: "..." }
                  Server calls router.runEvent({sessionId, content}).
-                 Session is idle → router calls sessions.beginRun (status → running),
+                 Session is idle → router calls sessions.beginRun (status → starting),
                  returns { session, queued: false } immediately, and schedules
                  executeInBackground as a fire-and-forget task.
-                 Response: { session_id, session_status: "running", queued: false }
+                 Response: { session_id, session_status: "starting", queued: false }
 
 4.  Background: executeInBackground:
                 (a) pool.acquireForSession() — no live container for this session,
@@ -345,6 +345,8 @@ For the MVP the JSONL files live on a local Docker bind mount. A future item rep
                     Opens a GatewayWebSocketClient and runs the operator
                     handshake. Cache entry stored in active Map, spawnedAt/
                     lastUsedAt stamped.
+                    On successful claim, sessions.markRunning(sessionId)
+                    flips the session from starting → running.
                 (b) If modelOverride was supplied (from the Item 7 model field
                     on POST /events), calls wsClient.patch(canonicalKey,
                     { model }) via the gateway WS.
@@ -433,7 +435,7 @@ in the pool for the next event.
 7.  Poll sessions.get(sessionId) every 500 ms, 600 s cap:
       status === "failed" → cleanup-if-ephemeral + 500
       timeout              → cleanup-if-ephemeral + 504
-      status !== "running" → break
+      status !== "starting" && status !== "running" → break
 8.  afterMsg = events.latestAgentMessage(agentId, sessionId)
     If !afterMsg or afterMsg.eventId === beforeEventId → 500
     (Guards the subtle race where the JSONL write is delayed or
@@ -466,25 +468,27 @@ heartbeat interval that also checks for session status transitions.
      Phase 2 — tail-follow: 250 ms poll loop, emit any events whose
                Pi event_id is new since the last yield
 3. On each yielded event and each heartbeat tick, check if session
-   status changed → emit session.status_<new> SSE event.
+   status changed → emit session.status_<new> SSE event. Container
+   claim / evict transitions emit `session.container_attached` /
+   `session.container_detached` as soon as the server sees them.
 4. After follow() returns, emit a final status event if it changed.
 
 Terminates on AbortSignal OR when isSessionRunning() returns false
 AND nothing new has landed for 30 s (grace period so clients can
 stream across multiple turns without reconnecting).
 
-Event types in the stream: all 10 JSONL-derived types (user.message,
-agent.message, agent.tool_use, agent.tool_result, agent.thinking,
-session.model_change, session.thinking_level_change, session.compaction)
-plus synthetic session.status_idle / session.status_running /
-session.status_failed and 15 s heartbeat events.
+Event types in the stream: all JSONL-derived types (including
+`session.runtime_notice`) plus synthetic `session.status_starting`,
+`session.status_idle`, `session.status_running`,
+`session.status_failed`, `session.container_attached`,
+`session.container_detached`, and 15 s heartbeat events.
 ```
 
 ## Token and cost accounting
 
 **Tokens** come from the OpenAI-compat HTTP response. `invokeChatCompletions` reads `usage.prompt_tokens` and `usage.completion_tokens` from the container's reply and passes them through to the `RunUsage` that `endRunSuccess` / `addUsage` rolls into the session.
 
-**Cost** comes from Pi's JSONL. After `invokeChatCompletions` returns, `executeInBackground` calls `events.latestAgentMessage(agentId, sessionId)` and reads `costUsd` off the returned event. `PiJsonlEventReader.mapLineToEvent` surfaces it from `message.usage.cost.total` in the JSONL, which Pi's provider plugins compute from their catalogs.
+**Cost** comes from Pi's JSONL first. After `invokeChatCompletions` returns, `executeInBackground` calls `events.latestAgentMessage(agentId, sessionId)` and reads `costUsd` off the returned event. `PiJsonlEventReader.mapLineToEvent` surfaces it from `message.usage.cost.total` in the JSONL, which Pi's provider plugins compute from their catalogs.
 
 Why read from the JSONL instead of computing cost in the orchestrator:
 
@@ -492,7 +496,7 @@ Why read from the JSONL instead of computing cost in the orchestrator:
 2. **Cache-aware for free.** Moonshot and Anthropic both bill `cacheRead` tokens at a much lower rate than fresh input. A naive `tokens * perMillion` sheet ignores that and reports the wrong number. Pi's per-turn cost already includes the cache discount.
 3. **Zero hardcoding.** The orchestrator is provider-agnostic. It does not embed knowledge of any particular provider's pricing.
 
-When cost is zero: if a provider plugin does not report cost, `message.usage.cost.total` stays 0, and that's what the orchestrator rolls up. Today the runtime patches Moonshot prices and DeepSeek direct-provider v4 catalog entries from `docker/provider-prices.json` on top of the bundled catalog, so those runs report real non-zero `cost_usd` even before the upstream catalog is fixed. Once upstream ships those same prices and ids, deleting the local provider block cleanly defers back to upstream. Any Category A provider (anthropic, openai, google, xai, mistral, openrouter, amazon-bedrock) whose plugin auto-registers its catalog reports a real non-zero value with no operator action.
+When the transcript has tokens but no explicit cost and `ZENMUX_API_KEY` is configured, the orchestrator estimates `cost_usd` from ZenMux's live `/models` catalog instead of leaving the turn at zero. The local `docker/provider-prices.json` table is now fallback-only for direct-provider Moonshot / DeepSeek bootstrap, not the primary accounting path in a ZenMux deployment.
 
 ## What lives where
 
@@ -501,7 +505,7 @@ When cost is zero: if a provider plugin does not report cost, `message.usage.cos
 | Agent loop (tool use, multi-turn) | OpenClaw (`src/gateway/openai-http.ts` → `agentCommandFromIngress` → embedded Pi runtime) |
 | Tool execution | OpenClaw (plugin SDK, skills, sandbox) |
 | Model provider integration | OpenClaw (`extensions/<provider>/`) |
-| Per-turn cost from provider catalogs (cache-aware) | OpenClaw / Pi — `message.usage.cost.total` in the JSONL |
+| Per-turn cost from provider catalogs (cache-aware) | OpenClaw / Pi first; orchestrator falls back to ZenMux live catalog when routed through ZenMux and the transcript omits cost |
 | Session event log (source of truth) | OpenClaw / Pi `SessionManager` — `<stateRoot>/<agentId>/agents/main/sessions/<piId>.jsonl` |
 | Gateway WebSocket control plane (abort, steer, patch) | OpenClaw (`docs/gateway/protocol.md`) |
 | Managed-agent HTTP API surface | Orchestrator (`src/orchestrator/server.ts`) |

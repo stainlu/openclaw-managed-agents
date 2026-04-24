@@ -1,14 +1,16 @@
 # Design: `networking: limited` enforcement
 
 **Status.** Shipped. Originally landed across commits `82088c6..fc52e7a` (April 17), briefly reverted alongside unrelated working-tree cleanup, then re-landed on top of the durability/observability work. The runtime topology (per-session `--internal` confined network + egress-proxy sidecar + control-plane network) lives in `src/runtime/docker.ts` + `src/runtime/pool.ts`; the schema accepts `{type: "limited", allowedHosts: [...]}` at `src/orchestrator/types.ts`; enforcement is proven in `test/e2e-networking.sh` (9 cases, run on native Linux in CI).
+
+> Historical design record. This document explains the reasoning and rollout plan that led to the shipped feature. Sections written in future tense or describing a missing feature are historical context, not the current runtime contract.
 **Scope.** Per-session container network egress restriction via allowlist.
 **Corresponds to.** Item 3 of the April 17 production-hardening pass.
 
 ## Problem
 
-Today's schema rejects `networking: {type: "limited", allowedHosts: [...]}` with a Zod error. README documents this honestly: *"schema-rejected until per-container iptables enforcement ships — accepting 'limited' without enforcing would be false security."*
+Before this shipped, the schema rejected `networking: {type: "limited", allowedHosts: [...]}` with a Zod error. README documented that honestly because accepting `limited` without enforcing it would have been false security.
 
-That honesty is correct but the feature is still missing. Claude Managed Agents ships network-allowlist enforcement as a first-class capability. For OpenClaw Managed Agents to credibly claim "the open alternative to Claude Managed Agents," we need to ship it.
+That honesty was correct at the time. Claude Managed Agents ships network-allowlist enforcement as a first-class capability, and OpenClaw Managed Agents needed to ship the same enforcement story to credibly claim "the open alternative to Claude Managed Agents."
 
 ## Goals
 
