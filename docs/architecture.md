@@ -26,10 +26,10 @@ A thin Node/TypeScript HTTP service built on Hono, plus a small runtime layer fo
 
 ### Store (`src/store/`)
 
-The durable state — agents and sessions. Events are NOT stored here; they live in OpenClaw's per-session JSONL on the host mount, written by Pi's `SessionManager`, and the orchestrator reads them at query time via `PiJsonlEventReader`.
+The durable orchestrator state — agents, environments, session metadata, queues, audit rows, vault metadata, local secrets, and user-token records. Events are NOT stored here; they live in OpenClaw's per-session JSONL on the host mount, written by Pi's `SessionManager`, and the orchestrator reads them at query time via `PiJsonlEventReader`.
 
 - **`AgentStore`**, **`EnvironmentStore`**, and **`SessionStore`** — interfaces in `src/store/types.ts`. Synchronous methods (both backends are sync; we don't introduce speculative async).
-- **`SqliteStore`** (default, `src/store/sqlite.ts`) — `better-sqlite3`, WAL journal mode, `foreign_keys = ON`, CHECK constraints on session status. Four tables: `agents`, `agent_versions` (immutable version history), `environments`, `sessions`. Sessions cascade on agent delete is **off** — sessions outlive their template. Additive column migrations (e.g., `ephemeral`, `environment_id`, `version`, `archived_at`, `permission_policy_json`) are gated on `PRAGMA table_info` checks and ALTERs on startup.
+- **`SqliteStore`** (default, `src/store/sqlite.ts`) — `better-sqlite3`, WAL journal mode, `foreign_keys = ON`, CHECK constraints on session status. Core tables include `agents`, `agent_versions` (immutable version history), `environments`, `sessions`, durable queued events, audit events, key/value secrets, vaults + vault credentials, session/container adoption records, and local users. Sessions cascade on agent delete is **off** — sessions outlive their template. Additive column migrations (for example `ephemeral`, `environment_id`, `version`, `archived_at`, `permission_policy_json`, `thinking_level`, `channels`, `vault_id`) are gated on `PRAGMA table_info` checks and ALTERs on startup.
 - **`InMemoryStore`** (`src/store/memory.ts`) — `Map`-backed, used in tests. Same interface, so the router takes store interfaces, not concrete classes.
 - **`buildStore`** (`src/store/index.ts`) — factory keyed on `OPENCLAW_STORE=sqlite|memory` and `OPENCLAW_STORE_PATH`.
 
@@ -37,26 +37,26 @@ The durable state — agents and sessions. Events are NOT stored here; they live
 
 **Environments**: `EnvironmentStore` is a simple CRUD store for container configuration templates (packages, networking). Sessions reference an environment at creation time via `environmentId`. Environment deletion is rejected (409) while sessions reference it.
 
-On startup, `store.sessions.failRunningSessions("orchestrator restarted mid-run")` marks any session still in `running` as `failed` — those runs were orphaned when the prior orchestrator process exited. SIGTERM/SIGINT wire to `store.close()` so the SQLite WAL flushes cleanly.
+On startup, `src/index.ts` attempts selective recovery instead of blindly failing every in-flight run. It asks the runtime for managed containers, matches them against `session_containers`, adopts healthy containers back into the pool, stops true orphans, fails only `starting`/`running` sessions that could not be recovered, clears their queues, attaches observers to adopted running sessions, and drains queued work for idle sessions. SIGTERM/SIGINT wire to `pool.shutdown()` and `store.close()` so WebSockets close, containers stop, and the SQLite WAL flushes cleanly.
 
 ### PiJsonlEventReader (`src/store/pi-jsonl.ts`)
 
-Parses OpenClaw's per-session JSONL at query time. Resolves our `session_id` → the Pi session file via `<stateRoot>/<agentId>/agents/main/sessions/sessions.json` keyed by the canonical `agent:main:<session_id>` form, then opens `<stateRoot>/<agentId>/agents/main/sessions/<piSessionId>.jsonl`.
+Parses OpenClaw's per-session JSONL at query time. Resolves our `session_id` -> the Pi session file via `<stateRoot>/<agentId>/sessions/<sessionId>/agents/main/sessions/sessions.json` keyed by the canonical `agent:main:<session_id>` form, then opens `<stateRoot>/<agentId>/sessions/<sessionId>/agents/main/sessions/<piSessionId>.jsonl`. A legacy fallback still checks the old per-agent path (`<stateRoot>/<agentId>/agents/main/sessions/...`) so existing local state can be read.
 
-- **`listBySession(agentId, sessionId): Event[]`** — parses the JSONL and maps entries to typed `Event` objects. Handles four JSONL line types: `message` (user/assistant/toolResult roles), `model_change`, `thinking_level_change`, and `compaction`. Within assistant messages, extracts three content block types: `text` (→ `agent.message`), `toolCall` (→ `agent.tool_use`), and `thinking` (→ `agent.thinking`). Empty-content assistant messages are dropped (Pi's auto-retry noise). Returns 10 event types: `user.message`, `agent.message`, `agent.tool_use`, `agent.tool_result`, `agent.thinking`, `session.model_change`, `session.thinking_level_change`, `session.compaction`, plus `agent.error` (from the store) and `agent.tool_confirmation_request` (synthetic, from the orchestrator).
+- **`listBySession(agentId, sessionId): Event[]`** — parses the JSONL and maps entries to typed `Event` objects. Handles JSONL line types including `message` (user/assistant/toolResult roles), `model_change`, `thinking_level_change`, `runtime_notice`, and `compaction`. Within assistant messages, extracts three content block types: `text` (-> `agent.message`), `toolCall` (-> `agent.tool_use`), and `thinking` (-> `agent.thinking`). Empty-content assistant messages are dropped (Pi's auto-retry noise). JSONL-derived events include `user.message`, `agent.message`, `agent.tool_use`, `agent.tool_result`, `agent.thinking`, `session.model_change`, `session.thinking_level_change`, `session.runtime_notice`, and `session.compaction`; `agent.tool_confirmation_request` is synthetic from the orchestrator approval bridge.
 - **`latestAgentMessage(agentId, sessionId): Event | undefined`** — used by (a) the server's `sessionResponse.output` computed field, (b) the router's Item 9 cost rollup, and (c) the chat-completions handler's `beforeEventId` stale-detection snapshot.
 - **`deleteBySession(agentId, sessionId)`** — called by `DELETE /v1/sessions/:id`, by the pool's `cleanupOnReap` callback for ephemeral sessions (Item 8), and by the chat-completions handler's error path.
 - **`follow(agentId, sessionId, opts)`** — async generator that yields existing events (catch-up) then tail-follows via a 250 ms poll loop. Powers `GET /v1/sessions/:id/events?stream=true` (Item 6). Terminates on `AbortSignal` or when the caller's `isSessionRunning()` predicate returns `false` AND nothing new has landed for 30 s.
 
 ### SessionContainerPool (`src/runtime/pool.ts`)
 
-Two pools in one: an **active** pool (per-session, reused across turns) and a **warm** pool (per-agent, pre-booted). When an agent is created, a container boots in the background and waits in the warm bucket. The first session on that agent claims the pre-warmed container instead of cold-spawning (near-zero latency). Subsequent events reuse the active container (~100 ms overhead).
+Two pools in one: an **active** pool (per-session, reused across turns) and a **warm** pool (per-agent, pre-booted when enabled). When warm capacity is configured and a compatible agent is created, a container can boot in the background and wait in the warm bucket. The first compatible session on that agent claims the pre-warmed container instead of cold-spawning. Subsequent events reuse the active container (~100 ms overhead).
 
 An unref'd `setInterval` sweeper reaps idle containers on both halves, and the
 active side is additionally bounded by an admission cap:
 
 - **Active containers** stay resident between turns for normal sessions, but the pool is capped by `OPENCLAW_MAX_ACTIVE_CONTAINERS`. When a new acquire would exceed that cap, the oldest idle session container is evicted first; if every live session is busy, the acquire fails fast instead of overcommitting the host. Only sessions whose caller marks them reapable (`shouldReapSession`) are eligible for idle reap via `OPENCLAW_IDLE_TIMEOUT_MS`. `isBusy(sessionId)` is checked first so a session with a run in flight is never evicted mid-turn.
-- **Warm containers** are reaped after `OPENCLAW_WARM_IDLE_TIMEOUT_MS` (default: same as active idle timeout) without being claimed, and the warm pool is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` (default 5). When a new `warmForAgent` would exceed the cap, the oldest-spawned warm entry is reaped first. This keeps a host with many distinct agent templates from accumulating one persistent 2 GiB container per template.
+- **Warm containers** are reaped after `OPENCLAW_WARM_IDLE_TIMEOUT_MS` (default: 30 minutes) without being claimed, and the warm pool is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` (default `0`, disabled; cloud deploy scripts typically opt in with `3`). When a new `warmForAgent` would exceed the cap, the oldest-spawned warm entry is reaped first. This keeps a host with many distinct agent templates from accumulating one persistent 2 GiB container per template.
 
 - **`warmForAgent(agentId, spawnOptions)`** — pre-boots a container (spawn + `/readyz` + WS handshake) and stores it in the warm bucket keyed by agentId. Called by the server after `POST /v1/agents`. No-ops if a warm container already exists for this agent. Evicts the oldest warm entry first when the pool is at `OPENCLAW_MAX_WARM_CONTAINERS`. **The router skips this call entirely for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`) — see the note under AgentRouter.warmForAgent for why.
 - **`acquireForSession({sessionId, spawnOptions, agentId?})`** — returns a live `Container` for the session. Checks three sources in order: (1) existing active container, (2) pre-warmed container matching the agentId, (3) fresh spawn. When claiming from the warm pool, auto-replenishes in the background. Bumps `lastUsedAt` on reuse and enforces the active-cap admission policy before any new cold spawn.
@@ -67,7 +67,7 @@ active side is additionally bounded by an admission cap:
 
 The pool has **no direct dependency on the store**. It takes an `isBusy: (sessionId) => boolean` predicate in config; `index.ts` closes over the session store to provide it. This keeps the runtime layer decoupled from the orchestrator layer. `cleanupOnReap` follows the same shape — the pool calls the callback and lets the caller decide what cleanup means.
 
-Orphan reaping: at startup, `DockerContainerRuntime.cleanupOrphaned()` finds any containers left behind by a previous orchestrator process (matched by the `managed-by=openclaw-managed-agents` Docker label) and stops them.
+Startup recovery: the normal startup path uses `DockerContainerRuntime.listManaged()` plus `session_containers` records to adopt recoverable containers and stop only true orphans. `cleanupOrphaned()` remains available as a concrete Docker helper for explicit sweeps and tests, but it is not the default startup behavior.
 
 ### GatewayWebSocketClient (`src/runtime/gateway-ws.ts`)
 
@@ -83,13 +83,15 @@ Operator-role WebSocket client to each live container's gateway control plane. D
 - **`onEvent(eventName, handler)`** — subscribes to gateway broadcast events. Returns an unsubscribe function. Used by the orchestrator to listen for both `plugin.approval.requested` and `plugin.approval.resolved`.
 - **`close()`** — shuts the socket down, rejects every outstanding request.
 
-Auth is the same `OPENCLAW_GATEWAY_TOKEN` the orchestrator uses on HTTP. The `dangerouslyDisableDeviceAuth: true` flag in the generated `openclaw.json` is safe because the gateway is bound to `openclaw-net` (a private Docker bridge), only the orchestrator ever reaches it, and the token is per-container random.
+Auth is the same `OPENCLAW_GATEWAY_TOKEN` the orchestrator uses on HTTP. The `dangerouslyDisableDeviceAuth: true` flag in the generated `openclaw.json` is safe because the gateway is reachable only over orchestrator-managed Docker networks (`openclaw-net` for unrestricted sessions, `openclaw-control-plane` for limited sessions), only the orchestrator ever reaches it, and the token is per-container random.
 
 ### QueueStore (`src/store/{types,sqlite,memory}.ts`)
 
 Durable per-session FIFO. When `POST /v1/sessions/:id/events` arrives while the session is already `running`, the event is enqueued instead of returning 409. The router's `executeInBackground` success path shifts the next queued event and recursively starts the next run without flipping status to `idle` — polling clients never observe a brief idle window between queued runs.
 
 On the default SQLite backend, the queue survives orchestrator restart. The in-memory backend drops it, which is acceptable because `memory` is test-only.
+
+Known limitation: `QueuedEvent` includes `thinkingLevel`, but the current SQLite queue schema persists only `content`, `model`, and `enqueued_at`. A thinking override posted while the session is busy is lost on the default backend until the queue schema gets a `thinking_level` column and matching insert/select wiring.
 
 ### AgentRouter (`src/orchestrator/router.ts`)
 
@@ -98,10 +100,10 @@ The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the 
 - **`createSession(agentId, opts?)`** — pure metadata: allocates a store row, no container spawn, no JSONL write. Validates the agent is not archived. The container is only spawned when the first event arrives (or earlier via warm-up).
 - **`warmSession(sessionId)`** — proactively boots template-level warmth for a session so the first event can claim a ready container. Sessions with dedicated container config (`vaultId`, `networking: limited`, package installs) bypass this path and cold-spawn.
 - **`warmForAgent(agentId)`** — pre-warms a container for an agent template. Called by the server after `POST /v1/agents`. The warm container waits in the pool until claimed by a compatible session. **Skipped for delegating agents** (`callableAgents.length > 0 || maxSubagentDepth > 0`). `buildSpawnOptions` bakes the sessionId into both Docker labels and the signed `OPENCLAW_ORCHESTRATOR_TOKEN` env var, and Docker env is immutable post-create; a warm container built with the `__warm__` placeholder would carry that placeholder into every subagent spawn the claimed session later hosts, producing wrong token lineage (the orchestrator doesn't currently verify `parentSessionId` against the session store, so the failure would be silent rather than a crash). Skipping the warm pool for delegating agents preserves the latency benefit for the common non-delegating case without the identity smear.
-- **`runEvent({sessionId, content, model?})`** — idle path starts a background run (`beginRun` → session status `starting` → fire-and-forget `executeInBackground`); `starting` or `running` path enqueues. Returns `{session, queued}`.
+- **`runEvent({sessionId, content, model?, thinkingLevel?})`** — idle path starts a background run (`beginRun` -> session status `starting` -> fire-and-forget `executeInBackground`); `starting` or `running` path enqueues. Returns `{session, queued}`. Known limitation: model and thinking overrides are applied through the gateway `sessions.patch` path, so first-turn overrides can be skipped before OpenClaw has created the Pi session key. Template defaults still apply at spawn time; later turns can be patched.
 - **`cancel(sessionId)`** — looks up the pool's WS client, calls `abort(canonicalKey)`, drains the queue, calls `endRunCancelled`. Cancellation is a deliberate stop, not an agent failure.
 - **`confirmTool(sessionId, approvalId, decision)`** — resolves a pending tool-confirmation approval via the container's WS `plugin.approval.resolve`. Used when the agent template has `always_ask` permission policy.
-- **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model override, installs one approval subscription set per session, rehydrates pending approvals from `plugin.approval.list`, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
+- **`executeInBackground`** (private) — acquires a container via the pool (with agentId for warm-pool matching), optionally applies a WS `patch` for model/thinking overrides when a Pi session key already exists, installs one approval subscription set per session, rehydrates pending approvals from `plugin.approval.list`, invokes the container's `/v1/chat/completions`, reads `latestAgentMessage` from the JSONL for cost rollup, then either drains the queue or calls `endRunSuccess`. Injects `OPENCLAW_PACKAGES_JSON` (from environment config), `OPENCLAW_DENIED_TOOLS` (from deny policy), and `OPENCLAW_CONFIRM_TOOLS` (from always_ask policy) into the container env.
 - **`handleBackgroundFailure`** (private) — guard against overwriting a cancel's idle state with an in-flight HTTP error. If `session.status !== "running"` at catch time, the failure is a side-effect of an external cancel and we leave the session alone. Otherwise drain the queue + evict the container + `endRunFailure`.
 
 ### Server (`src/orchestrator/server.ts`)
@@ -109,11 +111,13 @@ The brain of the orchestrator. Takes the store, the pool, the JSONL reader, the 
 The Hono app. Every route in the API section of the README registers here. Notable pieces:
 
 - **`handleRouterError`** — centralized error translator. `RouterError` codes map to HTTP status: `agent_not_found`/`session_not_found` → 404, `session_busy`/`session_not_running`/`agent_archived` → 409, everything else → 500.
-- **Agent routes** — full CRUD plus `PATCH` (versioned update with optimistic concurrency), `GET .../versions` (immutable history), `POST .../archive` (soft-delete). `POST /v1/agents` fires `warmForAgent` in the background after creation.
+- **Agent routes** — full CRUD plus `PATCH` (versioned update with optimistic concurrency), `GET .../versions` (immutable history), `POST .../archive` (soft-delete), `POST .../warm` (explicit warm hint), and `POST .../run` (create session + post first event in one call). `POST /v1/agents` fires `warmForAgent` in the background after creation when the agent is warm-pool compatible and warm capacity is enabled.
 - **Environment routes** — CRUD. Deletion rejected (409) while sessions reference the environment.
-- **Session routes** — `POST /v1/sessions` validates environmentId if provided, fires proactive `warmSession` in the background. `POST /v1/sessions/:id/events` dispatches on event type: `user.message` triggers `runEvent`, `user.tool_confirmation` triggers `confirmTool`.
+- **Session routes** — `POST /v1/sessions` validates `environmentId` / `vaultId` when provided, creates metadata, and fires proactive `warmSession` in the background when compatible. `POST /v1/sessions/:id/events` dispatches on event type: `user.message` triggers `runEvent`, `user.tool_confirmation` triggers `confirmTool`. Additional session routes cover cancel, compact, logs, event listing/streaming, deletion, and workspace file CRUD.
+- **Vault routes** — CRUD for per-end-user credential bundles plus credential add/list/delete. Secret values are accepted on write and never returned from reads; vault-bound sessions bypass the warm pool because credentials are spawn-time container configuration.
+- **Auth routes** — `/auth/anonymous` and GitHub OAuth helpers mint `tok_...` user tokens for the portal. Current user tokens scope some session listing behavior but are not a complete resource-ownership model; the admin bearer token remains the deployment boundary.
 - **SSE streaming** — `GET /v1/sessions/:id/events?stream=true` uses `streamSSE` from `hono/streaming`, wires `AbortController` from `sse.onAbort` into `PiJsonlEventReader.follow`. Emits an initial `session.status_*` event on connect, checks for status transitions on every yielded event and on every 15 s heartbeat tick, and emits a final status event when the follow loop ends.
-- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap and treat both `starting` and `running` as in-flight states. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session.
+- **`POST /v1/chat/completions`** — OpenAI-compat handler. Required `x-openclaw-agent-id` header, sticky session via `x-openclaw-session-key` or body `user`, keyless calls create ephemeral sessions. Stale-detection via `beforeEventId` snapshot. Non-streaming calls poll every 500 ms with a 600 s cap and treat both `starting` and `running` as in-flight states. `stream: true` pipes the container's real SSE chunks through to the caller byte-for-byte and returns `409 session_busy` if a run is already in flight on that session. Known limitations: concurrent non-streaming calls on the same sticky session can queue and then all read the final queued assistant message; streaming client disconnect before upstream `[DONE]` can currently leave the backing session in `running`.
 
 ### Delegated subagents (`src/runtime/parent-token.ts` + `docker/call-agent.mjs`)
 
@@ -142,7 +146,7 @@ Typed Python client publishable to PyPI as `openclaw-managed-agents`. Uses `http
 
 ### DockerContainerRuntime (`src/runtime/docker.ts`)
 
-`dockerode`-backed implementation of the `ContainerRuntime` interface. Spawns containers on `openclaw-net` (a Docker bridge), labels them `managed-by=openclaw-managed-agents` for orphan detection, caps memory at 2 GiB and PIDs at 512, waits for `/readyz` on the gateway port. Normal startup uses `listManaged()` plus selective pool adoption to preserve valid session containers and stop only true orphans. `cleanupOrphaned()` remains a concrete Docker-only helper for explicit orphan sweeps / tests, not the default startup path.
+`dockerode`-backed implementation of the `ContainerRuntime` interface. Spawns unrestricted containers on `openclaw-net`; limited-networking sessions use a per-session confined network plus the shared `openclaw-control-plane` network and an egress-proxy sidecar. Containers are labeled `managed-by=openclaw-managed-agents` for orphan detection, capped at 2 GiB memory and 512 PIDs, and polled through `/readyz` on the gateway port. Normal startup uses `listManaged()` plus selective pool adoption to preserve valid session containers and stop only true orphans. `cleanupOrphaned()` remains a concrete Docker-only helper for explicit orphan sweeps / tests, not the default startup path.
 
 The interface is the seam for cloud backends (ECS, Cloud Run, Container Apps, ECI, VKE) — new backends are drop-in alongside `docker.ts` without touching the pool, router, or server.
 
@@ -160,7 +164,9 @@ The orchestrator process itself reads a small set of env vars at startup. Everyt
 | `OPENCLAW_STATE_ROOT` | **In-process** path of the mounted sessions directory — used by `PiJsonlEventReader` to open JSONL files | `/var/openclaw/sessions` |
 | `OPENCLAW_HOST_STATE_ROOT` | **Host-side** path of the same directory — passed to dockerode when spawning agent containers (the Docker daemon resolves against the host filesystem, so a container-relative path would fail). Must be absolute; startup throws if not | `/var/openclaw/sessions` |
 | `OPENCLAW_RUNTIME_IMAGE` | Docker image reference the orchestrator spawns per session | `openclaw-managed-agents/agent:latest` |
-| `OPENCLAW_DOCKER_NETWORK` | Docker bridge network the orchestrator and agent containers share | `openclaw-net` |
+| `OPENCLAW_DOCKER_NETWORK` | Docker bridge network shared by the orchestrator and unrestricted agent containers | `openclaw-net` |
+| `OPENCLAW_CONTROL_PLANE_NETWORK` | Internal Docker network used for orchestrator-to-agent control traffic when `networking: limited` is enabled. Must be set with `OPENCLAW_EGRESS_PROXY_IMAGE` or limited sessions fail at spawn time | `""`; `openclaw-control-plane` in compose |
+| `OPENCLAW_EGRESS_PROXY_IMAGE` | Sidecar image for `networking: limited` HTTP(S) + DNS filtering. Must be set with `OPENCLAW_CONTROL_PLANE_NETWORK` | `""`; GHCR image in compose |
 | `OPENCLAW_GATEWAY_PORT` | Port exposed inside each agent container for its gateway | `18789` |
 | `OPENCLAW_SPAWN_TIMEOUT_MS` | Hard timeout for Docker create/start/network-connect/inspect during session acquire | `60000` (60 s) |
 | `OPENCLAW_READY_TIMEOUT_MS` | Max wait for a newly-spawned container's `/readyz` to respond | `60000` (60 s); `600000` (10 min) in `docker-compose.yml` to accommodate Lightsail's burstable-disk first-boot |
@@ -168,11 +174,16 @@ The orchestrator process itself reads a small set of env vars at startup. Everyt
 | `OPENCLAW_IDLE_TIMEOUT_MS` | Idle-reap threshold for sessions the caller explicitly marks reapable (for example ephemeral one-shot sessions) | `600000` (10 min) |
 | `OPENCLAW_MAX_ACTIVE_CONTAINERS` | Cap on live session-owned containers. Oldest idle session is evicted first when exceeded | `5` in library defaults; `3` in `docker-compose.yml` |
 | `OPENCLAW_SWEEP_INTERVAL_MS` | How often the pool sweeper runs | `60000` (60 s) |
-| `OPENCLAW_MAX_WARM_CONTAINERS` | Cap on pre-warmed containers. Oldest-first eviction when exceeded | `5` |
-| `OPENCLAW_WARM_IDLE_TIMEOUT_MS` | Unclaimed-warm reap threshold | same as `OPENCLAW_IDLE_TIMEOUT_MS` |
+| `OPENCLAW_MAX_WARM_CONTAINERS` | Cap on pre-warmed containers. Oldest-first eviction when exceeded. Local default disables warm capacity; cloud deploy scripts opt in explicitly | `0`; typically `3` in deploy scripts |
+| `OPENCLAW_WARM_IDLE_TIMEOUT_MS` | Unclaimed-warm reap threshold | `1800000` (30 min) |
 | `OPENCLAW_ORCHESTRATOR_URL` | URL injected into each spawned container so `openclaw-call-agent` can reach back | `http://openclaw-orchestrator:${PORT}` |
 | `OPENCLAW_PASSTHROUGH_ENV` | Comma-separated extra env var names to forward into agent containers | `""` |
-| `OPENCLAW_API_TOKEN` | Baseline bearer token for the public HTTP API. Empty = auth disabled. When set, every route except `/healthz` and `/metrics` requires `Authorization: Bearer <token>` (constant-time comparison). One token per deployment. | `""` (disabled) |
+| `OPENCLAW_API_TOKEN` | Admin bearer token for the public HTTP API. Empty = auth disabled. When set, API routes require `Authorization: Bearer <token>` except `/healthz`, `/metrics`, `/`, `/v2`, and `/auth/*`. The `tok_...` user-token helpers are for the bundled portal and are not a complete tenant-isolation boundary yet | `""` (disabled) |
+| `OPENCLAW_RATE_LIMIT_RPM` | Per-caller token bucket, keyed by bearer token when present and client IP otherwise. Runs before auth; `0` disables | `120` |
+| `OPENCLAW_AUDIT_RETENTION_DAYS` | Audit-log retention window. `0` keeps rows forever; cleanup runs on boot and hourly | `30` |
+| `OPENCLAW_VAULT_KEY` | Optional 32-byte vault master key (hex/base64/base64url). If unset, a key is generated/restored from SQLite `kv_secrets` and a production warning is logged | unset |
+| `OPENCLAW_JSONL_WARN_BYTES` | Per-session JSONL size threshold for warning logs and metrics | `104857600` (100 MiB) |
+| `OPENCLAW_JSONL_SAMPLE_INTERVAL_MS` | Interval for scanning session JSONL sizes | `300000` (5 min) |
 
 Provider API keys (`MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_*`, etc.) are forwarded via the `collectPassthroughEnv()` allowlist in `src/index.ts`. Add custom vars via `OPENCLAW_PASSTHROUGH_ENV`. The four `OPENCLAW_MOONSHOT_PRICE_*_USD_PER_M` overrides are in that allowlist by default.
 
@@ -189,14 +200,17 @@ Environment the entrypoint reads:
 | `OPENCLAW_PLUGIN` | provider plugin id to enable | derived from `OPENCLAW_MODEL` |
 | `OPENCLAW_TOOLS` | comma-separated OpenClaw skill ids (empty = no allowlist) | `""` |
 | `OPENCLAW_INSTRUCTIONS` | system prompt override written into `agents.list[].systemPromptOverride` | `""` |
+| `OPENCLAW_MCP_SERVERS_JSON` | JSON object of MCP server configs from the agent template, with vault credential headers merged at session spawn when applicable | `""` |
 | `OPENCLAW_STATE_DIR` | persistent volume mount path | `/workspace` |
 | `OPENCLAW_GATEWAY_PORT` | HTTP port for the gateway | `18789` |
 | `OPENCLAW_GATEWAY_TOKEN` | shared-secret bearer token (auto-generated at entrypoint if unset) | orchestrator-injected per container |
-| `OPENCLAW_PACKAGES_JSON` | JSON with `pip`, `apt`, `npm` arrays (from environment config) | `""` |
+| `OPENCLAW_PACKAGES_JSON` | JSON with optional `apt`, `cargo`, `gem`, `go`, `npm`, and `pip` arrays (from environment config) | `""` |
 | `OPENCLAW_DENIED_TOOLS` | comma-separated tool names to block (from `deny` permission policy) | `""` |
 | `OPENCLAW_CONFIRM_TOOLS` | comma-separated tool names requiring confirmation, or `__ALL__` (from `always_ask` policy) | `""` |
 | `OPENCLAW_ORCHESTRATOR_URL` | URL for the in-container `call_agent` CLI to reach the orchestrator | injected per container |
 | `OPENCLAW_ORCHESTRATOR_TOKEN` | HMAC-signed parent token for subagent delegation | injected per container |
+| `ZENMUX_API_KEY` | When present, the entrypoint routes models through ZenMux and materializes the ZenMux catalog from the live `/models` response | forwarded from the host |
+| `OTEL_*` / `OPENCLAW_OTEL_*` | Standard OpenTelemetry exporter config passed through to OpenClaw's diagnostics config | forwarded from the host |
 | `<PROVIDER>_API_KEY` | whichever API key the selected provider needs | forwarded from the host |
 
 The orchestrator forwards whichever provider API keys are present in its own environment (`MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_*`, etc.). See `collectPassthroughEnv()` in `src/index.ts` for the default allowlist and `OPENCLAW_PASSTHROUGH_ENV` for the escape hatch.
@@ -257,7 +271,7 @@ The `confirm-tools` plugin entry is only present when the agent has `always_ask`
 Four things in this config are load-bearing and are not obvious from the OpenClaw docs:
 
 1. **`gateway.http.endpoints.chatCompletions.enabled: true`** — the OpenAI-compatible endpoint is disabled by default in OpenClaw. The orchestrator calls this endpoint, so it has to be explicitly enabled here.
-2. **`gateway.controlUi.dangerouslyDisableDeviceAuth: true`** — lets the orchestrator's `GatewayWebSocketClient` connect as `client.id="openclaw-tui"` with token auth only, skipping the Ed25519 device-signing handshake. Without this, token-auth clients have their operator scopes silently CLEARED and `sessions.abort` returns `missing scope: operator.write`. Safe in our topology because the gateway is bound to `openclaw-net` (a private Docker bridge), only the orchestrator we control reaches it, and the token is per-container random. **Never enable on a gateway bound to a public interface.**
+2. **`gateway.controlUi.dangerouslyDisableDeviceAuth: true`** — lets the orchestrator's `GatewayWebSocketClient` connect as `client.id="openclaw-tui"` with token auth only, skipping the Ed25519 device-signing handshake. Without this, token-auth clients have their operator scopes silently CLEARED and `sessions.abort` returns `missing scope: operator.write`. Safe in our topology because the gateway is reachable only on orchestrator-managed Docker networks, only the orchestrator we control reaches it, and the token is per-container random. **Never enable on a gateway bound to a public interface.**
 3. **`agents.defaults.models.<model-id>: {}`** — declares the model as the agent-level default. Without this block the runtime logs `Unknown model: <model-id>` at invocation time even when the plugin is loaded and auth is resolved.
 4. **`models.providers.<plugin-id>`** — required for providers that do not auto-register their catalog. See the next section for the distinction.
 
@@ -277,9 +291,9 @@ Earlier versions of this runtime hand-mirrored the provider block inside `docker
 
 ### Session persistence and continuity
 
-Each container bind-mounts `/workspace` from a host path derived from the orchestrator-side agent id: `<hostStateRoot>/<agentId>`. Inside the container, OpenClaw always sees itself as agent `main` (OpenClaw's `DEFAULT_AGENT_ID`). That alignment is load-bearing: the session store lives at `agents/main/sessions/sessions.json`, which is where OpenClaw's session-key resolver and orphan-key migration both look by default, and the canonical session key form `agent:main:<session_id>` matches `buildAgentMainSessionKey`'s output so startup migrations don't wipe our mappings as "orphaned". Multi-tenancy is provided by the mount path (one orchestrator agent = one mount = one container at a time), not by naming — the orchestrator's agent id lives in the mount path and Docker label, but inside the container everything is "main".
+Each session container bind-mounts `/workspace` from a per-session host path: `<hostStateRoot>/<agentId>/sessions/<sessionId>`. Warm containers start from `<hostStateRoot>/<agentId>/sessions/__warm_<key>__` and that directory is renamed to the real session id when claimed. Inside the container, OpenClaw always sees itself as agent `main` (OpenClaw's `DEFAULT_AGENT_ID`). That alignment is load-bearing: the session store lives at `agents/main/sessions/sessions.json`, which is where OpenClaw's session-key resolver and orphan-key migration both look by default, and the canonical session key form `agent:main:<session_id>` matches `buildAgentMainSessionKey`'s output so startup migrations don't wipe our mappings as "orphaned". Multi-tenancy is provided by both container identity and the per-session mount path; the orchestrator's agent/session ids live in the host path and Docker labels, but inside the container everything is `main`.
 
-OpenClaw's session machinery (which wraps Pi's `SessionManager`) writes JSONL under `/workspace/agents/main/sessions/<piSessionId>.jsonl`, plus a `sessions.json` index that maps canonical session keys to those JSONL file ids. When a container is torn down — whether by the pool's idle sweeper, a manual `DELETE /v1/sessions/:id`, or a crash — the files persist on the host volume.
+OpenClaw's session machinery (which wraps Pi's `SessionManager`) writes JSONL under `/workspace/agents/main/sessions/<piSessionId>.jsonl`, plus a `sessions.json` index that maps canonical session keys to those JSONL file ids. From the orchestrator's view, the durable path is `<stateRoot>/<agentId>/sessions/<sessionId>/agents/main/sessions/<piSessionId>.jsonl` (with a legacy fallback for old per-agent workspaces). When a container is torn down — whether by the pool's idle sweeper, a manual `DELETE /v1/sessions/:id`, or a crash — the files persist on the host volume.
 
 Session continuity across container restarts is carried in the HTTP call, not in env vars. The orchestrator sets **both** of these on every internal `/v1/chat/completions` request:
 
@@ -340,16 +354,21 @@ For the MVP the JSONL files live on a local Docker bind mount. A future item rep
 4.  Background: executeInBackground:
                 (a) pool.acquireForSession() — no live container for this session,
                     so runtime.spawn() creates one with the agent's env +
-                    passthrough provider keys, mounts <hostStateRoot>/<agentId>
-                    at /workspace, joins openclaw-net. Waits for /readyz.
+                    passthrough provider keys, mounts
+                    <hostStateRoot>/<agentId>/sessions/<sessionId> at
+                    /workspace, joins the unrestricted Docker network or
+                    the limited-session confined/control-plane networks.
+                    Waits for /readyz.
                     Opens a GatewayWebSocketClient and runs the operator
                     handshake. Cache entry stored in active Map, spawnedAt/
                     lastUsedAt stamped.
                     On successful claim, sessions.markRunning(sessionId)
                     flips the session from starting → running.
-                (b) If modelOverride was supplied (from the Item 7 model field
-                    on POST /events), calls wsClient.patch(canonicalKey,
-                    { model }) via the gateway WS.
+                (b) If modelOverride or thinkingLevel was supplied and the
+                    Pi session key already exists, calls wsClient.patch(
+                    canonicalKey, { model, thinkingLevel }) via the gateway
+                    WS. Known limitation: this can be skipped on the first
+                    turn before OpenClaw has created the key.
                 (c) invokeChatCompletions — POST http://<container>/v1/chat/completions
                     with Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>,
                     x-openclaw-agent-id: main, x-openclaw-session-key:
@@ -388,14 +407,18 @@ Identical to the cold path, except `pool.acquireForSession()` finds the live ent
 
 ```
 runEvent sees session.status === "running"
-  → queue.enqueue(sessionId, { content, model? })
-  → returns { session, queued: true }
+  -> queue.enqueue(sessionId, { content, model?, thinkingLevel? })
+  -> returns { session, queued: true }
   Response: { session_id, session_status: "running", queued: true }
 
   No new run is scheduled. The in-flight executeInBackground will pop
   the queue on its success path and recurse. Session status stays
   "running" for the whole chain so polling clients never observe a
   brief idle window between queued runs.
+
+  Known limitation: the SQLite queue currently drops thinkingLevel on
+  persistence, so busy-session thinking overrides do not survive on the
+  default backend.
 ```
 
 ### Cancel path (`POST /v1/sessions/:id/cancel`)
@@ -431,7 +454,8 @@ in the pool for the next event.
       - If absent → create with generated id, ephemeral=true
 5.  Stale-detection snapshot: beforeEventId = events.latestAgentMessage?.eventId
 6.  router.runEvent({sessionId, content}) — idle path starts a run,
-    running path queues. The handler doesn't care which.
+    running path queues. Non-streaming callers currently accept the
+    queued path; streaming callers return 409 when the session is busy.
 7.  Poll sessions.get(sessionId) every 500 ms, 600 s cap:
       status === "failed" → cleanup-if-ephemeral + 500
       timeout              → cleanup-if-ephemeral + 504
@@ -439,11 +463,7 @@ in the pool for the next event.
 8.  afterMsg = events.latestAgentMessage(agentId, sessionId)
     If !afterMsg or afterMsg.eventId === beforeEventId → 500
     (Guards the subtle race where the JSONL write is delayed or
-     a status flip happens without a new message. Also guards the
-     queue-drain intersection — a chat.completions call on an
-     already-running session must return ITS reply, not a prior
-     run's reply that's still the newest thing in the JSONL until
-     the new reply lands.)
+     a status flip happens without a new message.)
 9.  Build OpenAI-shaped response:
       id: chatcmpl-<afterMsg.eventId>
       object: chat.completion
@@ -453,7 +473,21 @@ in the pool for the next event.
       usage: { prompt_tokens, completion_tokens, total_tokens } from afterMsg
 10. If body.stream === true, proxy the container's real SSE response
     byte-for-byte (OpenAI-compatible `ChatCompletionChunk` frames,
-    terminated by `data: [DONE]`).
+    terminated by `data: [DONE]`). If another run is in flight for
+    the same sticky session, return `409 session_busy`.
+
+Known limitations:
+- If two or more non-streaming OpenAI calls queue behind the same sticky
+  session, each waits for the session to become idle and then reads the
+  newest assistant message. Multiple callers can therefore receive the
+  final queued reply rather than the reply to their own request. Callers
+  should serialize non-streaming requests per sticky session or use
+  `stream: true`, which fails fast with `409 session_busy`.
+- If a streaming OpenAI client disconnects before upstream emits
+  `data: [DONE]`, the handler can currently finalize early and leave the
+  backing session in `running` if no final assistant message was written.
+  Use explicit session cancellation for deliberate aborts until the
+  stream finalizer is made correlation-safe.
 ```
 
 ### Live event streaming (`GET /v1/sessions/:id/events?stream=true`)
@@ -506,7 +540,7 @@ When the transcript has tokens but no explicit cost and `ZENMUX_API_KEY` is conf
 | Tool execution | OpenClaw (plugin SDK, skills, sandbox) |
 | Model provider integration | OpenClaw (`extensions/<provider>/`) |
 | Per-turn cost from provider catalogs (cache-aware) | OpenClaw / Pi first; orchestrator falls back to ZenMux live catalog when routed through ZenMux and the transcript omits cost |
-| Session event log (source of truth) | OpenClaw / Pi `SessionManager` — `<stateRoot>/<agentId>/agents/main/sessions/<piId>.jsonl` |
+| Session event log (source of truth) | OpenClaw / Pi `SessionManager` — `<stateRoot>/<agentId>/sessions/<sessionId>/agents/main/sessions/<piId>.jsonl` with legacy per-agent fallback |
 | Gateway WebSocket control plane (abort, steer, patch) | OpenClaw (`docs/gateway/protocol.md`) |
 | Managed-agent HTTP API surface | Orchestrator (`src/orchestrator/server.ts`) |
 | OpenAI-compat adapter (`POST /v1/chat/completions`) | Orchestrator (`src/orchestrator/server.ts` — handler block) |
@@ -559,11 +593,11 @@ Future upstream contributions (nice-to-have, not blocking):
 - **`SessionStorage` abstraction** — would let us swap the host bind mount for S3 / GCS / Azure Blob / Aliyun OSS / Volcengine TOS without reimplementing Pi's SessionManager.
 - **`SecretRef` extension** — would let us pull provider API keys from AWS Secrets Manager / GCP Secret Manager / Azure Key Vault with rotation, replacing the env-var passthrough.
 - **Real-time delta forwarding for the session event stream** — `POST /v1/chat/completions stream=true` already forwards the container's real SSE chunks, but `GET /v1/sessions/:id/events?stream=true` still tail-follows the JSONL. An HTTP/SSE wrapper around Pi's `AgentSessionEvent` bus would let the session event stream surface token deltas too.
-- **`sessions.compact` and `sessions.navigateTree`** exposed over the gateway WS control plane — currently there's no WS handler for compact or branch, which is why the runtime's control surface stops at cancel + steer + send + patch.
+- **Branch/navigation control over the gateway WS** — `POST /v1/sessions/:id/compact` is wired through the HTTP API today. Branch navigation remains future work until the gateway exposes the control surface we need.
 
 ## Observability
 
-Structured logs, per-request correlation, and Prometheus metrics. No tracing yet — open for a future item.
+Structured logs, per-request correlation, and Prometheus metrics in the orchestrator. Agent-runtime tracing/metrics/logs come from OpenClaw's built-in OpenTelemetry exporter when the relevant `OTEL_*` env vars are passed through to spawned containers.
 
 ### Logs (`src/log.ts`)
 
@@ -587,12 +621,21 @@ Prometheus text format at `GET /metrics` (no auth gate — same as `/healthz`, o
 | `http_request_duration_seconds` | histogram | `method`, `route` | Same middleware |
 | `pool_active_containers` | gauge | — | Mutations of `SessionContainerPool.active` |
 | `pool_warm_containers` | gauge | — | Mutations of `SessionContainerPool.warm` |
-| `pool_acquire_total` | counter | `source=active\|warm\|spawn` | `acquireForSession` — one of the three branches it took |
+| `pool_acquire_total` | counter | `source=active\|warm\|spawn\|adopt` | `acquireForSession` / startup adoption source |
+| `startup_adoptions_total` | counter | `outcome=reattached\|stopped_orphan\|reattach_failed` | Startup container recovery |
+| `startup_queue_drained_total` | counter | — | Queued events re-dispatched at startup |
+| `session_jsonl_bytes_max` | gauge | — | Largest single-session JSONL file seen by the sampler |
+| `session_jsonl_bytes_sum` | gauge | — | Aggregate JSONL disk usage across sessions |
+| `session_jsonl_over_threshold` | gauge | — | Count of sessions over `OPENCLAW_JSONL_WARN_BYTES` |
+| `quota_rejections_total` | counter | `kind=cost\|tokens\|duration` | Run rejected by an agent quota |
 | `pool_spawn_duration_seconds` | histogram | — | `doSpawn` (runtime.spawn + waitForReady + WS handshake) |
+| `pool_cold_starts_total` | counter | `agent_id` | Cold-start claims attributed to an agent template |
+| `container_boot_duration_seconds` | histogram | — | Cold-boot duration observed at container claim |
 | `session_run_duration_seconds` | histogram | — | `router.executeInBackground` around `invokeChatCompletions` |
 | `session_run_failures_total` | counter | — | `handleBackgroundFailure` |
 | `agents_created_total` | counter | — | `POST /v1/agents` |
 | `session_events_total` | counter | `type=user.message\|user.tool_confirmation` | `POST /v1/sessions/:id/events` |
+| `rate_limit_rejections_total` | counter | `kind=token\|ip` | Rate limiter rejected a request |
 
 Label cardinality is deliberately bounded: `route` is the matched Hono pattern (`/v1/sessions/:sessionId`), never the raw URL, so user-supplied ids don't explode the series count.
 
@@ -626,13 +669,13 @@ Covering `router.ts` and `pool.ts` in unit tests is harder because both take con
 
 ## Security notes
 
-- **Public API auth (`src/auth.ts`).** The orchestrator's HTTP surface on port 8080 is gated by a single bearer-token check when `OPENCLAW_API_TOKEN` is set. Every route except `/healthz` and `/metrics` (both need to be reachable by probes and Prometheus without credentials) requires `Authorization: Bearer <OPENCLAW_API_TOKEN>`. Comparison is constant-time. Unset/empty = auth disabled (localhost-dev default). This matches Claude Managed Agents' API-key depth — one token per deployment, no per-user ACLs. Any deploy that exposes port 8080 beyond loopback MUST set this env var; the orchestrator emits a WARN log at startup when auth is disabled.
-- **Container auth (`OPENCLAW_GATEWAY_TOKEN`).** Every spawned agent container gets a random 32-byte-hex `OPENCLAW_GATEWAY_TOKEN` that's distinct from the public-API token above. The orchestrator keeps it in memory on the `Container` object and attaches it as a Bearer header on every call to that container. `/healthz` and `/readyz` bypass auth (Docker healthchecks + orchestrator readiness polling); everything else requires the token. This is purely internal — the container is bound to `openclaw-net` and not reachable from outside the Docker network.
+- **Public API auth (`src/auth.ts`).** The orchestrator's HTTP surface on port 8080 is gated by `OPENCLAW_API_TOKEN` when set. API routes require `Authorization: Bearer <OPENCLAW_API_TOKEN>` except `/healthz`, `/metrics`, `/`, `/v2`, and `/auth/*`; comparison is constant-time. Unset/empty = auth disabled (localhost-dev default). `tok_...` user tokens minted by `/auth/anonymous` and GitHub OAuth are for the bundled portal, not a complete multi-tenant boundary: agents, environments, vaults, and workspace file APIs are still deployment-global until ownership checks cover every resource. Any deploy that exposes port 8080 beyond loopback MUST set `OPENCLAW_API_TOKEN` and treat that admin token as the production security boundary; the orchestrator emits a WARN log at startup when auth is disabled.
+- **Container auth (`OPENCLAW_GATEWAY_TOKEN`).** Every spawned agent container gets a random 32-byte-hex `OPENCLAW_GATEWAY_TOKEN` that's distinct from the public-API token above. The orchestrator keeps it in memory on the `Container` object and attaches it as a Bearer header on every call to that container. `/healthz` and `/readyz` bypass auth (Docker healthchecks + orchestrator readiness polling); everything else requires the token. This is purely internal — the container gateway is reachable only over orchestrator-managed Docker networks and is not published to the host.
 - **Network isolation — default (`networking: unrestricted`).** Containers join `openclaw-net` (a bridge network) and are addressable only by their container name. They do not publish ports to the host. The orchestrator reaches them by name over the shared network.
 - **Network isolation — `networking: limited`.** When a session's environment declares `networking: {type: "limited", allowedHosts: [...]}`, the pool builds a confined topology: two per-session networks (`openclaw-sess-<sid>-confined` marked `--internal` for no kernel-level egress, `openclaw-sess-<sid>-egress` for the sidecar's forward path) plus an `openclaw-control-plane` network (also `--internal`) shared between the orchestrator and any limited-session agent. The agent container joins confined + control-plane (both internal — no route to the internet). An egress-proxy sidecar spawns on confined + egress, filters HTTP/S traffic at TCP 8118 by hostname allowlist, filters DNS at UDP 53 with NXDOMAIN for denied names. The agent's `HTTP_PROXY` / `HTTPS_PROXY` point at the sidecar; its Docker `Dns` points at the sidecar's confined-network IP so `getaddrinfo` also routes through the filter. Raw sockets bypassing the proxy have nowhere to go — the confined network is internal. See [`docs/designs/networking-limited.md`](./designs/networking-limited.md) for the full design and [`test/e2e-networking.sh`](../test/e2e-networking.sh) for the enforcement proof (9 cases, run on Linux in CI).
 - **Resource limits.** Each container is capped at 2 GiB memory and 512 PIDs. Adjust in `src/runtime/docker.ts`:`spawn()` for production deploys.
 - **Credential passthrough.** Provider API keys are passed as env vars from the orchestrator into each spawned container. A future item replaces this with cloud-native secret managers (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, etc.) via an upstream OpenClaw `SecretRef` extension.
-- **Gateway WebSocket control plane.** The orchestrator opens one WebSocket per live container and runs the operator handshake with `controlUi.dangerouslyDisableDeviceAuth: true` set in the generated `openclaw.json`. That flag is safe because the gateway is bound to `openclaw-net` (a private Docker bridge), only the orchestrator ever reaches it, and the per-container token is random 32-byte hex. Never enable that flag on a gateway bound to a public interface.
+- **Gateway WebSocket control plane.** The orchestrator opens one WebSocket per live container and runs the operator handshake with `controlUi.dangerouslyDisableDeviceAuth: true` set in the generated `openclaw.json`. That flag is safe because the gateway is reachable only over orchestrator-managed Docker networks, only the orchestrator ever reaches it, and the per-container token is random 32-byte hex. Never enable that flag on a gateway bound to a public interface.
 
 ## Sandbox model
 
@@ -641,17 +684,17 @@ The isolation boundary is **per-session**. Each session gets its own Docker cont
 **What's isolated:**
 - **Between agents:** full Docker-level isolation. Different containers, different bind mounts, different networks (when using `networking: limited`).
 - **Between sessions on the same agent:** separate workspace directories. Session A and Session B on the same agent have independent `/workspace` mounts. Concurrent sessions on the same agent run in parallel (different Pi workspace locks).
-- **From the host:** containers run as non-root (`openclaw` user, UID from `Dockerfile.runtime`). No ports published to host. Reachable only by container name over `openclaw-net`.
+- **From the host:** containers run as non-root (`openclaw` user, UID from `Dockerfile.runtime`). No ports published to host. The orchestrator reaches them only by container name over its managed Docker networks.
 
 **Warm pool and workspace rename:** warm containers are pre-spawned with a temporary workspace at `<hostStateRoot>/<agentId>/sessions/__warm_<key>__/`. When a session claims a warm container, the orchestrator renames the host directory to `<hostStateRoot>/<agentId>/sessions/<sessionId>/`. The bind mount follows the inode — the container continues to see `/workspace` without interruption.
 
 ## Swapping providers
 
-The runtime is provider-agnostic. To switch a running agent or the smoke default off Moonshot:
+The runtime is provider-agnostic. Agent templates carry their model (`POST /v1/agents { model: "<provider>/<model>" }`), and each spawned container gets that model through `OPENCLAW_MODEL` at spawn time. To switch an agent or the smoke default off Moonshot:
 
 1. Export the matching API key on the host (e.g. `export OPENAI_API_KEY=sk-...`). `docker-compose.yml` forwards every common provider env var into the orchestrator by default.
-2. Change `OPENCLAW_MODEL` in `Dockerfile.runtime` (or override per-agent in the `POST /v1/agents` body), e.g. `openai/gpt-5.4`, `anthropic/claude-sonnet-4-6`, `google/gemini-2.5-pro`, `bedrock/anthropic.claude-sonnet-4-6`, `openrouter/moonshotai/kimi-k2.5`.
-3. If the provider is Category B (see "Provider plugin categories" above), extend `PROVIDER_BLOCK_JSON` in `docker/entrypoint.sh` with the equivalent `models.providers.<id>` block.
-4. Rebuild the runtime image: `docker build -f Dockerfile.runtime -t openclaw-managed-agents/agent:latest .`
+2. Create or update the agent template with the desired model, e.g. `openai/gpt-5.4`, `anthropic/claude-sonnet-4-6`, `google/gemini-2.5-pro`, `bedrock/anthropic.claude-sonnet-4-6`, `openrouter/moonshotai/kimi-k2.5`.
+3. If the provider is Category B (see "Provider plugin categories" above) and upstream's bundled catalog is still incomplete, add the provider to `PROVIDER_CATALOGS` in `docker/apply-provider-config.mjs` and, only when pricing/model ids are missing upstream, add a narrow patch to `docker/provider-prices.json`.
+4. Rebuild the runtime image only when you changed runtime image code or bundled provider patches: `docker build -f Dockerfile.runtime -t openclaw-managed-agents/agent:latest .`
 
-No orchestrator changes are required for Category A providers.
+No orchestrator changes are required for Category A providers or for normal per-agent model changes.

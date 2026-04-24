@@ -112,7 +112,7 @@ For each session whose environment has `networking.type === "limited"`:
    - `HTTPS_PROXY=http://openclaw-sess-<sid>-proxy:8118`
    - `NO_PROXY=openclaw-orchestrator,localhost,127.0.0.1` (control plane + loopback bypass)
    - `--dns <sidecar-ip>` (resolves in-container via the sidecar)
-4. Connect the agent container to `openclaw-net` for orchestrator control plane access.
+4. Connect the agent container to `openclaw-control-plane` for orchestrator control plane access. Limited agents are never attached to `openclaw-net`.
 5. Pool tracks both containers as one `ActiveContainer`. Evict tears down both.
 
 For `networking.type === "unrestricted"` (the default and the only current behavior): unchanged — single container on `openclaw-net`.
@@ -200,7 +200,7 @@ Each shipment stands alone. If shipment 2 surfaces a Docker-networking issue on 
 ## Definition of done
 
 - `networking: limited` accepted by schema with validation.
-- E2E test passes all 8 cases against a real Docker daemon on Linux.
+- E2E test passes the documented enforcement cases against a real Docker daemon on Linux.
 - README documents the feature, including the enforcement boundary.
 - `ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:latest` published to GHCR.
 - No regression on existing `networking: unrestricted` path (default behavior unchanged).

@@ -178,13 +178,19 @@ The orchestrator is self-documenting — `curl http://localhost:8080/` returns t
 POST   /v1/agents                         # create
        body: { model, instructions, tools?, name?,
                permissionPolicy?, callableAgents?, maxSubagentDepth?,
-               mcpServers?, quota? }
+               mcpServers?, quota?, thinkingLevel?, channels? }
 GET    /v1/agents                         # list all
 GET    /v1/agents/:id                     # get latest version
 PATCH  /v1/agents/:id                     # update — { version, ...fields }, 409 on conflict
 GET    /v1/agents/:id/versions            # immutable version history
+POST   /v1/agents/:id/warm                # best-effort warm-pool preboot for this template
 POST   /v1/agents/:id/archive             # soft-delete; blocks new sessions
 DELETE /v1/agents/:id                     # hard-delete
+POST   /v1/agents/:id/run                 # backwards-compatible one-shot adapter
+GET    /v1/agents/:id/files?session_id=<id>&path=<rel>
+GET    /v1/agents/:id/files/<rel>?session_id=<id>
+PUT    /v1/agents/:id/files/<rel>?session_id=<id>
+DELETE /v1/agents/:id/files/<rel>?session_id=<id>
 ```
 
 Permission policy options for `permissionPolicy`:
@@ -202,7 +208,9 @@ Rejected runs surface as `HTTP 429 quota_exceeded`.
 **Environments** (container configuration)
 
 ```
-POST   /v1/environments                   # { name, packages?: { pip?, apt?, npm? }, networking? }
+POST   /v1/environments                   # { name, description?,
+                                           #   packages?: { pip?, apt?, npm?, cargo?, gem?, go? },
+                                           #   networking? }
 GET    /v1/environments                   # list all
 GET    /v1/environments/:id               # get one
 DELETE /v1/environments/:id               # 409 if sessions reference it
@@ -210,12 +218,26 @@ DELETE /v1/environments/:id               # 409 if sessions reference it
 
 Networking modes:
 - `{"type":"unrestricted"}` (default) — full egress on the shared Docker bridge
-- `{"type":"limited","allowedHosts":["api.openai.com","*.anthropic.com"]}` — per-session confined `--internal` network + egress-proxy sidecar. HTTP/HTTPS filtered at TCP 8118, DNS filtered at UDP 53. Enforced at the Docker bridge, not inside the agent container; raw-socket / DNS-exfil paths both closed. Enable by setting `OPENCLAW_EGRESS_PROXY_IMAGE` + `OPENCLAW_CONTROL_PLANE_NETWORK` on the orchestrator. See [`docs/designs/networking-limited.md`](./docs/designs/networking-limited.md) and [`test/e2e-networking.sh`](./test/e2e-networking.sh) for the design + 9-case enforcement proof.
+- `{"type":"limited","allowedHosts":["api.openai.com","*.anthropic.com"],"allowMcpServers":false,"allowPackageManagers":false}` — per-session confined `--internal` network + egress-proxy sidecar. HTTP/HTTPS filtered at TCP 8118, DNS filtered at UDP 53. Enforced at the Docker bridge, not inside the agent container; raw-socket / DNS-exfil paths both closed. Enable by setting `OPENCLAW_EGRESS_PROXY_IMAGE` + `OPENCLAW_CONTROL_PLANE_NETWORK` on the orchestrator. See [`docs/designs/networking-limited.md`](./docs/designs/networking-limited.md) and [`test/e2e-networking.sh`](./test/e2e-networking.sh) for the design + 9-case enforcement proof.
+
+**Vaults** (per-end-user outbound credentials)
+
+```
+POST   /v1/vaults                         # { userId, name }
+GET    /v1/vaults?user_id=<id>            # list, optionally scoped by user id
+GET    /v1/vaults/:id                     # get metadata only
+DELETE /v1/vaults/:id                     # deletes credentials too
+POST   /v1/vaults/:id/credentials         # add static_bearer or mcp_oauth credential
+GET    /v1/vaults/:id/credentials         # list metadata, never secret material
+DELETE /v1/vaults/:id/credentials/:credId
+```
+
+Secrets are write-only in the API. Static bearer credentials are injected as `Authorization: Bearer <token>` into matching HTTP MCP server configs. OAuth credentials refresh at session spawn time when they are near expiry.
 
 **Sessions** (the main interaction surface)
 
 ```
-POST   /v1/sessions                       # { agentId, environmentId? }
+POST   /v1/sessions                       # { agentId, environmentId?, vaultId? }
 GET    /v1/sessions                       # list all
 GET    /v1/sessions/:id                   # status (idle|starting|running|failed), output, rolling tokens, cost_usd
 DELETE /v1/sessions/:id                   # tears down container + data
@@ -224,11 +246,17 @@ GET    /v1/sessions/:id/events            # full event history
 GET    /v1/sessions/:id/events?stream=true  # SSE: catch-up + live tail-follow
                                            # supports Last-Event-ID header for resume
 POST   /v1/sessions/:id/cancel            # abort in-flight run
+POST   /v1/sessions/:id/compact           # ask OpenClaw to compact context history
+GET    /v1/sessions/:id/logs?tail=<n>     # snapshot live container stdout/stderr
 ```
 
 POST events accepts two event types:
-- `{"content":"...","model":"..."}` — user message (triggers agent loop, optional model override)
+- `{"content":"...","model":"...","thinkingLevel":"medium"}` — user message (triggers agent loop, optional session-scoped model/thinking override)
 - `{"type":"user.tool_confirmation","toolUseId":"<approval_id>","result":"allow"}` — resolve a pending tool confirmation (`toolUseId` is a legacy field name; pass the `approval_id` from the SSE event)
+
+Known limitations:
+- Model and thinking overrides are applied through OpenClaw's WebSocket `sessions.patch` after a Pi session key exists. On the first turn of a brand-new session, OpenClaw uses the agent template's boot-time model and default thinking behavior.
+- `thinkingLevel` is currently dropped by the SQLite-backed queue when a message arrives while the session is busy; serialize those turns if the override matters.
 
 **OpenAI compatibility**
 
@@ -237,6 +265,21 @@ POST   /v1/chat/completions              # OpenAI SDK drop-in (x-openclaw-agent-
 ```
 
 Real per-token SSE streaming when `stream: true`. Busy sessions return `HTTP 409 session_busy` so streams don't interleave with the event queue.
+
+Known limitations:
+- Non-streaming calls on a sticky session use the normal queued-event path and return the newest `agent.message` after the session drains. Do not issue concurrent non-streaming calls against the same sticky session key unless your caller serializes them. Streaming calls fail fast with `HTTP 409 session_busy`.
+- A streaming client disconnect before upstream `[DONE]` can leave the backing session in `running`; use `POST /v1/sessions/:id/cancel` for deliberate aborts until this path is fixed.
+
+**Auth helpers**
+
+```
+POST   /auth/anonymous                    # mint a tok_... portal token
+GET    /auth/github                       # start GitHub OAuth
+GET    /auth/github/callback              # OAuth callback
+GET    /auth/me                           # current token metadata
+```
+
+These routes are auth-bypassed so the bundled portal can bootstrap a user session. They are not a complete tenant boundary; see the Auth note below.
 
 **Audit log**
 
@@ -286,11 +329,11 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Networking: `limited`.** Per-session confined `--internal` Docker network + egress-proxy sidecar filtering hostname allowlist at HTTP + DNS layers. Enforcement at the Docker bridge, not inside the container — raw-socket / DNS-exfil paths both closed. Proven with a 9-case E2E script in CI on native Linux (`test/e2e-networking.sh`).
 
-**Pre-warmed container pool.** When a non-delegating agent is created, a template-level container boots in the background. The first session whose boot config is also template-level claims the pre-warmed container instead of cold-spawning. Sessions with session-specific boot inputs (vault credentials, `networking: limited`, package preinstalls) bypass warm reuse and cold-spawn their own sandbox. After a warm claim, the pool replenishes automatically. Session-owned containers stay resident between turns, but the active pool is now bounded by `OPENCLAW_MAX_ACTIVE_CONTAINERS` with oldest-idle eviction under pressure, so a small host cannot accumulate one immortal container per historical session. Only explicitly-ephemeral sessions use idle-reap via `OPENCLAW_IDLE_TIMEOUT_MS`; the warm bucket is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` with oldest-first eviction. Measured pool reuse: 4 s vs 78 s cold-start on Hetzner CAX11.
+**Pre-warmed container pool.** When `OPENCLAW_MAX_WARM_CONTAINERS > 0` and a non-delegating agent is created, a template-level container boots in the background. The first session whose boot config is also template-level claims the pre-warmed container instead of cold-spawning. Sessions with session-specific boot inputs (vault credentials, `networking: limited`, package preinstalls) bypass warm reuse and cold-spawn their own sandbox. After a warm claim, the pool replenishes automatically. Session-owned containers stay resident between turns, but the active pool is bounded by `OPENCLAW_MAX_ACTIVE_CONTAINERS` with oldest-idle eviction under pressure, so a small host cannot accumulate one immortal container per historical session. Only explicitly-ephemeral sessions use idle-reap via `OPENCLAW_IDLE_TIMEOUT_MS`; the warm bucket is bounded by `OPENCLAW_MAX_WARM_CONTAINERS` with oldest-first eviction. Local compose defaults warm capacity to `0`; deploy scripts typically opt in with `3`. Measured pool reuse: 4 s vs 78 s cold-start on Hetzner CAX11.
 
 **Delegated subagents.** An agent can delegate tasks to other agents via the `openclaw-call-agent` CLI. Children are first-class sessions — fully inspectable through the same API. Allowlists, depth caps, and HMAC-signed tokens enforce who can call whom. Subagent transcripts are not hidden behind an opaque tool result.
 
-**Real token-level streaming on `POST /v1/chat/completions`.** `stream: true` pipes the container's real SSE chunks byte-for-byte to the caller — OpenAI-compatible `ChatCompletionChunk` frames with `[DONE]` terminator. A busy session returns `HTTP 409 session_busy` so streams don't interleave with the event queue; client disconnect aborts the relay but the container's turn continues server-side (Pi's JSONL retains truth).
+**Real token-level streaming on `POST /v1/chat/completions`.** `stream: true` pipes the container's real SSE chunks byte-for-byte to the caller — OpenAI-compatible `ChatCompletionChunk` frames with `[DONE]` terminator. A busy session returns `HTTP 409 session_busy` so streams don't interleave with the event queue. Known limitation: disconnecting before upstream `[DONE]` can leave the backing managed session in `running`; use explicit session cancellation for deliberate aborts until the stream finalizer is made correlation-safe.
 
 **Restart safety.** Four invariants that survive orchestrator crash or deploy:
 1. Parent-token HMAC secret persisted to SQLite — outstanding subagent delegation tokens stay valid across restarts.
@@ -314,7 +357,7 @@ The SSE stream emits an initial status event on connect, checks for status trans
 
 **Structured audit log.** Every mutating API call writes a row to `audit_events` (SQLite): `ts`, `request_id`, `actor` (token fingerprint or IP), `action`, `target`, `outcome`, optional metadata. Queryable via `GET /v1/audit?since=&until=&action=&target=&limit=` (all optional; `action` accepts LIKE wildcards like `agent.%`; newest-first; limit 1-1000, default 100). Retention via `OPENCLAW_AUDIT_RETENTION_DAYS` (default 30); hourly cleanup.
 
-**Baseline bearer-token auth.** Set `OPENCLAW_API_TOKEN=<random-secret>` on the orchestrator host and every request must attach `Authorization: Bearer <token>` — except `/healthz` and `/metrics` (infra endpoints). Unset = auth disabled (localhost dev default). One-command rotation on any live deploy: `./scripts/rotate-api-token.sh hetzner|lightsail|gcp|local <host-or-instance>` (generates + applies + verifies with a 401-then-200 curl pair).
+**Auth.** Set `OPENCLAW_API_TOKEN=<random-secret>` on the orchestrator host and API requests must attach `Authorization: Bearer <token>` — except `/healthz`, `/metrics`, `/`, `/v2`, and the `/auth/*` helper routes. Unset = auth disabled (localhost dev default). The admin token is the production security boundary today. The `/auth/anonymous` and GitHub OAuth helpers mint `tok_...` user tokens for the bundled portal, but the resource model is not yet a complete multi-tenant boundary: agents, environments, vaults, and workspace file APIs remain deployment-global. Do not expose user-token auth as tenant isolation until ownership checks cover every resource. One-command admin-token rotation on any live deploy: `./scripts/rotate-api-token.sh hetzner|lightsail|gcp|local <host-or-instance>` (generates + applies + verifies with a 401-then-200 curl pair).
 
 **Rate limiting.** Per-caller token-bucket in front of every route except `/healthz` and `/metrics`. Keyed by Bearer token when present, else client IP (`x-forwarded-for` first entry, else peer). Defaults to 120 req/min (2 req/s sustained, 120-burst). Override via `OPENCLAW_RATE_LIMIT_RPM` (0 = disabled). Runs BEFORE auth so unauthenticated floods can't exhaust the orchestrator even while auth middleware rejects them. Rejections surface as HTTP 429 with a `Retry-After` header and increment `rate_limit_rejections_total{kind="token"|"ip"}` on `/metrics`.
 

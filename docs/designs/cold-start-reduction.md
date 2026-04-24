@@ -1,6 +1,6 @@
 # Design: cold-start latency reduction
 
-**Status.** Planned — not shipped. Partial mitigation in place: warm-pool TTL raised from 10 min → 30 min (commit TBD in this branch); portal fires `POST /v1/agents/:id/warm` on agent-row click so the cold spawn starts during the user's "type the message" window. Instrumentation for per-step timings is live in `src/runtime/pool.ts` (`doSpawn`, `doWarmForAgent`) and `src/orchestrator/router.ts` (`executeInBackground`).
+**Status.** Historical / deferred. The shipped mitigation is still one OpenClaw container per active session, plus a bounded template-level warm pool (`OPENCLAW_MAX_WARM_CONTAINERS`, default `0`, deploy scripts typically `3`) and the explicit `POST /v1/agents/:id/warm` hint. This note preserves the latency investigation and the more aggressive per-agent-container idea below, but Option C is not current architecture and should not be treated as roadmap without reopening the isolation/concurrency tradeoff.
 
 **Scope.** Reduce first-turn latency from "I clicked Send" to "first visible agent action" in a session that does not already have an active container.
 
