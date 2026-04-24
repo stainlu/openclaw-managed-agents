@@ -7,28 +7,46 @@ import { buildApp, type ServerDeps } from "./server.js";
 import { clearZenMuxCatalogCache } from "./zenmux-pricing.js";
 import type { Event, Session } from "./types.js";
 
-function makeApp(opts: { passthroughEnv?: Record<string, string> } = {}) {
+function makeApp(opts: {
+  passthroughEnv?: Record<string, string>;
+  routerOverrides?: Partial<ServerDeps["router"]>;
+} = {}) {
   const store = new InMemoryStore();
-  const latestBySession = new Map<string, Event>();
+  const eventsBySession = new Map<string, Event[]>();
   const routerCalls = {
     warmForAgent: [] as string[],
     dropWarmForAgent: [] as string[],
     disposeSessionRuntime: [] as string[],
   };
+  let eventCounter = 0;
+
+  function appendEvent(event: Event): void {
+    const existing = eventsBySession.get(event.sessionId) ?? [];
+    existing.push(event);
+    eventsBySession.set(event.sessionId, existing);
+  }
+
+  function latestAgentMessageFor(sessionId: string): Event | undefined {
+    const existing = eventsBySession.get(sessionId) ?? [];
+    for (let i = existing.length - 1; i >= 0; i--) {
+      const event = existing[i];
+      if (event?.type === "agent.message") return event;
+    }
+    return undefined;
+  }
 
   const events = {
     latestAgentMessage(_agentId: string, sessionId: string) {
-      return latestBySession.get(sessionId);
+      return latestAgentMessageFor(sessionId);
     },
     listBySession(_agentId: string, sessionId: string) {
-      const event = latestBySession.get(sessionId);
-      return event ? [event] : [];
+      return [...(eventsBySession.get(sessionId) ?? [])];
     },
     deleteBySession(_agentId: string, sessionId: string) {
-      latestBySession.delete(sessionId);
+      eventsBySession.delete(sessionId);
     },
-    countUserTurns() {
-      return 0;
+    countUserTurns(_agentId: string, sessionId: string) {
+      return (eventsBySession.get(sessionId) ?? []).filter((event) => event.type === "user.message").length;
     },
     statJsonl() {
       return undefined;
@@ -38,7 +56,7 @@ function makeApp(opts: { passthroughEnv?: Record<string, string> } = {}) {
     },
   };
 
-  const router = {
+  const routerBase = {
     createSession(
       agentId: string,
       opts?: {
@@ -80,8 +98,16 @@ function makeApp(opts: { passthroughEnv?: Record<string, string> } = {}) {
       }
       store.sessions.markRunning(args.sessionId);
       const now = Date.now();
-      latestBySession.set(args.sessionId, {
-        eventId: `evt_${args.sessionId}_${now}`,
+      eventCounter += 1;
+      appendEvent({
+        eventId: `evt_user_${args.sessionId}_${eventCounter}`,
+        sessionId: args.sessionId,
+        type: "user.message",
+        content: args.content,
+        createdAt: now,
+      });
+      appendEvent({
+        eventId: `evt_agent_${args.sessionId}_${eventCounter}`,
         sessionId: args.sessionId,
         type: "agent.message",
         content: `reply:${args.content}`,
@@ -140,6 +166,10 @@ function makeApp(opts: { passthroughEnv?: Record<string, string> } = {}) {
       return;
     },
   };
+  const router = {
+    ...routerBase,
+    ...(opts.routerOverrides ?? {}),
+  };
 
   const deps: ServerDeps = {
     agents: store.agents,
@@ -164,7 +194,8 @@ function makeApp(opts: { passthroughEnv?: Record<string, string> } = {}) {
     app: buildApp(deps),
     store,
     routerCalls,
-    latestBySession,
+    eventsBySession,
+    appendEvent,
   };
 }
 
@@ -260,14 +291,14 @@ describe("session ownership in the HTTP API", () => {
   });
 
   it("falls back to transcript usage for session reads when stored totals are sparse", async () => {
-    const { app, store, latestBySession } = makeApp();
+    const { app, store, appendEvent } = makeApp();
     const agent = createAgent(store);
     const session = store.sessions.create({
       agentId: agent.agentId,
       userId: null,
     });
     const now = Date.now();
-    latestBySession.set(session.sessionId, {
+    appendEvent({
       eventId: `evt_${session.sessionId}_${now}`,
       sessionId: session.sessionId,
       type: "agent.message",
@@ -317,7 +348,7 @@ describe("session ownership in the HTTP API", () => {
       throw new Error(`unexpected fetch: ${url}`);
     }) as typeof fetch;
     try {
-      const { app, store, latestBySession } = makeApp({
+      const { app, store, appendEvent } = makeApp({
         passthroughEnv: { ZENMUX_API_KEY: "sk-test" },
       });
       const agent = store.agents.create({
@@ -333,7 +364,7 @@ describe("session ownership in the HTTP API", () => {
         userId: null,
       });
       const now = Date.now();
-      latestBySession.set(session.sessionId, {
+      appendEvent({
         eventId: `evt_${session.sessionId}_${now}`,
         sessionId: session.sessionId,
         type: "agent.message",
@@ -390,6 +421,65 @@ describe("session ownership in the HTTP API", () => {
       },
     });
     expect(second.status).toBe(404);
+  });
+
+  it("rejects invalid named chat-completions session keys", async () => {
+    const { app, store } = makeApp();
+    const agent = createAgent(store);
+
+    const res = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        user: "bad/key",
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error: {
+        type: "invalid_request_error",
+      },
+    });
+  });
+
+  it("rejects reusing a named session key with a different agent", async () => {
+    const { app, store } = makeApp();
+    const firstAgent = createAgent(store);
+    const secondAgent = createAgent(store);
+
+    const first = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": firstAgent.agentId },
+      body: {
+        model: firstAgent.agentId,
+        user: "shared-session",
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+    expect(first.status).toBe(200);
+
+    const second = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": secondAgent.agentId },
+      body: {
+        model: secondAgent.agentId,
+        user: "shared-session",
+        messages: [{ role: "user", content: "hello again" }],
+      },
+    });
+
+    expect(second.status).toBe(409);
+    expect(second.body).toMatchObject({
+      error: {
+        type: "invalid_request_error",
+      },
+    });
   });
 
   it("streams container attach telemetry for a running session", async () => {
@@ -467,5 +557,142 @@ describe("session ownership in the HTTP API", () => {
     expect(res.status).toBe(200);
     expect(routerCalls.disposeSessionRuntime).toEqual([session.sessionId]);
     expect(store.sessions.get(session.sessionId)).toBeUndefined();
+  });
+
+  it("reuses a named chat-completions session across multiple turns for the same caller", async () => {
+    const { app, store, eventsBySession } = makeApp();
+    const agent = createAgent(store);
+    const alice = store.users.create({ tier: "github" });
+
+    const first = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: alice.apiToken,
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        user: "sticky-turns",
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+    expect(first.status).toBe(200);
+
+    const second = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: alice.apiToken,
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        user: "sticky-turns",
+        messages: [{ role: "user", content: "deploy it" }],
+      },
+    });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({
+      model: "test-model",
+      choices: [{ message: { role: "assistant", content: "reply:deploy it" } }],
+      usage: {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+
+    const session = store.sessions.get("sticky-turns");
+    expect(session?.userId).toBe(alice.userId);
+    expect(eventsBySession.get("sticky-turns")?.map((event) => event.type)).toEqual([
+      "user.message",
+      "agent.message",
+      "user.message",
+      "agent.message",
+    ]);
+  });
+
+  it("cleans up ephemeral chat-completions sessions on run failure", async () => {
+    const { app, store, eventsBySession } = makeApp({
+      routerOverrides: {
+        async runEvent(args: { sessionId: string; content: string }) {
+          store.sessions.beginRun(args.sessionId);
+          store.sessions.markRunning(args.sessionId);
+          throw new RouterError("chat_completions_failed", "simulated upstream failure");
+        },
+      } as Partial<ServerDeps["router"]>,
+    });
+    const agent = createAgent(store);
+
+    const res = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+
+    expect(res.status).toBe(500);
+    expect(store.sessions.list()).toHaveLength(0);
+    expect(eventsBySession.size).toBe(0);
+  });
+
+  it("derives turns and latest output from the full transcript in session listings", async () => {
+    const { app, store, appendEvent } = makeApp();
+    const agent = createAgent(store);
+    const session = store.sessions.create({
+      agentId: agent.agentId,
+      userId: null,
+    });
+    appendEvent({
+      eventId: "evt_user_1",
+      sessionId: session.sessionId,
+      type: "user.message",
+      content: "first",
+      createdAt: 1,
+    });
+    appendEvent({
+      eventId: "evt_agent_1",
+      sessionId: session.sessionId,
+      type: "agent.message",
+      content: "reply:first",
+      createdAt: 2,
+      tokensIn: 10,
+      tokensOut: 5,
+      costUsd: 0.01,
+      model: "zenmux/openai/gpt-5.4",
+    });
+    appendEvent({
+      eventId: "evt_user_2",
+      sessionId: session.sessionId,
+      type: "user.message",
+      content: "second",
+      createdAt: 3,
+    });
+    appendEvent({
+      eventId: "evt_agent_2",
+      sessionId: session.sessionId,
+      type: "agent.message",
+      content: "reply:second",
+      createdAt: 4,
+      tokensIn: 12,
+      tokensOut: 6,
+      costUsd: 0.02,
+      model: "zenmux/openai/gpt-5.4",
+    });
+
+    const res = await req(app, "/v1/sessions", {
+      token: "admin-secret",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      count: 1,
+      sessions: [
+        {
+          session_id: session.sessionId,
+          output: "reply:second",
+          tokens: { input: 12, output: 6 },
+          cost_usd: 0.02,
+        },
+      ],
+    });
   });
 });
