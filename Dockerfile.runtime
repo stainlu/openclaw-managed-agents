@@ -103,6 +103,7 @@ COPY docker/confirm-tools-plugin/ /opt/openclaw-plugins/confirm-tools/
 # models, revised prices — see openclaw/openclaw#67928) now flow through
 # automatically on the next image rebuild.
 COPY docker/apply-provider-config.mjs /opt/openclaw-plugins/apply-provider-config.mjs
+COPY docker/apply-zenmux-provider-config.mjs /opt/openclaw-plugins/apply-zenmux-provider-config.mjs
 
 # Real-world $/1M-token prices for providers whose openclaw-bundled
 # catalog ships $0 (currently Moonshot, tracked upstream in

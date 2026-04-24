@@ -6,7 +6,12 @@ import type { SessionContainerPool } from "../runtime/pool.js";
 import { InMemoryStore } from "../store/memory.js";
 import { PiJsonlEventReader } from "../store/pi-jsonl.js";
 import type { QueueStore } from "../store/types.js";
-import { AgentRouter, RouterError, type RouterConfig } from "./router.js";
+import {
+  AgentRouter,
+  RouterError,
+  normalizeModelForRuntime,
+  type RouterConfig,
+} from "./router.js";
 
 // These tests cover the decision-tree logic that doesn't require a live
 // container: createSession, runEvent's pre-dispatch checks, and cancel's
@@ -53,6 +58,18 @@ function makeRouter(opts: {
 }
 
 describe("AgentRouter.createSession", () => {
+  it("normalizes runtime models through ZenMux when ZENMUX_API_KEY is configured", () => {
+    expect(
+      normalizeModelForRuntime("moonshot/kimi-k2.6", { ZENMUX_API_KEY: "sk-test" }),
+    ).toBe("zenmux/moonshot/kimi-k2.6");
+    expect(
+      normalizeModelForRuntime("zenmux/moonshot/kimi-k2.6", { ZENMUX_API_KEY: "sk-test" }),
+    ).toBe("zenmux/moonshot/kimi-k2.6");
+    expect(
+      normalizeModelForRuntime("moonshot/kimi-k2.6", {}),
+    ).toBe("moonshot/kimi-k2.6");
+  });
+
   it("creates a session bound to an existing agent", () => {
     const { router, store } = makeRouter();
     const agent = store.agents.create({

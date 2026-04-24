@@ -40,6 +40,14 @@ const log = getLogger("router");
 // this UID. On macOS the chown is a harmless no-op.
 const AGENT_CONTAINER_UID = 999;
 
+export function normalizeModelForRuntime(
+  model: string,
+  passthroughEnv: Record<string, string>,
+): string {
+  if (!passthroughEnv.ZENMUX_API_KEY) return model;
+  return model.startsWith("zenmux/") ? model : `zenmux/${model}`;
+}
+
 export type RouterConfig = {
   /** Image reference for the OpenClaw agent container. */
   runtimeImage: string;
@@ -1313,10 +1321,14 @@ export class AgentRouter {
       ? this.environments.get(session.environmentId)
       : undefined;
 
+    const runtimeModel = normalizeModelForRuntime(
+      agent.model,
+      this.cfg.passthroughEnv,
+    );
     const env: Record<string, string> = {
       ...this.cfg.passthroughEnv,
       OPENCLAW_AGENT_ID: "main",
-      OPENCLAW_MODEL: agent.model,
+      OPENCLAW_MODEL: runtimeModel,
       OPENCLAW_TOOLS: agent.tools.join(","),
       OPENCLAW_INSTRUCTIONS: effectiveInstructions,
       OPENCLAW_STATE_DIR: "/workspace",
@@ -1708,7 +1720,12 @@ export class AgentRouter {
           }
           const canonicalKey = `agent:main:${sessionId}`;
           const patch: Record<string, string> = {};
-          if (modelOverride) patch.model = modelOverride;
+          if (modelOverride) {
+            patch.model = normalizeModelForRuntime(
+              modelOverride,
+              this.cfg.passthroughEnv,
+            );
+          }
           if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
           try {
             await wsClient.patch(canonicalKey, patch);
