@@ -35,9 +35,24 @@ function makeApp(opts: {
     return undefined;
   }
 
+  function latestAgentOutcomeFor(sessionId: string): Event | undefined {
+    const existing = eventsBySession.get(sessionId) ?? [];
+    for (let i = existing.length - 1; i >= 0; i--) {
+      const event = existing[i];
+      if (!event) continue;
+      if (event.type === "agent.message" || event.type === "agent.tool_result") {
+        return event;
+      }
+    }
+    return undefined;
+  }
+
   const events = {
     latestAgentMessage(_agentId: string, sessionId: string) {
       return latestAgentMessageFor(sessionId);
+    },
+    latestAgentOutcome(_agentId: string, sessionId: string) {
+      return latestAgentOutcomeFor(sessionId);
     },
     listBySession(_agentId: string, sessionId: string) {
       return [...(eventsBySession.get(sessionId) ?? [])];
@@ -607,6 +622,69 @@ describe("session ownership in the HTTP API", () => {
       "user.message",
       "agent.message",
     ]);
+  });
+
+  it("accepts a tool-only chat-completions turn without a final agent.message", async () => {
+    const { app, store, appendEvent } = makeApp({
+      routerOverrides: {
+        async runEvent(args: { sessionId: string; content: string }) {
+          const started = store.sessions.beginRun(args.sessionId);
+          if (!started) {
+            throw new RouterError("session_not_found", `session ${args.sessionId} does not exist`);
+          }
+          store.sessions.markRunning(args.sessionId);
+          const now = Date.now();
+          appendEvent({
+            eventId: `evt_user_${args.sessionId}_${now}`,
+            sessionId: args.sessionId,
+            type: "user.message",
+            content: args.content,
+            createdAt: now,
+          });
+          appendEvent({
+            eventId: `evt_tool_result_${args.sessionId}_${now}`,
+            sessionId: args.sessionId,
+            type: "agent.tool_result",
+            content: "Fri Apr 24 17:58:01 UTC 2026",
+            createdAt: now + 1,
+            toolName: "exec",
+            toolCallId: "call-date",
+          });
+          const session = store.sessions.endRunSuccess(args.sessionId, {
+            tokensIn: 11,
+            tokensOut: 7,
+            costUsd: 0.03,
+          });
+          if (!session) {
+            throw new RouterError("session_not_found", `session ${args.sessionId} disappeared`);
+          }
+          return { session, queued: false };
+        },
+      } as Partial<ServerDeps["router"]>,
+    });
+    const agent = createAgent(store);
+
+    const res = await req(app, "/v1/chat/completions", {
+      method: "POST",
+      token: "admin-secret",
+      headers: { "x-openclaw-agent-id": agent.agentId },
+      body: {
+        model: agent.agentId,
+        user: "tool-only-turn",
+        messages: [{ role: "user", content: "what time is it?" }],
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      model: agent.model,
+      choices: [{ message: { role: "assistant", content: "" } }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+      },
+    });
   });
 
   it("returns 409 for busy non-streaming chat-completions instead of queueing", async () => {
