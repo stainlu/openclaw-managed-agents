@@ -1633,9 +1633,18 @@ export function buildApp(deps: ServerDeps): Hono {
       });
     }
 
-    // Stale-detection snapshot (non-streaming path).
-    const beforeMsg = deps.events.latestAgentMessage(agentId, session.sessionId);
-    const beforeEventId = beforeMsg?.eventId;
+    // Stale-detection snapshot (non-streaming path). Snapshot the newest
+    // assistant-side outcome event id (agent.message OR agent.tool_result)
+    // BEFORE calling runEvent so a tool-only turn — which may produce no
+    // agent.message — is still correctly detected as a new outcome.
+    const beforeOutcome = deps.events.latestAgentOutcome(agentId, session.sessionId);
+    const beforeEventId = beforeOutcome?.eventId;
+
+    const beforeUsage = {
+      tokensIn: session.tokensIn,
+      tokensOut: session.tokensOut,
+      costUsd: session.costUsd,
+    };
 
     try {
       await deps.router.runEvent({
@@ -1715,14 +1724,17 @@ export function buildApp(deps: ServerDeps): Hono {
       );
     }
 
-    // Read post-run message and verify it's different from the snapshot.
+    // Read post-run assistant-side outcome and verify it's different from
+    // the snapshot. A tool-only turn can legitimately finish with a new
+    // agent.tool_result and no final agent.message.
+    const afterOutcome = deps.events.latestAgentOutcome(agentId, session.sessionId);
     const afterMsg = deps.events.latestAgentMessage(agentId, session.sessionId);
-    if (!afterMsg || afterMsg.eventId === beforeEventId) {
+    if (!afterOutcome || afterOutcome.eventId === beforeEventId) {
       cleanupEphemeralOnError();
       return c.json(
         {
           error: {
-            message: "run finished but no new agent.message was written",
+            message: "run finished but no new assistant-side outcome was written",
             type: "internal_error",
           },
         },
@@ -1733,13 +1745,15 @@ export function buildApp(deps: ServerDeps): Hono {
     // Build the response. Prefer the model actually used (from the event)
     // over the agent template's configured model so any session-level
     // override surfaces in the response.
-    const responseModel = afterMsg.model ?? agent.model;
-    const createdUnix = Math.floor(afterMsg.createdAt / 1000);
-    const responseId = `chatcmpl-${afterMsg.eventId}`;
+    const responseModel = afterMsg?.model ?? agent.model;
+    const createdUnix = Math.floor(afterOutcome.createdAt / 1000);
+    const responseId = `chatcmpl-${afterOutcome.eventId}`;
+    const promptTokens = afterMsg?.tokensIn ?? Math.max(0, finalSession.tokensIn - beforeUsage.tokensIn);
+    const completionTokens = afterMsg?.tokensOut ?? Math.max(0, finalSession.tokensOut - beforeUsage.tokensOut);
     const usage = {
-      prompt_tokens: afterMsg.tokensIn ?? 0,
-      completion_tokens: afterMsg.tokensOut ?? 0,
-      total_tokens: (afterMsg.tokensIn ?? 0) + (afterMsg.tokensOut ?? 0),
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
     };
 
     return c.json({
@@ -1750,7 +1764,7 @@ export function buildApp(deps: ServerDeps): Hono {
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content: afterMsg.content },
+          message: { role: "assistant", content: afterMsg?.content ?? "" },
           finish_reason: "stop",
         },
       ],

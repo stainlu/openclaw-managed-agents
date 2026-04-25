@@ -14,6 +14,9 @@ function makeApp() {
     latestAgentMessage(_agentId: string, sessionId: string) {
       return latestBySession.get(sessionId);
     },
+    latestAgentOutcome(_agentId: string, sessionId: string) {
+      return latestBySession.get(sessionId);
+    },
     listBySession(_agentId: string, sessionId: string) {
       const event = latestBySession.get(sessionId);
       return event ? [event] : [];
