@@ -118,4 +118,42 @@ describe("apply-zenmux-provider-config", () => {
       ],
     });
   });
+
+  it("maps legacy portal Claude aliases to catalog model ids", () => {
+    const provider = buildZenMuxProviderConfig({
+      baseUrl: "https://zenmux.ai/api/v1",
+      apiKey: "sk-test",
+      modelId: "anthropic/claude-opus-4-7",
+      catalog: {
+        data: [
+          {
+            id: "anthropic/claude-opus-4.5",
+            display_name: "Anthropic: Claude Opus 4.5",
+            input_modalities: ["text", "image"],
+            capabilities: { reasoning: true },
+            context_length: 200000,
+            pricings: {
+              prompt: [
+                { value: 5, unit: "perMTokens", currency: "USD" },
+              ],
+              completion: [
+                { value: 25, unit: "perMTokens", currency: "USD" },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(provider).toMatchObject({
+      models: [
+        {
+          id: "anthropic/claude-opus-4.5",
+          name: "Anthropic: Claude Opus 4.5",
+          reasoning: true,
+          input: ["text", "image"],
+        },
+      ],
+    });
+  });
 });

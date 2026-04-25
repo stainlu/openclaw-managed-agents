@@ -340,6 +340,96 @@ describe("model catalog API", () => {
       clearZenMuxCatalogCache();
     }
   });
+
+  it("canonicalizes legacy ZenMux model aliases when creating agents", async () => {
+    clearZenMuxCatalogCache();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "https://zenmux.ai/api/v1/models") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: "anthropic/claude-opus-4.5" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const { app } = makeApp({
+        passthroughEnv: { ZENMUX_API_KEY: "sk-test" },
+      });
+
+      const res = await req(app, "/v1/agents", {
+        method: "POST",
+        token: "admin-secret",
+        body: {
+          model: "anthropic/claude-opus-4-7",
+          tools: [],
+          instructions: "",
+          permissionPolicy: { type: "always_allow" },
+        },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        model: "anthropic/claude-opus-4.5",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearZenMuxCatalogCache();
+    }
+  });
+
+  it("rejects invalid ZenMux models when creating agents", async () => {
+    clearZenMuxCatalogCache();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "https://zenmux.ai/api/v1/models") {
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: "anthropic/claude-opus-4.5" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const { app, store } = makeApp({
+        passthroughEnv: { ZENMUX_API_KEY: "sk-test" },
+      });
+
+      const res = await req(app, "/v1/agents", {
+        method: "POST",
+        token: "admin-secret",
+        body: {
+          model: "anthropic/does-not-exist",
+          tools: [],
+          instructions: "",
+          permissionPolicy: { type: "always_allow" },
+        },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({
+        error: "invalid_model",
+        model: "anthropic/does-not-exist",
+      });
+      expect(store.agents.list()).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearZenMuxCatalogCache();
+    }
+  });
 });
 
 describe("session ownership in the HTTP API", () => {

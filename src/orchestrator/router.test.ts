@@ -91,6 +91,9 @@ describe("AgentRouter.createSession", () => {
     expect(
       normalizeModelForRuntime("moonshot/kimi-k2.6", {}),
     ).toBe("moonshot/kimi-k2.6");
+    expect(
+      normalizeModelForRuntime("anthropic/claude-opus-4-7", { ZENMUX_API_KEY: "sk-test" }),
+    ).toBe("zenmux/anthropic/claude-opus-4.5");
   });
 
   it("creates a session bound to an existing agent", () => {

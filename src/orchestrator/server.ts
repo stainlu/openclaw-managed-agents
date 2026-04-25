@@ -306,6 +306,49 @@ function fallbackModelCatalog(): ModelCatalogItem[] {
   ].map((id) => ({ id, provider: modelProvider(id) }));
 }
 
+type ModelValidationResult =
+  | { ok: true; model: string }
+  | { ok: false; status: 400 | 503; body: Record<string, unknown> };
+
+async function validateAndCanonicalizeModel(
+  model: string,
+  passthroughEnv: Record<string, string> | undefined,
+): Promise<ModelValidationResult> {
+  if (!passthroughEnv?.ZENMUX_API_KEY) return { ok: true, model };
+  const resolved = resolveZenMuxCatalogModelId(model, passthroughEnv);
+  if (!resolved) return { ok: true, model };
+
+  let catalog: unknown;
+  try {
+    catalog = await fetchZenMuxCatalogCached({
+      apiKey: passthroughEnv.ZENMUX_API_KEY,
+      baseUrl: passthroughEnv.ZENMUX_BASE_URL,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: 503,
+      body: { error: "model_catalog_failed", message },
+    };
+  }
+
+  const models = normalizeModelCatalog(catalog);
+  if (!models.some((entry) => entry.id === resolved)) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: "invalid_model",
+        message: `model ${model} is not in the ZenMux /models catalog`,
+        model,
+      },
+    };
+  }
+
+  return { ok: true, model: resolved };
+}
+
 // Session response shape. `output` is a computed convenience: the content of
 // the most recent agent.message in the session, or null if none yet. The
 // event log lives in Pi's JSONL on the host mount — see PiJsonlEventReader.
@@ -710,7 +753,23 @@ export function buildApp(deps: ServerDeps): Hono {
       });
       return c.json({ error: "invalid_request", details: parsed.error.format() }, 400);
     }
-    const agent = deps.agents.create(parsed.data);
+    const modelValidation = await validateAndCanonicalizeModel(
+      parsed.data.model,
+      deps.passthroughEnv,
+    );
+    if (!modelValidation.ok) {
+      writeAudit(deps.audit, c, {
+        action: "agent.create",
+        target: null,
+        outcome: String(modelValidation.body.error ?? "invalid_model"),
+        metadata: { model: parsed.data.model },
+      });
+      return c.json(modelValidation.body, modelValidation.status);
+    }
+    const agent = deps.agents.create({
+      ...parsed.data,
+      model: modelValidation.model,
+    });
     agentsCreatedTotal.inc();
     addContext({ agentId: agent.agentId });
     writeAudit(deps.audit, c, {
@@ -796,7 +855,24 @@ export function buildApp(deps: ServerDeps): Hono {
     if (agent.version !== parsed.data.version) {
       return c.json({ error: "version_conflict", message: `expected version ${agent.version}, got ${parsed.data.version}` }, 409);
     }
-    const updated = deps.agents.update(agentId, parsed.data);
+    const patch = { ...parsed.data };
+    if (patch.model !== undefined) {
+      const modelValidation = await validateAndCanonicalizeModel(
+        patch.model,
+        deps.passthroughEnv,
+      );
+      if (!modelValidation.ok) {
+        writeAudit(deps.audit, c, {
+          action: "agent.update",
+          target: agentId,
+          outcome: String(modelValidation.body.error ?? "invalid_model"),
+          metadata: { model: patch.model },
+        });
+        return c.json(modelValidation.body, modelValidation.status);
+      }
+      patch.model = modelValidation.model;
+    }
+    const updated = deps.agents.update(agentId, patch);
     if (!updated) {
       writeAudit(deps.audit, c, {
         action: "agent.update",
