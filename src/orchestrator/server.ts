@@ -1550,16 +1550,22 @@ export function buildApp(deps: ServerDeps): Hono {
 
         // Track session status so we can emit synthetic status events
         // when the session transitions between idle/running/failed.
-        let lastEmittedStatus = session.status;
+        // Read the current row here instead of trusting the route-entry
+        // snapshot: clients often open the stream just before the POST
+        // /events handler flips idle -> starting.
+        let lastEmittedStatus = deps.sessions.get(sessionId)?.status ?? session.status;
         let lastContainerSig: string | null = null;
         const emitStatusEvent = async (status: string) => {
           if (sse.aborted || sse.closed) return;
+          const ts = Date.now();
           await sse.writeSSE({
             event: `session.status_${status}`,
             data: JSON.stringify({
               session_id: sessionId,
+              type: `session.status_${status}`,
               status,
-              ts: Date.now(),
+              created_at: ts,
+              ts,
             }),
           });
         };
@@ -1606,10 +1612,19 @@ export function buildApp(deps: ServerDeps): Hono {
           });
         };
 
+        const pollSyntheticEvents = async () => {
+          const current = deps.sessions.get(sessionId);
+          if (current && current.status !== lastEmittedStatus) {
+            lastEmittedStatus = current.status;
+            await emitStatusEvent(lastEmittedStatus);
+          }
+          await emitContainerEventIfChanged();
+          await emitPendingApprovals();
+        };
+
         // Emit the initial session status so the client knows the
         // starting state without having to query GET /v1/sessions/:id.
         await emitStatusEvent(lastEmittedStatus);
-        await emitContainerEventIfChanged();
 
         // Track emitted approval IDs to avoid duplicates.
         const emittedApprovalIds = new Set<string>();
@@ -1635,23 +1650,23 @@ export function buildApp(deps: ServerDeps): Hono {
           }
         };
 
+        await pollSyntheticEvents();
+
+        // Poll synthetic orchestrator state separately from heartbeats.
+        // JSONL follow() only wakes when OpenClaw writes an event. During
+        // cold boot there is no JSONL yet, so tying status/container
+        // updates to the 15s heartbeat made the portal show a fake
+        // "+00:15.000 Session state · booting..." row on every run.
+        const syntheticPoll = setInterval(() => {
+          if (sse.aborted || sse.closed) return;
+          pollSyntheticEvents().catch(() => { /* best-effort */ });
+        }, 500);
+
         // Heartbeats so intermediate proxies don't idle-kill the socket.
         // Every 15s we send a dedicated "heartbeat" event type; clients
         // that don't care can ignore it via addEventListener filtering.
-        // Also check for session status transitions and pending approvals.
         const heartbeat = setInterval(() => {
           if (sse.aborted || sse.closed) return;
-          const current = deps.sessions.get(sessionId);
-          if (current && current.status !== lastEmittedStatus) {
-            lastEmittedStatus = current.status;
-            emitStatusEvent(lastEmittedStatus).catch(() => {
-              /* best-effort */
-            });
-          }
-          emitContainerEventIfChanged().catch(() => {
-            /* best-effort */
-          });
-          emitPendingApprovals().catch(() => { /* best-effort */ });
           sse
             .writeSSE({
               event: "heartbeat",
@@ -1704,6 +1719,7 @@ export function buildApp(deps: ServerDeps): Hono {
           }
           await emitContainerEventIfChanged();
         } finally {
+          clearInterval(syntheticPoll);
           clearInterval(heartbeat);
         }
       });
