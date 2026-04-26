@@ -15,6 +15,7 @@ def _parse_environment(data: Dict[str, Any]) -> Environment:
         name=data["name"],
         networking=data.get("networking", {"type": "unrestricted"}),
         created_at=data["created_at"],
+        description=data.get("description", ""),
         packages=data.get("packages"),
     )
 
@@ -27,10 +28,13 @@ class Environments:
         self,
         *,
         name: str,
+        description: Optional[str] = None,
         packages: Optional[Dict[str, Any]] = None,
         networking: Optional[Dict[str, Any]] = None,
     ) -> Environment:
         body: Dict[str, Any] = {"name": name}
+        if description is not None:
+            body["description"] = description
         if packages is not None:
             body["packages"] = packages
         if networking is not None:

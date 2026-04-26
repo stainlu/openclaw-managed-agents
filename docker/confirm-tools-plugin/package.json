@@ -1,6 +1,8 @@
 {
   "name": "@openclaw-managed-agents/confirm-tools",
+  "private": true,
   "version": "1.0.0",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
   "peerDependencies": {

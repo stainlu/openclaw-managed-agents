@@ -22,6 +22,10 @@ def _parse_agent(data: Dict[str, Any]) -> Agent:
         name=data.get("name"),
         callable_agents=data.get("callable_agents", []),
         max_subagent_depth=data.get("max_subagent_depth", 0),
+        mcp_servers=data.get("mcp_servers", {}),
+        quota=data.get("quota"),
+        thinking_level=data.get("thinking_level", "off"),
+        channels=data.get("channels", {}),
         archived_at=data.get("archived_at"),
     )
 
@@ -40,6 +44,10 @@ class Agents:
         permission_policy: Optional[Dict[str, Any]] = None,
         callable_agents: Optional[List[str]] = None,
         max_subagent_depth: Optional[int] = None,
+        mcp_servers: Optional[Dict[str, Any]] = None,
+        quota: Optional[Dict[str, Any]] = None,
+        thinking_level: Optional[str] = None,
+        channels: Optional[Dict[str, Any]] = None,
     ) -> Agent:
         body: Dict[str, Any] = {"model": model, "instructions": instructions}
         if tools is not None:
@@ -52,6 +60,14 @@ class Agents:
             body["callableAgents"] = callable_agents
         if max_subagent_depth is not None:
             body["maxSubagentDepth"] = max_subagent_depth
+        if mcp_servers is not None:
+            body["mcpServers"] = mcp_servers
+        if quota is not None:
+            body["quota"] = quota
+        if thinking_level is not None:
+            body["thinkingLevel"] = thinking_level
+        if channels is not None:
+            body["channels"] = channels
         resp = self._client.post("/v1/agents", json=body)
         resp.raise_for_status()
         return _parse_agent(resp.json())
@@ -78,6 +94,10 @@ class Agents:
         permission_policy: Optional[Dict[str, Any]] = None,
         callable_agents: Optional[List[str]] = None,
         max_subagent_depth: Optional[int] = None,
+        mcp_servers: Optional[Dict[str, Any]] = None,
+        quota: Optional[Dict[str, Any]] = None,
+        thinking_level: Optional[str] = None,
+        channels: Optional[Dict[str, Any]] = None,
     ) -> Agent:
         body: Dict[str, Any] = {"version": version}
         if model is not None:
@@ -94,6 +114,14 @@ class Agents:
             body["callableAgents"] = callable_agents
         if max_subagent_depth is not None:
             body["maxSubagentDepth"] = max_subagent_depth
+        if mcp_servers is not None:
+            body["mcpServers"] = mcp_servers
+        if quota is not None:
+            body["quota"] = quota
+        if thinking_level is not None:
+            body["thinkingLevel"] = thinking_level
+        if channels is not None:
+            body["channels"] = channels
         resp = self._client.patch(f"/v1/agents/{agent_id}", json=body)
         resp.raise_for_status()
         return _parse_agent(resp.json())
@@ -111,3 +139,22 @@ class Agents:
     def delete(self, agent_id: str) -> None:
         resp = self._client.delete(f"/v1/agents/{agent_id}")
         resp.raise_for_status()
+
+    def warm(self, agent_id: str) -> Dict[str, Any]:
+        resp = self._client.post(f"/v1/agents/{agent_id}/warm")
+        resp.raise_for_status()
+        return resp.json()
+
+    def run(
+        self,
+        agent_id: str,
+        *,
+        task: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"task": task}
+        if session_id is not None:
+            body["sessionId"] = session_id
+        resp = self._client.post(f"/v1/agents/{agent_id}/run", json=body)
+        resp.raise_for_status()
+        return resp.json()

@@ -1,0 +1,710 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw Managed Agents API
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: API-first managed agent runtime built on OpenClaw.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+  /v1/models:
+    get:
+      summary: Curated model catalog
+      responses:
+        "200":
+          description: Model catalog
+  /v1/agents:
+    post:
+      summary: Create agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+    get:
+      summary: List agents
+      responses:
+        "200":
+          description: Agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Agent"
+                  count:
+                    type: integer
+  /v1/agents/{agentId}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: Get agent
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+    patch:
+      summary: Update agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          description: Updated agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "409":
+          description: Version conflict or archived agent
+    delete:
+      summary: Hard-delete agent
+      responses:
+        "200":
+          description: Deleted
+  /v1/agents/{agentId}/versions:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      summary: List immutable agent versions
+      responses:
+        "200":
+          description: Versions
+  /v1/agents/{agentId}/archive:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Archive agent
+      responses:
+        "200":
+          description: Archived agent
+  /v1/agents/{agentId}/warm:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Queue warm-pool preboot for an agent
+      responses:
+        "202":
+          description: Warm queued
+  /v1/agents/{agentId}/run:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    post:
+      summary: Backwards-compatible one-shot run adapter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task]
+              properties:
+                task:
+                  type: string
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Run started
+  /v1/environments:
+    post:
+      summary: Create environment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEnvironmentRequest"
+      responses:
+        "200":
+          description: Environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Environment"
+    get:
+      summary: List environments
+      responses:
+        "200":
+          description: Environments
+  /v1/environments/{environmentId}:
+    parameters:
+      - $ref: "#/components/parameters/EnvironmentId"
+    get:
+      summary: Get environment
+      responses:
+        "200":
+          description: Environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Environment"
+    delete:
+      summary: Delete environment
+      responses:
+        "200":
+          description: Deleted
+        "409":
+          description: Environment is still referenced by sessions
+  /v1/vaults:
+    post:
+      summary: Create credential vault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVaultRequest"
+      responses:
+        "200":
+          description: Vault
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vault"
+    get:
+      summary: List vaults
+      parameters:
+        - in: query
+          name: user_id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Vaults
+  /v1/vaults/{vaultId}:
+    parameters:
+      - $ref: "#/components/parameters/VaultId"
+    get:
+      summary: Get vault metadata
+      responses:
+        "200":
+          description: Vault
+    delete:
+      summary: Delete vault and credentials
+      responses:
+        "200":
+          description: Deleted
+  /v1/vaults/{vaultId}/credentials:
+    parameters:
+      - $ref: "#/components/parameters/VaultId"
+    post:
+      summary: Add credential to vault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCredentialRequest"
+      responses:
+        "200":
+          description: Credential metadata; secret fields omitted
+    get:
+      summary: List vault credential metadata
+      responses:
+        "200":
+          description: Credential metadata
+  /v1/vaults/{vaultId}/credentials/{credentialId}:
+    parameters:
+      - $ref: "#/components/parameters/VaultId"
+      - in: path
+        name: credentialId
+        required: true
+        schema:
+          type: string
+    delete:
+      summary: Delete credential
+      responses:
+        "200":
+          description: Deleted
+  /v1/sessions:
+    post:
+      summary: Create session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+    get:
+      summary: List sessions
+      responses:
+        "200":
+          description: Sessions
+  /v1/sessions/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      summary: Get session
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+    delete:
+      summary: Delete session and runtime state
+      responses:
+        "200":
+          description: Deleted
+  /v1/sessions/{sessionId}/events:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Post user message or tool confirmation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/PostUserMessage"
+                - $ref: "#/components/schemas/PostToolConfirmation"
+      responses:
+        "200":
+          description: Accepted immediately or queued
+        "202":
+          description: Started in background
+    get:
+      summary: List events or stream SSE with stream=true
+      parameters:
+        - in: query
+          name: stream
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Events JSON or text/event-stream
+  /v1/sessions/{sessionId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Cancel in-flight turn
+      responses:
+        "200":
+          description: Cancelled
+  /v1/sessions/{sessionId}/compact:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      summary: Compact session context
+      responses:
+        "200":
+          description: Compacted
+  /v1/sessions/{sessionId}/logs:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - in: query
+        name: tail
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 10000
+    get:
+      summary: Snapshot live container logs
+      responses:
+        "200":
+          description: Plain-text logs
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    AgentId:
+      in: path
+      name: agentId
+      required: true
+      schema:
+        type: string
+    EnvironmentId:
+      in: path
+      name: environmentId
+      required: true
+      schema:
+        type: string
+    SessionId:
+      in: path
+      name: sessionId
+      required: true
+      schema:
+        type: string
+    VaultId:
+      in: path
+      name: vaultId
+      required: true
+      schema:
+        type: string
+  schemas:
+    Agent:
+      type: object
+      required: [agent_id, model, tools, instructions, permission_policy, version, created_at, updated_at]
+      properties:
+        agent_id:
+          type: string
+        model:
+          type: string
+        tools:
+          type: array
+          items:
+            type: string
+        instructions:
+          type: string
+        permission_policy:
+          $ref: "#/components/schemas/PermissionPolicy"
+        name:
+          type: [string, "null"]
+        callable_agents:
+          type: array
+          items:
+            type: string
+        max_subagent_depth:
+          type: integer
+        mcp_servers:
+          type: object
+          additionalProperties: true
+        quota:
+          anyOf:
+            - $ref: "#/components/schemas/Quota"
+            - type: "null"
+        thinking_level:
+          $ref: "#/components/schemas/ThinkingLevel"
+        channels:
+          type: object
+          additionalProperties: true
+        version:
+          type: integer
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+        archived_at:
+          type: [integer, "null"]
+    CreateAgentRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+        instructions:
+          type: string
+          default: ""
+        tools:
+          type: array
+          items:
+            type: string
+        name:
+          type: string
+        permissionPolicy:
+          $ref: "#/components/schemas/PermissionPolicy"
+        callableAgents:
+          type: array
+          items:
+            type: string
+        maxSubagentDepth:
+          type: integer
+          minimum: 0
+        mcpServers:
+          type: object
+          additionalProperties: true
+        quota:
+          $ref: "#/components/schemas/Quota"
+        thinkingLevel:
+          $ref: "#/components/schemas/ThinkingLevel"
+        channels:
+          type: object
+          additionalProperties: true
+    UpdateAgentRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        model:
+          type: string
+        instructions:
+          type: [string, "null"]
+        tools:
+          type:
+            - array
+            - "null"
+          items:
+            type: string
+        name:
+          type: [string, "null"]
+        permissionPolicy:
+          $ref: "#/components/schemas/PermissionPolicy"
+        callableAgents:
+          type:
+            - array
+            - "null"
+          items:
+            type: string
+        maxSubagentDepth:
+          type: integer
+          minimum: 0
+        mcpServers:
+          anyOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+        quota:
+          anyOf:
+            - $ref: "#/components/schemas/Quota"
+            - type: "null"
+        thinkingLevel:
+          $ref: "#/components/schemas/ThinkingLevel"
+        channels:
+          type: object
+          additionalProperties: true
+    PermissionPolicy:
+      oneOf:
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: always_allow
+        - type: object
+          required: [type, tools]
+          properties:
+            type:
+              const: deny
+            tools:
+              type: array
+              items:
+                type: string
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: always_ask
+            tools:
+              type: array
+              items:
+                type: string
+    ThinkingLevel:
+      type: string
+      enum: [off, low, medium, high, xhigh]
+    Quota:
+      type: object
+      properties:
+        maxCostUsdPerSession:
+          type: number
+          exclusiveMinimum: 0
+        maxTokensPerSession:
+          type: integer
+          minimum: 1
+        maxWallDurationMs:
+          type: integer
+          minimum: 1
+    Environment:
+      type: object
+      properties:
+        environment_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        packages:
+          type: object
+          additionalProperties: true
+        networking:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: integer
+    CreateEnvironmentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        packages:
+          type: object
+          additionalProperties: true
+        networking:
+          type: object
+          additionalProperties: true
+    Vault:
+      type: object
+      properties:
+        vault_id:
+          type: string
+        user_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+    CreateVaultRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId:
+          type: string
+        name:
+          type: string
+    AddCredentialRequest:
+      oneOf:
+        - type: object
+          required: [name, type, matchUrl, token]
+          properties:
+            name:
+              type: string
+            type:
+              const: static_bearer
+            matchUrl:
+              type: string
+            token:
+              type: string
+              writeOnly: true
+        - type: object
+          required: [name, type, matchUrl, accessToken, refreshToken, expiresAt, tokenEndpoint, clientId, clientSecret]
+          properties:
+            name:
+              type: string
+            type:
+              const: mcp_oauth
+            matchUrl:
+              type: string
+            accessToken:
+              type: string
+              writeOnly: true
+            refreshToken:
+              type: string
+              writeOnly: true
+            expiresAt:
+              type: integer
+            tokenEndpoint:
+              type: string
+              format: uri
+            clientId:
+              type: string
+            clientSecret:
+              type: string
+              writeOnly: true
+            scopes:
+              type: array
+              items:
+                type: string
+    Session:
+      type: object
+      properties:
+        session_id:
+          type: string
+        agent_id:
+          type: string
+        environment_id:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [idle, starting, running, failed]
+        output:
+          type: [string, "null"]
+        tokens:
+          type: object
+          properties:
+            input:
+              type: integer
+            output:
+              type: integer
+        cost_usd:
+          type: number
+        error:
+          type: [string, "null"]
+        created_at:
+          type: integer
+        last_event_at:
+          type: [integer, "null"]
+        turns:
+          type: integer
+        boot_ms:
+          type: [integer, "null"]
+        pool_source:
+          type: [string, "null"]
+        container_id:
+          type: [string, "null"]
+        container_name:
+          type: [string, "null"]
+        parent_session_id:
+          type: [string, "null"]
+    CreateSessionRequest:
+      type: object
+      required: [agentId]
+      properties:
+        agentId:
+          type: string
+        environmentId:
+          type: string
+        vaultId:
+          type: string
+    PostUserMessage:
+      type: object
+      required: [content]
+      properties:
+        type:
+          const: user.message
+          default: user.message
+        content:
+          type: string
+        model:
+          type: string
+        thinkingLevel:
+          $ref: "#/components/schemas/ThinkingLevel"
+    PostToolConfirmation:
+      type: object
+      required: [type, toolUseId, result]
+      properties:
+        type:
+          const: user.tool_confirmation
+        toolUseId:
+          type: string
+        result:
+          type: string
+          enum: [allow, deny]

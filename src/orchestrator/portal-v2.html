@@ -584,9 +584,13 @@ if (hashToken) {
   AUTH.set(hashToken);
   history.replaceState(null, '', window.location.pathname);
 }
-// Auto-create anonymous user if no token
+// Auto-create an anonymous user before probing /v1. The probe must wait
+// for this promise; otherwise a fresh incognito tab can race, see the
+// unauthenticated /v1 probe return 401, and show the admin-token form
+// even though /auth/anonymous is available.
+let AUTH_BOOTSTRAP = Promise.resolve();
 if (!AUTH.token) {
-  fetch('/auth/anonymous', { method: 'POST' })
+  AUTH_BOOTSTRAP = fetch('/auth/anonymous', { method: 'POST' })
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (data?.api_token) {
@@ -1358,7 +1362,8 @@ Object.assign(window, {
 // prevents 401 spam in the console.
 (async () => {
   try {
-    const res = await _origFetch('/v1/agents');
+    await AUTH_BOOTSTRAP;
+    const res = await fetch('/v1/agents');
     if (res.status === 401) {
       AUTH.required = true;
       LIVE_BUS.notify();
@@ -2522,6 +2527,44 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
 
   const showStream = effectiveStatus === 'running' && hasLiveContainer(s);
   const partial = STREAMING_TOKENS.slice(0, streamLen || STREAMING_TOKENS.length);
+  async function openSessionJsonl() {
+    const path = '/v1/sessions/' + encodeURIComponent(s.id) + '/events';
+    const started = Date.now();
+    const tab = window.open('about:blank', '_blank');
+    if (!tab) {
+      ctx?.pushToast && ctx.pushToast({ method: 'GET', path, status: 0, ms: 0, label: 'popup blocked' });
+      return;
+    }
+    try {
+      tab.opener = null;
+      tab.document.title = s.id + '.jsonl';
+      tab.document.body.style.cssText = 'margin:0;padding:16px;background:#111;color:#eee;font:12px/1.5 monospace;white-space:pre-wrap;';
+      tab.document.body.textContent = 'Loading JSONL...';
+    } catch {
+      /* best-effort */
+    }
+    try {
+      const res = await fetch(path);
+      const ms = Date.now() - started;
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const label = body?.error || body?.message || ('HTTP ' + res.status);
+        try { tab.document.body.textContent = String(label); } catch { /* best-effort */ }
+        ctx?.pushToast && ctx.pushToast({ method: 'GET', path, status: res.status, ms, label: String(label) });
+        return;
+      }
+      const rows = Array.isArray(body.events) ? body.events : [];
+      const text = rows.map((event) => JSON.stringify(event)).join('\n') + (rows.length ? '\n' : '');
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/x-ndjson;charset=utf-8' }));
+      tab.location.href = url;
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      ctx?.pushToast && ctx.pushToast({ method: 'GET', path, status: res.status, ms, label: rows.length + ' events' });
+    } catch (err) {
+      const label = err?.message || 'network error';
+      try { tab.document.body.textContent = String(label); } catch { /* best-effort */ }
+      ctx?.pushToast && ctx.pushToast({ method: 'GET', path, status: 0, ms: Date.now() - started, label: String(label) });
+    }
+  }
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)', overflow: 'hidden' }}>
@@ -2534,7 +2577,7 @@ function SessionDetail({ sessionId, sessionState, streamLen }) {
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
             <StatusBadge s={effectiveStatus} />
             <SessionHeaderActions sid={s.id} status={effectiveStatus} />
-            <Button variant="ghost" size="sm" icon="external">Open JSONL</Button>
+            <Button variant="ghost" size="sm" icon="external" onClick={openSessionJsonl}>Open JSONL</Button>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 20, marginTop: 14 }}>

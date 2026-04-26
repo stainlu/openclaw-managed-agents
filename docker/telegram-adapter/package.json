@@ -1,8 +1,9 @@
 {
   "name": "openclaw-managed-agents-telegram-adapter",
   "private": true,
-  "version": "0.1.0-dev",
+  "version": "0.1.0",
   "description": "First-party Telegram adapter for openclaw-managed-agents. Routes Telegram chats to managed-agent sessions.",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

@@ -23,6 +23,12 @@ def _parse_session(data: Dict[str, Any]) -> Session:
         environment_id=data.get("environment_id"),
         error=data.get("error"),
         last_event_at=data.get("last_event_at"),
+        turns=data.get("turns", 0),
+        boot_ms=data.get("boot_ms"),
+        pool_source=data.get("pool_source"),
+        container_id=data.get("container_id"),
+        container_name=data.get("container_name"),
+        parent_session_id=data.get("parent_session_id"),
     )
 
 
@@ -53,10 +59,13 @@ class Sessions:
         *,
         agent_id: str,
         environment_id: Optional[str] = None,
+        vault_id: Optional[str] = None,
     ) -> Session:
         body: Dict[str, Any] = {"agentId": agent_id}
         if environment_id is not None:
             body["environmentId"] = environment_id
+        if vault_id is not None:
+            body["vaultId"] = vault_id
         resp = self._client.post("/v1/sessions", json=body)
         resp.raise_for_status()
         return _parse_session(resp.json())
@@ -81,11 +90,14 @@ class Sessions:
         *,
         content: str,
         model: Optional[str] = None,
+        thinking_level: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Post a user message to a session. Returns session status and queued flag."""
         body: Dict[str, Any] = {"content": content}
         if model is not None:
             body["model"] = model
+        if thinking_level is not None:
+            body["thinkingLevel"] = thinking_level
         resp = self._client.post(f"/v1/sessions/{session_id}/events", json=body)
         resp.raise_for_status()
         return resp.json()
@@ -115,6 +127,21 @@ class Sessions:
         resp = self._client.post(f"/v1/sessions/{session_id}/cancel")
         resp.raise_for_status()
         return resp.json()
+
+    def compact(self, session_id: str) -> Dict[str, Any]:
+        """Ask OpenClaw to compact context history for a session."""
+        resp = self._client.post(f"/v1/sessions/{session_id}/compact")
+        resp.raise_for_status()
+        return resp.json()
+
+    def logs(self, session_id: str, *, tail: Optional[int] = None) -> str:
+        """Return the live container stdout/stderr snapshot."""
+        params: Dict[str, Any] = {}
+        if tail is not None:
+            params["tail"] = tail
+        resp = self._client.get(f"/v1/sessions/{session_id}/logs", params=params)
+        resp.raise_for_status()
+        return resp.text
 
     def events(self, session_id: str) -> List[Event]:
         """Get the full event history for a session."""

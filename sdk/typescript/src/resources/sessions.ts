@@ -1,15 +1,24 @@
 import type { HttpClient } from "../http.js";
 import { parseSse } from "../sse.js";
-import type { CancelResult, Event, SendEventResult, Session } from "../types.js";
+import type {
+  CancelResult,
+  CompactResult,
+  Event,
+  SendEventResult,
+  Session,
+  ThinkingLevel,
+} from "../types.js";
 
 export interface CreateSessionParams {
   agentId: string;
   environmentId?: string;
+  vaultId?: string;
 }
 
 export interface SendParams {
   content: string;
   model?: string;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface ConfirmToolParams {
@@ -24,6 +33,7 @@ export class Sessions {
   create(params: CreateSessionParams): Promise<Session> {
     const body: Record<string, unknown> = { agentId: params.agentId };
     if (params.environmentId !== undefined) body["environmentId"] = params.environmentId;
+    if (params.vaultId !== undefined) body["vaultId"] = params.vaultId;
     return this.http.request<Session>("POST", "/v1/sessions", body);
   }
 
@@ -46,6 +56,7 @@ export class Sessions {
   send(sessionId: string, params: SendParams): Promise<SendEventResult> {
     const body: Record<string, unknown> = { content: params.content };
     if (params.model !== undefined) body["model"] = params.model;
+    if (params.thinkingLevel !== undefined) body["thinkingLevel"] = params.thinkingLevel;
     return this.http.request<SendEventResult>(
       "POST",
       `/v1/sessions/${encodeURIComponent(sessionId)}/events`,
@@ -71,6 +82,21 @@ export class Sessions {
     return this.http.request<CancelResult>(
       "POST",
       `/v1/sessions/${encodeURIComponent(sessionId)}/cancel`,
+    );
+  }
+
+  compact(sessionId: string): Promise<CompactResult> {
+    return this.http.request<CompactResult>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/compact`,
+    );
+  }
+
+  logs(sessionId: string, params: { tail?: number } = {}): Promise<string> {
+    const qs = params.tail === undefined ? "" : `?tail=${encodeURIComponent(String(params.tail))}`;
+    return this.http.textRequest(
+      "GET",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/logs${qs}`,
     );
   }
 

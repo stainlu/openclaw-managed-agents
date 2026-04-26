@@ -1,5 +1,14 @@
 import type { HttpClient } from "../http.js";
-import type { Agent, PermissionPolicy } from "../types.js";
+import type {
+  Agent,
+  Channels,
+  McpServers,
+  PermissionPolicy,
+  Quota,
+  RunAgentResult,
+  ThinkingLevel,
+  WarmAgentResult,
+} from "../types.js";
 
 export interface CreateAgentParams {
   model: string;
@@ -9,17 +18,30 @@ export interface CreateAgentParams {
   permissionPolicy?: PermissionPolicy;
   callableAgents?: string[];
   maxSubagentDepth?: number;
+  mcpServers?: McpServers;
+  quota?: Quota;
+  thinkingLevel?: ThinkingLevel;
+  channels?: Channels;
 }
 
 export interface UpdateAgentParams {
   version: number;
   model?: string;
-  instructions?: string;
-  tools?: string[];
+  instructions?: string | null;
+  tools?: string[] | null;
   name?: string | null;
   permissionPolicy?: PermissionPolicy;
-  callableAgents?: string[];
+  callableAgents?: string[] | null;
   maxSubagentDepth?: number;
+  mcpServers?: McpServers | null;
+  quota?: Quota | null;
+  thinkingLevel?: ThinkingLevel;
+  channels?: Channels;
+}
+
+export interface RunAgentParams {
+  task: string;
+  sessionId?: string;
 }
 
 export class Agents {
@@ -35,6 +57,10 @@ export class Agents {
     if (params.permissionPolicy !== undefined) body["permissionPolicy"] = params.permissionPolicy;
     if (params.callableAgents !== undefined) body["callableAgents"] = params.callableAgents;
     if (params.maxSubagentDepth !== undefined) body["maxSubagentDepth"] = params.maxSubagentDepth;
+    if (params.mcpServers !== undefined) body["mcpServers"] = params.mcpServers;
+    if (params.quota !== undefined) body["quota"] = params.quota;
+    if (params.thinkingLevel !== undefined) body["thinkingLevel"] = params.thinkingLevel;
+    if (params.channels !== undefined) body["channels"] = params.channels;
     return this.http.request<Agent>("POST", "/v1/agents", body);
   }
 
@@ -56,6 +82,10 @@ export class Agents {
     if (params.permissionPolicy !== undefined) body["permissionPolicy"] = params.permissionPolicy;
     if (params.callableAgents !== undefined) body["callableAgents"] = params.callableAgents;
     if (params.maxSubagentDepth !== undefined) body["maxSubagentDepth"] = params.maxSubagentDepth;
+    if (params.mcpServers !== undefined) body["mcpServers"] = params.mcpServers;
+    if (params.quota !== undefined) body["quota"] = params.quota;
+    if (params.thinkingLevel !== undefined) body["thinkingLevel"] = params.thinkingLevel;
+    if (params.channels !== undefined) body["channels"] = params.channels;
     return this.http.request<Agent>(
       "PATCH",
       `/v1/agents/${encodeURIComponent(agentId)}`,
@@ -80,5 +110,22 @@ export class Agents {
 
   async delete(agentId: string): Promise<void> {
     await this.http.request<void>("DELETE", `/v1/agents/${encodeURIComponent(agentId)}`);
+  }
+
+  warm(agentId: string): Promise<WarmAgentResult> {
+    return this.http.request<WarmAgentResult>(
+      "POST",
+      `/v1/agents/${encodeURIComponent(agentId)}/warm`,
+    );
+  }
+
+  run(agentId: string, params: RunAgentParams): Promise<RunAgentResult> {
+    const body: Record<string, unknown> = { task: params.task };
+    if (params.sessionId !== undefined) body["sessionId"] = params.sessionId;
+    return this.http.request<RunAgentResult>(
+      "POST",
+      `/v1/agents/${encodeURIComponent(agentId)}/run`,
+      body,
+    );
   }
 }

@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a concrete improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator workflow is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should OpenClaw Managed Agents do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: api
+    attributes:
+      label: API impact
+      description: Any REST, SDK, Docker, or config changes?

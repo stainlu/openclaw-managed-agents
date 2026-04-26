@@ -3,6 +3,7 @@ import type { Environment, EnvironmentNetworking, EnvironmentPackages } from "..
 
 export interface CreateEnvironmentParams {
   name: string;
+  description?: string;
   packages?: EnvironmentPackages;
   networking?: EnvironmentNetworking;
 }
@@ -12,6 +13,7 @@ export class Environments {
 
   create(params: CreateEnvironmentParams): Promise<Environment> {
     const body: Record<string, unknown> = { name: params.name };
+    if (params.description !== undefined) body["description"] = params.description;
     if (params.packages !== undefined) body["packages"] = params.packages;
     if (params.networking !== undefined) body["networking"] = params.networking;
     return this.http.request<Environment>("POST", "/v1/environments", body);

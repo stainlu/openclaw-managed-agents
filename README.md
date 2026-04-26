@@ -1,5 +1,11 @@
 # OpenClaw Managed Agents
 
+[![CI](https://github.com/stainlu/openclaw-managed-agents/actions/workflows/test.yaml/badge.svg)](https://github.com/stainlu/openclaw-managed-agents/actions/workflows/test.yaml)
+[![Images](https://github.com/stainlu/openclaw-managed-agents/actions/workflows/publish-images.yaml/badge.svg)](https://github.com/stainlu/openclaw-managed-agents/actions/workflows/publish-images.yaml)
+[![npm](https://img.shields.io/npm/v/%40stainlu%2Fopenclaw-managed-agents)](https://www.npmjs.com/package/@stainlu/openclaw-managed-agents)
+[![PyPI](https://img.shields.io/pypi/v/openclaw-managed-agents)](https://pypi.org/project/openclaw-managed-agents/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](./LICENSE)
+
 The open alternative to Claude Managed Agents. Run autonomous AI agents via API — any model, any cloud, open source.
 
 Built on [OpenClaw](https://github.com/openclaw/openclaw), the most popular open-source AI agent framework.
@@ -11,6 +17,18 @@ Built on [OpenClaw](https://github.com/openclaw/openclaw), the most popular open
 You POST an Agent (model + system prompt + tools + MCP servers), open a Session against it, send Events, stream back Events. Under the hood: one isolated Docker container per active session running OpenClaw, SQLite for orchestrator metadata, SSE for streaming, WebSocket control plane for cancel / model-override / tool-confirmation. Session state is durable even if the live container is later evicted and respawned. Deploy anywhere Docker runs.
 
 It's the layer that turns OpenClaw from a personal AI assistant into a programmatic agent service your app can call.
+
+## Published artifacts
+
+| Artifact | Package |
+|---|---|
+| Orchestrator image | `ghcr.io/stainlu/openclaw-managed-agents-orchestrator` |
+| Agent runtime image | `ghcr.io/stainlu/openclaw-managed-agents-agent` |
+| Limited-networking egress proxy image | `ghcr.io/stainlu/openclaw-managed-agents-egress-proxy` |
+| Telegram adapter image | `ghcr.io/stainlu/openclaw-managed-agents-telegram-adapter` |
+| TypeScript SDK | `@stainlu/openclaw-managed-agents` |
+| Python SDK | `openclaw-managed-agents` |
+| OpenAPI spec | [`openapi/openapi.yaml`](./openapi/openapi.yaml) |
 
 ## vs. Claude Managed Agents
 

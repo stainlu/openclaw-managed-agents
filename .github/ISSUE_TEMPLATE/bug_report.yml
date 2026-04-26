@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible bug
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What broke?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact steps, curl commands, model, provider, and deployment type.
+      placeholder: |
+        1. Create agent with ...
+        2. Open session ...
+        3. Send event ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Include orchestrator logs, session events, and browser screenshots if relevant. Redact secrets.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Git SHA, release tag, or GHCR image tag.

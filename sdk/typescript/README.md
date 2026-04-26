@@ -44,9 +44,10 @@ for await (const event of client.sessions.stream(session.session_id)) {
 
 | Resource | Methods |
 |---|---|
-| `client.agents` | `create`, `get`, `list`, `update`, `archive`, `delete`, `listVersions` |
+| `client.agents` | `create`, `get`, `list`, `update`, `archive`, `delete`, `listVersions`, `warm`, `run` |
 | `client.environments` | `create`, `get`, `list`, `delete` |
-| `client.sessions` | `create`, `get`, `list`, `delete`, `send`, `cancel`, `events`, `stream`, `confirmTool` |
+| `client.sessions` | `create`, `get`, `list`, `delete`, `send`, `cancel`, `compact`, `logs`, `events`, `stream`, `confirmTool` |
+| `client.vaults` | `create`, `get`, `list`, `delete`, `addCredential`, `listCredentials`, `deleteCredential` |
 
 ## Error handling
 

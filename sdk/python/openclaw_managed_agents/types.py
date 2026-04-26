@@ -19,6 +19,10 @@ class Agent:
     name: Optional[str] = None
     callable_agents: List[str] = field(default_factory=list)
     max_subagent_depth: int = 0
+    mcp_servers: Dict[str, Any] = field(default_factory=dict)
+    quota: Optional[Dict[str, Any]] = None
+    thinking_level: str = "off"
+    channels: Dict[str, Any] = field(default_factory=dict)
     archived_at: Optional[int] = None
 
 
@@ -28,6 +32,7 @@ class Environment:
     name: str
     networking: Dict[str, Any]
     created_at: int
+    description: str = ""
     packages: Optional[Dict[str, Any]] = None
 
 
@@ -43,6 +48,12 @@ class Session:
     environment_id: Optional[str] = None
     error: Optional[str] = None
     last_event_at: Optional[int] = None
+    turns: int = 0
+    boot_ms: Optional[int] = None
+    pool_source: Optional[str] = None
+    container_id: Optional[str] = None
+    container_name: Optional[str] = None
+    parent_session_id: Optional[str] = None
 
 
 @dataclass
@@ -60,3 +71,27 @@ class Event:
     tool_arguments: Optional[Dict[str, Any]] = None
     is_error: Optional[bool] = None
     approval_id: Optional[str] = None
+
+
+@dataclass
+class Vault:
+    vault_id: str
+    user_id: str
+    name: str
+    created_at: int
+    updated_at: int
+
+
+@dataclass
+class VaultCredential:
+    credential_id: str
+    vault_id: str
+    name: str
+    type: str
+    match_url: str
+    created_at: int
+    updated_at: int
+    token_endpoint: Optional[str] = None
+    client_id: Optional[str] = None
+    scopes: Optional[List[str]] = None
+    expires_at: Optional[int] = None

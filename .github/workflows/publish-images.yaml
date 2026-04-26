@@ -1,6 +1,6 @@
 name: publish-images
 
-# Builds the orchestrator and agent container images on every push to main
+# Builds the runtime container images on every push to main and release tag
 # and publishes them to GHCR (public). Deploy scripts pull these instead of
 # building from source on the target VM, which cuts end-to-end Lightsail
 # deploy time from ~12 minutes to ~2-3 minutes.
@@ -9,6 +9,7 @@ name: publish-images
 #   ghcr.io/stainlu/openclaw-managed-agents-orchestrator:{latest,sha-<sha>}
 #   ghcr.io/stainlu/openclaw-managed-agents-agent:{latest,sha-<sha>}
 #   ghcr.io/stainlu/openclaw-managed-agents-egress-proxy:{latest,sha-<sha>}
+#   ghcr.io/stainlu/openclaw-managed-agents-telegram-adapter:{latest,sha-<sha>}
 #
 # After the first successful publish, make both packages public in the GitHub
 # UI (user profile -> Packages -> each package -> Package settings ->
@@ -18,15 +19,7 @@ name: publish-images
 on:
   push:
     branches: [main]
-    paths:
-      - "Dockerfile.orchestrator"
-      - "Dockerfile.runtime"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "tsconfig.json"
-      - "src/**"
-      - "docker/**"
-      - ".github/workflows/publish-images.yaml"
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 permissions:
@@ -58,6 +51,10 @@ jobs:
             # Proxy image only needs its own directory; COPY is relative
             # to the context root, and the Dockerfile lives inside it.
             context: docker/egress-proxy
+          - name: telegram-adapter
+            dockerfile: docker/telegram-adapter/Dockerfile
+            image: openclaw-managed-agents-telegram-adapter
+            context: .
 
     steps:
       - name: Checkout
@@ -85,6 +82,8 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
             type=sha,prefix=sha-
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push ${{ matrix.name }}
         uses: docker/build-push-action@v6

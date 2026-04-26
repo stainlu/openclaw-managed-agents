@@ -2,16 +2,23 @@ import { HttpClient } from "./http.js";
 import { Agents } from "./resources/agents.js";
 import { Environments } from "./resources/environments.js";
 import { Sessions } from "./resources/sessions.js";
+import { Vaults } from "./resources/vaults.js";
 
 export { OpenClawError } from "./http.js";
 export * from "./types.js";
-export type { CreateAgentParams, UpdateAgentParams } from "./resources/agents.js";
+export type { CreateAgentParams, RunAgentParams, UpdateAgentParams } from "./resources/agents.js";
 export type { CreateEnvironmentParams } from "./resources/environments.js";
 export type {
   CreateSessionParams,
   SendParams,
   ConfirmToolParams,
 } from "./resources/sessions.js";
+export type {
+  AddCredentialParams,
+  AddMcpOAuthCredentialParams,
+  AddStaticBearerCredentialParams,
+  CreateVaultParams,
+} from "./resources/vaults.js";
 
 export interface OpenClawClientConfig {
   /** Orchestrator URL (e.g. `http://localhost:8080`). */
@@ -53,6 +60,7 @@ export class OpenClawClient {
   readonly agents: Agents;
   readonly environments: Environments;
   readonly sessions: Sessions;
+  readonly vaults: Vaults;
 
   constructor(config: OpenClawClientConfig = {}) {
     const http = new HttpClient({
@@ -64,5 +72,6 @@ export class OpenClawClient {
     this.agents = new Agents(http);
     this.environments = new Environments(http);
     this.sessions = new Sessions(http);
+    this.vaults = new Vaults(http);
   }
 }

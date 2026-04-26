@@ -22,7 +22,8 @@ import httpx
 from .resources.agents import Agents
 from .resources.environments import Environments
 from .resources.sessions import Sessions
-from .types import Agent, Environment, Event, Session
+from .resources.vaults import Vaults
+from .types import Agent, Environment, Event, Session, Vault, VaultCredential
 
 __all__ = [
     "OpenClawClient",
@@ -30,6 +31,8 @@ __all__ = [
     "Environment",
     "Session",
     "Event",
+    "Vault",
+    "VaultCredential",
 ]
 
 
@@ -67,6 +70,7 @@ class OpenClawClient:
         self.agents = Agents(self._client)
         self.environments = Environments(self._client)
         self.sessions = Sessions(self._client)
+        self.vaults = Vaults(self._client)
 
     def close(self) -> None:
         """Close the underlying HTTP connection pool."""

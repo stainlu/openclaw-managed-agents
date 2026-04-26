@@ -67,6 +67,28 @@ export class HttpClient {
     }
   }
 
+  async textRequest(method: string, path: string, body?: unknown): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const resp = await this.fetchImpl(this.url(path), {
+        method,
+        headers: this.headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await resp.text();
+      if (!resp.ok) {
+        const parsed = safeJson(text);
+        const msg = errorMessageFrom(parsed, resp.status, resp.statusText);
+        throw new OpenClawError(resp.status, msg, parsed ?? text);
+      }
+      return text;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async streamRequest(path: string): Promise<Response> {
     const controller = new AbortController();
     // Deliberately no timeout: streaming connections live for the session.
