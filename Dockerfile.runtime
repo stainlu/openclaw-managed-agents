@@ -23,7 +23,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin the OpenClaw CLI. Upgrade deliberately by bumping this version.
-ARG OPENCLAW_VERSION=2026.4.11
+ARG OPENCLAW_VERSION=2026.4.24
 
 # Install OpenClaw globally. The `openclaw` binary lands at /usr/local/bin/openclaw.
 # postinstall scripts are required — they install bundled plugins and skills.

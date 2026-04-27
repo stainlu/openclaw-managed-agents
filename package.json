@@ -1,6 +1,6 @@
 {
   "name": "openclaw-managed-agents",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The open alternative to Claude Managed Agents — an API-first managed agent runtime on top of OpenClaw.",
   "license": "MIT",
   "private": true,

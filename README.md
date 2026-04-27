@@ -10,6 +10,10 @@ The open alternative to Claude Managed Agents. Run autonomous AI agents via API 
 
 Built on [OpenClaw](https://github.com/openclaw/openclaw), the most popular open-source AI agent framework.
 
+## Demo
+
+https://github.com/user-attachments/assets/84a2e1b1-ef6a-4f20-8cbe-4dc36a6c8b77
+
 ## What this is
 
 **The name says it:** `openclaw-managed-agents` = **OpenClaw** (the agent runtime — multi-provider, 53 built-in skills, MCP-native, Pi's durable JSONL event log) + **Managed Agents** (the four-primitive API shape — Agent / Environment / Session / Event — that Claude Managed Agents made standard).

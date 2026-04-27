@@ -50,6 +50,9 @@ jobs:
   python:
     name: PyPI package
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openclaw-managed-agents/
     defaults:
       run:
         working-directory: sdk/python
@@ -64,7 +67,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install build tooling
-        run: python -m pip install --upgrade build
+        run: python -m pip install --upgrade build twine
 
       - name: Check version matches tag
         run: |
@@ -79,6 +82,9 @@ jobs:
 
       - name: Build
         run: python -m build
+
+      - name: Check package metadata
+        run: python -m twine check dist/*
 
       - name: Import smoke
         run: |

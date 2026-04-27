@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import httpx
+from typing import Optional
 
 from .resources.agents import Agents
 from .resources.environments import Environments
@@ -52,8 +53,9 @@ class OpenClawClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8080",
-        api_token: str | None = None,
+        api_token: Optional[str] = None,
         timeout: float = 600.0,
+        transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
         headers: dict[str, str] = {}
         if api_token:
@@ -66,6 +68,7 @@ class OpenClawClient:
             timeout=timeout,
             trust_env=False,
             headers=headers,
+            transport=transport,
         )
         self.agents = Agents(self._client)
         self.environments = Environments(self._client)

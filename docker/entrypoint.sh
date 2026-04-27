@@ -305,16 +305,19 @@ jq -n \
           id: $agent_id,
           model: { primary: $model }
         }
-        + (if $thinking_level != "" and $thinking_level != "off" then { thinkingLevel: $thinking_level } else {} end)
+        + (if $thinking_level != "" then { thinkingDefault: $thinking_level } else {} end)
         + (if ($tools.alsoAllow // null) then { tools: $tools } else {} end)
         + (if ($denied | length) > 0 then { tools: ((.tools // {}) + { deny: $denied }) } else {} end)
         + (if $instructions != "" then { systemPromptOverride: $instructions } else {} end)
       )
     ],
-    defaults: {
-      model: { primary: $model },
-      models: ({ ($model): {} })
-    }
+    defaults: (
+      {
+        model: { primary: $model },
+        models: ({ ($model): {} })
+      }
+      + (if $thinking_level != "" then { thinkingDefault: $thinking_level } else {} end)
+    )
   },
   plugins: {
     entries: (

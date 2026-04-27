@@ -671,7 +671,7 @@ export class AgentRouter {
         }
       }
 
-      if ((args.model || effectiveThinking !== "off") && !streamIsFirstTurn) {
+      if ((args.model || effectiveThinking) && !streamIsFirstTurn) {
         const wsClient = this.pool.getWsClient(args.sessionId);
         if (!wsClient) {
           throw new RouterError(
@@ -686,7 +686,7 @@ export class AgentRouter {
             this.cfg.passthroughEnv,
           );
         }
-        if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
+        if (effectiveThinking) patch.thinkingLevel = effectiveThinking;
         try {
           await wsClient.patch(`agent:main:${args.sessionId}`, patch);
         } catch (patchErr) {
@@ -1920,7 +1920,7 @@ export class AgentRouter {
         }
 
         const effectiveThinking = thinkingLevelOverride ?? agent.thinkingLevel;
-        const needsPatch = Boolean(modelOverride) || effectiveThinking !== "off";
+        const needsPatch = Boolean(modelOverride) || Boolean(effectiveThinking);
         // Pi creates the session key on the first HTTP POST. Before that,
         // sessions.patch can't find the key and times out (10s wasted).
         // Skip the patch on the first turn; buildSpawnOptions already
@@ -1943,7 +1943,7 @@ export class AgentRouter {
               this.cfg.passthroughEnv,
             );
           }
-          if (effectiveThinking !== "off") patch.thinkingLevel = effectiveThinking;
+          if (effectiveThinking) patch.thinkingLevel = effectiveThinking;
           try {
             await wsClient.patch(canonicalKey, patch);
           } catch (patchErr) {

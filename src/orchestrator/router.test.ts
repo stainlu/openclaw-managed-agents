@@ -912,6 +912,93 @@ describe("AgentRouter.runEvent — JSONL advancement guarantees", () => {
     });
   });
 
+  it("patches later turns back to off when the agent default is off", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "done" } }],
+            usage: { prompt_tokens: 11, completion_tokens: 7 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const fakeEvents = {
+      stateRoot: "/tmp/test-state",
+      countUserTurns: vi
+        .fn()
+        .mockReturnValueOnce(1)
+        .mockReturnValueOnce(2),
+      latestAgentOutcome: vi
+        .fn()
+        .mockReturnValueOnce({
+          eventId: "evt_old",
+          sessionId: "ses_unused",
+          type: "agent.message",
+          content: "old",
+          createdAt: 1,
+        })
+        .mockReturnValueOnce({
+          eventId: "evt_new",
+          sessionId: "ses_unused",
+          type: "agent.message",
+          content: "done",
+          createdAt: Date.now(),
+          tokensIn: 11,
+          tokensOut: 7,
+        }),
+      latestAgentMessage: vi
+        .fn()
+        .mockReturnValueOnce({
+          eventId: "evt_new",
+          sessionId: "ses_unused",
+          type: "agent.message",
+          content: "done",
+          createdAt: Date.now(),
+          tokensIn: 11,
+          tokensOut: 7,
+        }),
+    };
+    let patched: Record<string, unknown> | undefined;
+    const fakeWs = {
+      patch: async (_key: string, fields: Record<string, unknown>) => {
+        patched = fields;
+      },
+    };
+    const { router, store } = makeRouter({
+      poolStub: {
+        acquireForSession: async () =>
+          ({ baseUrl: "http://container.test", token: "tok" }) as any,
+        getWsClient: () => fakeWs as unknown as GatewayWebSocketClient,
+        evictSession: async () => {},
+      },
+      eventReaderStub: fakeEvents as unknown as PiJsonlEventReader,
+    });
+    const agent = store.agents.create({
+      model: "moonshot/kimi-k2.5",
+      tools: [],
+      instructions: "",
+      permissionPolicy: { type: "always_allow" },
+      callableAgents: [],
+      maxSubagentDepth: 0,
+      thinkingLevel: "off",
+    });
+    const session = router.createSession(agent.agentId);
+    store.sessions.bumpTurns(session.sessionId);
+
+    await router.runEvent({
+      sessionId: session.sessionId,
+      content: "hi",
+    });
+    await waitForSessionToStopRunning(store, session.sessionId);
+
+    expect(patched).toEqual({
+      thinkingLevel: "off",
+    });
+  });
+
   it("falls back to transcript usage when the completion response omits usage", async () => {
     vi.stubGlobal(
       "fetch",
