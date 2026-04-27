@@ -12,7 +12,7 @@ Built on [OpenClaw](https://github.com/openclaw/openclaw), the most popular open
 
 ## Demo
 
-https://github.com/user-attachments/assets/84a2e1b1-ef6a-4f20-8cbe-4dc36a6c8b77
+<video src="https://github.com/user-attachments/assets/84a2e1b1-ef6a-4f20-8cbe-4dc36a6c8b77" controls></video>
 
 ## What this is
 
