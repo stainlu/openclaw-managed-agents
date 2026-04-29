@@ -15,6 +15,7 @@
 // Supported provider ids:
 //   - moonshot — via buildMoonshotProvider() from the bundled extension
 //   - deepseek — via buildDeepSeekProvider() from the bundled extension
+//   - cerebras — via buildCerebrasProvider() from the bundled extension
 //
 // Unknown or Category A provider ids are a no-op. Category A plugins
 // (anthropic, openai, google, xai, mistral, openrouter, amazon-bedrock)
@@ -51,6 +52,10 @@ const PROVIDER_CATALOGS = {
   deepseek: {
     module: "extensions/deepseek/provider-catalog.js",
     factory: "buildDeepSeekProvider",
+  },
+  cerebras: {
+    module: "extensions/cerebras/provider-catalog.js",
+    factory: "buildCerebrasProvider",
   },
 };
 

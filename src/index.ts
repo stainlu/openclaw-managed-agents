@@ -106,6 +106,15 @@ function collectPassthroughEnv(): Record<string, string> {
     "ZENMUX_API_KEY",
     "FIREWORKS_API_KEY",
     "GROQ_API_KEY",
+    "CEREBRAS_API_KEY",
+    // Media / speech providers
+    "AZURE_SPEECH_KEY",
+    "AZURE_SPEECH_API_KEY",
+    "SPEECH_KEY",
+    "AZURE_SPEECH_REGION",
+    "SPEECH_REGION",
+    "INWORLD_API_KEY",
+    "SENSEAUDIO_API_KEY",
     // OpenTelemetry — forwarded verbatim so operators can point openclaw's
     // built-in OTEL exporter at their collector via the standard env vars.
     // docker/entrypoint.sh reads these and emits diagnostics.otel into

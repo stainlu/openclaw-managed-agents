@@ -244,7 +244,7 @@ ZENMUX_JSON=$(zenmux_json_fragment)
 
 # Assemble the base config with jq (no string-escaping footguns). The
 # models.providers.<plugin-id> block that Category B providers need (moonshot,
-# deepseek, qwen, etc.) is populated by apply-provider-config.mjs after this
+# deepseek, cerebras, qwen, etc.) is populated by apply-provider-config.mjs after this
 # block writes, using the bundled openclaw extension's catalog builder as the
 # source of truth. This eliminates the previous hand-mirror that hardcoded
 # moonshot's model catalog + zero prices and made the runtime drift from

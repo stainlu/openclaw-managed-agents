@@ -267,10 +267,11 @@ export class GatewayWebSocketClient {
               mode: "ui",
             },
             role: "operator",
-            // operator.write covers abort/steer/send; operator.admin is
-            // required for sessions.patch. Request all three so a single
-            // client instance can drive every Item 7 operation.
-            scopes: ["operator.read", "operator.write", "operator.admin"],
+            // operator.write covers abort/steer/send; operator.approvals
+            // covers plugin approval list/resolve; operator.admin is
+            // required for sessions.patch. Request all needed scopes so a
+            // single client instance can drive every Item 7 operation.
+            scopes: ["operator.read", "operator.write", "operator.approvals", "operator.admin"],
             auth: { token: this.cfg.token },
           },
         };
