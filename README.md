@@ -137,6 +137,7 @@ for event in client.sessions.stream(session.session_id):
 ```
 
 See [`examples/research-assistant/`](./examples/research-assistant/) for a ~200-line copy-paste starting point that streams events in real time.
+See [`examples/xquik-social-agent/`](./examples/xquik-social-agent/) for a vault-bound X/Twitter workflow with Xquik MCP and per-tool approvals.
 
 Or use the TypeScript SDK:
 
